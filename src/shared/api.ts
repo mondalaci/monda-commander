@@ -68,6 +68,13 @@ export interface McFsApi {
   move(sources: string[], destination: string, baseDir: string): Promise<Result<MoveOutcome>>
   remove(targets: string[]): Promise<Result<DeleteOutcome>>
   /**
+   * Append an entry's name to a directory's `.mchide` file — the pane menu's way
+   * of adding to a hide list without the file being opened. Idempotent: a name
+   * already listed is left where it is. Returns the file that was written, or the
+   * error that stopped it (a folder in the way, a permission).
+   */
+  hideAdd(dir: string, name: string): Promise<Result<string>>
+  /**
    * Watch a directory for on-disk changes. Refcounted in main, so several
    * callers (both panes, or the same pane twice) may watch one directory.
    */

@@ -1,0 +1,46 @@
+/*
+ * The ring the pointer carries while the right button is held on a row: the
+ * gesture's own answer to "keep holding", filled over the rest of the hold so
+ * the wait is something the user watches rather than something they guess at.
+ *
+ * It has to be an element rather than a cursor. A CSS `cursor:` image cannot
+ * animate — it is one static picture — and the OS cursor is composited above the
+ * page in any case, so a ring drawn below it reads as something the pointer
+ * carries. The animation is decoration only: what *decides* the gesture is the
+ * timer in FilePanel, so a throttled or disabled animation costs the ring and
+ * never the menu.
+ *
+ * The geometry is the SVG's own (r=8 in a 20x20 box): the circumference is
+ * 2*pi*8 = 50.27, which is both what the arc is dashed to and where its offset
+ * starts, so the two move together if the radius ever does.
+ */
+.hold-disc {
+  fill: rgb(0 0 0 / 0.45);
+}
+
+.hold-track {
+  fill: none;
+  stroke: var(--color-border);
+  stroke-width: 2;
+}
+
+.hold-arc {
+  fill: none;
+  stroke: var(--color-accent-strong);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-dasharray: 50.27;
+  stroke-dashoffset: 50.27;
+  animation-name: hold-fill;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+
+@keyframes hold-fill {
+  from {
+    stroke-dashoffset: 50.27;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}

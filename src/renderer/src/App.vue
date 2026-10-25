@@ -8,7 +8,8 @@ import TerminalPane from '@renderer/components/TerminalPane.vue'
 import WorkspaceTabs from '@renderer/components/WorkspaceTabs.vue'
 import TitleBar from '@renderer/components/TitleBar.vue'
 import FileViewer from '@renderer/components/FileViewer.vue'
-import { loadHideMode, toggleHideMode } from '@renderer/composables/useHideMode'
+import PaneContextMenu from '@renderer/components/PaneContextMenu.vue'
+import { loadHideMode, hideMode, toggleHideMode } from '@renderer/composables/useHideMode'
 import { createWorkspace, type Workspace } from '@renderer/composables/useWorkspace'
 import type { PaneController, PaneEntry } from '@renderer/composables/useDirectory'
 import {
@@ -18,6 +19,8 @@ import {
   type PlaybackClock,
   type StageRequest
 } from '@renderer/lib/preview'
+import type { PaneMenuChoice, PaneMenuItem, PaneMenuRequest } from '@renderer/lib/paneMenu'
+import { HIDE_MARKER } from '@shared/hide'
 import { playSwapAnimation } from '@renderer/lib/swapAnimation'
 import type { FileContent, FsError, PanelSide } from '@shared/types'
 
@@ -549,6 +552,7 @@ function focusIsUnclaimed(): boolean {
  */
 function restoreFocus(): void {
   if (viewerPath.value !== null) return
+  if (paneMenu.value !== null) return
   if (deleteTargets.value.length > 0 || copyJob.value !== null || moveJob.value !== null) return
   if (!focusIsUnclaimed()) return
   focusPanes()
@@ -928,6 +932,193 @@ watch(
 )
 
 /**
+ * The pane menu, while one is up: what it is about, and where. The row is
+ * captured as the delete and copy dialogs capture their targets — the panes go on
+ * watching their directories, and a refresh under the menu must not change what
+ * its items say they will act on.
+ */
+const paneMenu = ref<{ side: PanelSide; target: PaneEntry; x: number; y: number } | null>(null)
+
+/** The menu as a component, for the one question the app has to ask it: whose key is this. */
+const paneMenuRef = ref<InstanceType<typeof PaneContextMenu> | null>(null)
+
+function paneOf(side: PanelSide): PaneController {
+  return side === 'left' ? left.value : right.value
+}
+
+/**
+ * Open the menu for one of `side`'s rows, at a point in client coordinates. The
+ * cursor moves to that row first, because the items are the keys' own operations —
+ * `F5`, `F8`, `F3` — and those act on the cursor or on the marks, so the row the
+ * menu is *about* has to be the row they would act on. A menu that opened on one
+ * file and deleted another would be a trap rather than a shortcut.
+ */
+function openPaneMenu(side: PanelSide, request: PaneMenuRequest): void {
+  const pane = paneOf(side)
+  const index = pane.state.entries.findIndex((row) => row.path === request.path)
+  const target = pane.state.entries[index]
+  if (!target || target.isParent) return
+
+  setActive(side)
+  pane.moveTo(index)
+  paneMenu.value = { side, target, x: request.x, y: request.y }
+}
+
+function closePaneMenu(): void {
+  if (paneMenu.value === null) return
+  paneMenu.value = null
+  focusPanes()
+}
+
+/**
+ * A pick: the menu goes first, and the action runs into the focus that gives back,
+ * so a dialog or a rename the item starts is free to take the keyboard itself.
+ */
+function choosePaneMenuItem(choice: PaneMenuChoice): void {
+  if (paneMenu.value === null) return
+  closePaneMenu()
+  choice.run()
+}
+
+/**
+ * Ask for the menu on the active pane's cursor row — Shift+F10, or the keyboard's
+ * own menu key. Nothing is pointed at, so the pane works the anchor out from the
+ * row's place in the listing (see `cursorMenuAnchor`).
+ */
+function requestPaneMenuAtCursor(): void {
+  // The full-screen presentation is the one with no listing to point at: the
+  // panes are covered by the display, so a menu about a cursor nobody can see is
+  // not a thing to offer. A display *in a pane* leaves the asking pane's own
+  // listing where it was, and a menu there is that pane's business like any other.
+  if (stageFullscreen.value) return
+
+  const side = activeSide.value
+  const host = side === 'left' ? leftPanel : rightPanel
+  const anchor = host.value?.cursorMenuAnchor() ?? null
+  if (anchor === null) return
+  openPaneMenu(side, anchor)
+}
+
+/**
+ * Put the row's name in its folder's `.mchide` file — the menu's answer to "I do
+ * not want to keep seeing this one". The mode is switched on with it, because the
+ * file only says what to leave out and the mode is what leaves it out: writing a
+ * name into a list nothing is applying would read as the item having done
+ * nothing. Alt+. is the way back, and the pane's title bar carries the mode's own
+ * icon either way.
+ */
+async function hideEntry(pane: PaneController, entry: PaneEntry): Promise<void> {
+  const result = await window.mc.fs.hideAdd(pane.state.path, entry.name)
+  if (!result.ok) {
+    pane.state.error = `${result.error.code}: ${result.error.message}`
+    return
+  }
+
+  if (!hideMode.value) await toggleHideMode()
+
+  // The names come from the listing rather than from a read of the file, so the
+  // folder has to be listed again for the new one to be in hand. Every pane
+  // showing this folder is told the change is the app's own: the watcher reports
+  // the write like any other, and a row the user asked to hide must not sweep as
+  // though something had happened behind the app's back.
+  const showing = [left.value, right.value].filter((other) => other.state.path === pane.state.path)
+  for (const other of showing) other.beginSelfChange()
+  try {
+    await pane.refresh()
+  } finally {
+    for (const other of showing) other.endSelfChange()
+  }
+}
+
+/**
+ * What the menu offers for the row it was opened on: the operations that are not
+ * already one gesture away in the listing itself. Opening the row is deliberately
+ * absent — `Enter`, or a double-click on it, is the row's own gesture, and a menu
+ * that repeats what the pointer has just done is a longer way to the same place —
+ * so what is left is what the listing cannot say with one click: the viewer, the
+ * editor, the full-screen mode, the transfers, rename, delete, the mark, and the
+ * folder's own hide list. Each item still carries the key that does the same thing
+ * without a menu, since being where those are found is half of what the menu is
+ * for.
+ *
+ * The groups are built first and the separators put *between* the ones that came
+ * out with something in them: what the menu can offer depends on the row (a folder
+ * has no view, edit or full-screen to offer), and a divider with nothing on one
+ * side of it is a line the menu has nothing to say.
+ */
+const paneMenuItems = computed<PaneMenuItem[]>(() => {
+  const menu = paneMenu.value
+  if (menu === null) return []
+
+  const entry = menu.target
+  const pane = paneOf(menu.side)
+  const folder = entry.kind === 'directory'
+  const media = !folder && previewTargetFor(entry) !== null
+
+  const reading: PaneMenuItem[] = []
+  if (!folder) {
+    reading.push({
+      kind: 'action',
+      label: 'View',
+      hint: 'F3',
+      run: () => void openViewer(pane, entry.path, 'view')
+    })
+    reading.push({
+      kind: 'action',
+      label: 'Edit',
+      hint: 'F4',
+      run: () => void openViewer(pane, entry.path, 'edit')
+    })
+  }
+  if (media) {
+    reading.push({
+      kind: 'action',
+      label: 'Full screen',
+      hint: 'Ctrl+Enter',
+      run: () => openFullscreen(menu.side)
+    })
+  }
+
+  const acting: PaneMenuItem[] = [
+    { kind: 'action', label: 'Copy to the other pane…', hint: 'F5', run: requestCopy },
+    { kind: 'action', label: 'Move to the other pane…', hint: 'F6', run: requestMove },
+    { kind: 'action', label: 'Rename', hint: 'Shift+F6', run: () => pane.beginRename() },
+    { kind: 'action', label: 'Delete…', hint: 'F8', run: requestDelete }
+  ]
+
+  const marked = pane.isSelected(entry)
+  const belonging: PaneMenuItem[] = [
+    {
+      kind: 'action',
+      label: marked ? 'Unmark' : 'Mark',
+      hint: 'Insert',
+      run: () => pane.setSelected(entry.path, !marked)
+    }
+  ]
+
+  // A folder's list may already cover this name — it is on screen only because
+  // the mode is off, and the pane's own title bar says so with its dim icon — in
+  // which case there is nothing to add and the item is left out rather than
+  // offered as a second write of the same line.
+  if (!pane.state.hideNames.has(entry.name)) {
+    belonging.push({
+      kind: 'action',
+      label: `Hide (add to ${HIDE_MARKER})`,
+      run: () => void hideEntry(pane, entry)
+    })
+  }
+
+  const items: PaneMenuItem[] = []
+  for (const group of [reading, acting, belonging]) {
+    if (group.length === 0) continue
+    if (items.length > 0) items.push({ kind: 'separator' })
+    items.push(...group)
+  }
+
+  return items
+})
+
+/**
  * Claim a key for the app. `preventDefault` is not enough on its own: xterm
  * handles keys from a capture listener on its own textarea and does not consult
  * `defaultPrevented`, so without stopping propagation it would also forward the
@@ -1143,6 +1334,22 @@ function handlePaneKey(event: KeyboardEvent): void {
 }
 
 function onKeydown(event: KeyboardEvent): void {
+  // The pane menu holds the keyboard while it is up: Escape closes it, and its own
+  // keys — the arrows, Home/End, Enter — are the menu's, which drives itself from
+  // them because it is what is focused. A key that is *not* the menu's is dropped
+  // here rather than left to drive whatever else happens to hold the focus: the
+  // shell's line editor would take the arrows as history, and the panes as cursor
+  // moves, behind a menu that is supposed to be the only thing listening.
+  if (paneMenu.value !== null) {
+    if (event.key === 'Escape') {
+      consume(event)
+      closePaneMenu()
+      return
+    }
+    if (!paneMenuRef.value?.ownsKey(event.target)) consume(event)
+    return
+  }
+
   // The discard dialog sits over the viewer, so it is answered before the
   // viewer's own keys: Escape cancels it and hands the editor back its focus,
   // and every other key belongs to the dialog (its default button is focused,
@@ -1268,6 +1475,26 @@ function onKeydown(event: KeyboardEvent): void {
     event.preventDefault()
     event.stopPropagation()
     void activePane.value.refresh()
+    return
+  }
+
+  // Shift+F10 — and the keyboard's own menu key — ask for the pane menu: the
+  // keyboard's half of the long right-press, on the cursor row. Claimed globally
+  // like Ctrl+O and Ctrl+R, because it is the app's own chrome rather than a key
+  // of the shell's, and it is Shift+F10 rather than F10 because F10 alone is what
+  // the programs running in the terminal use (mc's quit, vim's menu). The menu
+  // key carries no modifier because it *is* the gesture: nothing else means it.
+  const isPaneMenu =
+    event.key === 'ContextMenu' ||
+    (event.key === 'F10' &&
+      event.shiftKey &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      !event.metaKey)
+
+  if (isPaneMenu) {
+    consume(event)
+    requestPaneMenuAtCursor()
     return
   }
 
@@ -1410,6 +1637,7 @@ onBeforeUnmount(() => {
           @stage-clock="displayedClock = $event"
           @stage-on="showStage('left')"
           @stage-off="exitStage()"
+          @context-menu="openPaneMenu('left', $event)"
         />
         <!-- The boundary between the panes, and the handle that moves it: the
              line stays a pixel, while an invisible band around it is what the
@@ -1474,6 +1702,7 @@ onBeforeUnmount(() => {
           @stage-clock="displayedClock = $event"
           @stage-on="showStage('right')"
           @stage-off="exitStage()"
+          @context-menu="openPaneMenu('right', $event)"
         />
       </main>
 
@@ -1497,6 +1726,17 @@ onBeforeUnmount(() => {
         @close="closeViewer"
       />
     </div>
+
+    <PaneContextMenu
+      v-if="paneMenu"
+      ref="paneMenuRef"
+      :title="paneMenu.target.name"
+      :items="paneMenuItems"
+      :x="paneMenu.x"
+      :y="paneMenu.y"
+      @choose="choosePaneMenuItem"
+      @close="closePaneMenu"
+    />
 
     <ConfirmTransfer
       v-if="copyJob"

@@ -75,23 +75,63 @@ async function readEntry(dir: string, name: string): Promise<DirEntry> {
 }
 
 /**
+ * The names a `.mchide` file's text lists — one per line — with blank lines
+ * skipped and every line trimmed, so a Windows line ending or a stray space
+ * around a name still matches the entry it names. The reader of a listing and the
+ * writer the pane menu borrows both come through here, because a rule that lived
+ * in one of them and not the other would show up as a name that hides nothing.
+ */
+function parseHiddenNames(text: string): Set<string> {
+  const names = new Set<string>()
+  for (const line of text.split('\n')) {
+    const name = line.trim()
+    if (name) names.add(name)
+  }
+  return names
+}
+
+/**
  * The names a `.mchide` file lists — one per line — or null when the file cannot
  * be read (missing, unreadable, a dangling symlink), in which case it lists
- * nothing. Blank lines are skipped and each line is trimmed, so a Windows line
- * ending or a stray space around a name still matches the entry it names.
+ * nothing.
  */
 async function readHiddenNames(file: string): Promise<Set<string> | null> {
   try {
-    const text = await fs.readFile(file, 'utf8')
-    const names = new Set<string>()
-    for (const line of text.split('\n')) {
-      const name = line.trim()
-      if (name) names.add(name)
-    }
-    return names
+    return parseHiddenNames(await fs.readFile(file, 'utf8'))
   } catch {
     return null
   }
+}
+
+/**
+ * Put a name in a directory's `.mchide` file, which is how the pane menu's `Hide`
+ * adds to a folder's list without the file being opened in the editor.
+ *
+ * It appends rather than rewrites, and a name already listed is left alone — the
+ * request is "hide this", not "list this twice". A newline is added first when the
+ * file does not end in one, since otherwise the new name would join the last line
+ * and hide whatever that line happened to spell. The file written is returned, so
+ * a caller can name which one it was.
+ */
+export async function addHiddenName(dir: string, name: string): Promise<string> {
+  const target = path.join(path.resolve(dir), HIDE_MARKER)
+  const wanted = name.trim()
+
+  // A missing file is the ordinary case: this is how a folder gets its list at
+  // all. A read that failed for any other reason (a permission) fails the append
+  // below just the same, and *that* error is the honest one to report.
+  let text = ''
+  try {
+    text = await fs.readFile(target, 'utf8')
+  } catch {
+    text = ''
+  }
+
+  if (parseHiddenNames(text).has(wanted)) return target
+
+  const separator = text === '' || text.endsWith('\n') ? '' : '\n'
+  await fs.appendFile(target, `${separator}${wanted}\n`)
+  return target
 }
 
 /**
@@ -828,6 +868,31 @@ export function registerFsHandlers(): void {
       }
 
       return { ok: true, data: { deleted, failed } }
+    }
+  )
+
+  ipcMain.handle(
+    'fs:hide-add',
+    async (_event, dir: string, name: string): Promise<Result<string>> => {
+      if (typeof dir !== 'string' || dir.length === 0 || typeof name !== 'string') {
+        return { ok: false, error: { code: 'EINVAL', message: 'No entry to hide' } }
+      }
+
+      // The file lists one name per line, so a name that is empty or spans lines
+      // cannot be spelled in it: refusing is better than writing a line that hides
+      // a different entry — or nothing at all.
+      if (name.trim() === '' || /[\r\n]/.test(name)) {
+        return {
+          ok: false,
+          error: { code: 'EINVAL', message: `"${name}" cannot be listed in ${HIDE_MARKER}` }
+        }
+      }
+
+      try {
+        return { ok: true, data: await addHiddenName(dir, name) }
+      } catch (error) {
+        return { ok: false, error: toFsError(error) }
+      }
     }
   )
 }

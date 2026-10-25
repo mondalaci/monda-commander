@@ -19,7 +19,9 @@ import {
   type PreviewTarget,
   type StageRequest
 } from '@renderer/lib/preview'
+import type { PaneMenuRequest } from '@renderer/lib/paneMenu'
 import FileIcon from '@renderer/components/FileIcon.vue'
+import HoldRing from '@renderer/components/HoldRing.vue'
 import PlaybackOsd from '@renderer/components/PlaybackOsd.vue'
 import { hideMode } from '@renderer/composables/useHideMode'
 import { HIDE_MODE_OFF_TOOLTIP, HIDE_MODE_TOOLTIP } from '@shared/hide'
@@ -27,6 +29,12 @@ import { MEDIA_SCHEME } from '@shared/video'
 import type { PixelSize } from '@shared/types'
 
 const ROW_HEIGHT = 22
+
+/**
+ * How far into a row a menu opened from the keyboard is anchored: past the icon,
+ * at the name, which is what the row leads with and what the menu's header says.
+ */
+const ROW_INSET_X = 34
 
 /**
  * `idle` is no previewable file under the cursor, `probing` is a shape that is
@@ -76,6 +84,12 @@ const emit = defineEmits<{
   (event: 'stage-clock', clock: PlaybackClock | null): void
   (event: 'stage-on'): void
   (event: 'stage-off'): void
+  /**
+   * A row has asked for its menu — a long right-press, Ctrl+right-click, or the
+   * keyboard's Shift+F10 by way of `cursorMenuAnchor`. The menu itself is the
+   * app's: it holds the operations the pane has no business owning.
+   */
+  (event: 'context-menu', request: PaneMenuRequest): void
 }>()
 
 const listEl = ref<HTMLUListElement | null>(null)
@@ -1975,6 +1989,27 @@ function onStagePointerUp(event: MouseEvent): void {
   if (leave) emit('stage-off')
 }
 
+/**
+ * Where this pane's cursor row is, for a menu asked for from the keyboard rather
+ * than from a press — Shift+F10 has nothing to be pointed at, so the row itself is
+ * the anchor. It is the same index-against-`ROW_HEIGHT` arithmetic the windowed
+ * listing is built on, deliberately: the row's element may not be in the document
+ * at all (scrolled out, or under the spacers), and the row's place is still known
+ * exactly.
+ */
+function cursorMenuAnchor(): PaneMenuRequest | null {
+  const entry = props.controller.current()
+  const list = listEl.value
+  if (!entry || entry.isParent || !list) return null
+
+  const box = list.getBoundingClientRect()
+  return {
+    path: entry.path,
+    x: box.left + ROW_INSET_X,
+    y: box.top + props.controller.state.cursor * ROW_HEIGHT - list.scrollTop
+  }
+}
+
 defineExpose({
   contentEl,
   previewRect,
@@ -1983,7 +2018,8 @@ defineExpose({
   seekPreview,
   seekStage,
   toggleStagePlayback,
-  togglePreviewPlayback
+  togglePreviewPlayback,
+  cursorMenuAnchor
 })
 
 // Kept out of the <ul> on purpose: the row list must contain exactly the
@@ -2202,6 +2238,10 @@ onMounted(() => {
   if (listEl.value) listObserver.observe(listEl.value)
   measurePageRows()
   window.addEventListener('mouseup', endPointerDrag)
+  window.addEventListener('mousemove', onHoldMove)
+  // A hold outlives the window's focus if the user leaves mid-press: the release
+  // then happens somewhere this one will never hear about.
+  window.addEventListener('blur', cancelHold)
 })
 
 onBeforeUnmount(() => {
@@ -2215,6 +2255,9 @@ onBeforeUnmount(() => {
   cancelPreviewRead()
   cancelAnimationFrame(scrollAnimation)
   window.removeEventListener('mouseup', endPointerDrag)
+  window.removeEventListener('mousemove', onHoldMove)
+  window.removeEventListener('blur', cancelHold)
+  clearHold()
 })
 
 function onSearchInput(event: Event): void {
@@ -2261,10 +2304,12 @@ function onNameClick(index: number, event: MouseEvent): void {
 }
 
 /**
- * Right-click marks a row, and holding the button paints that mark across
- * every row the pointer enters — the swipe-to-select gesture. The paint mode
- * is decided once, from the row the gesture started on: starting on an
- * unmarked row selects, starting on a marked row clears.
+ * A *dragged* right button paints a mark across every row the pointer enters —
+ * the swipe-to-select gesture, which is where the right button's marking lives:
+ * a press that stays put is a selection (the cursor moves to it) and, held, that
+ * row's menu (see `HoldGesture` below). The paint mode is decided once, from the
+ * row the gesture started on: starting on an unmarked row selects, starting on a
+ * marked row clears.
  */
 let painting: { select: boolean } | null = null
 
@@ -2276,6 +2321,126 @@ let painting: { select: boolean } | null = null
  */
 let draggingCursor = false
 
+/**
+ * How long the right button has to be held, without moving, before the row asks
+ * for its menu — the clock that tells a hold from a click, where `HOLD_SLOP_PX`
+ * tells one from a drag. It is the answer Total Commander settled on for the same
+ * collision (a marking right button meeting a context menu), where the hold is
+ * about a second; it can be shorter here because the hold is *shown* while it
+ * happens (`HOLD_HINT_MS`), where that one gives nothing to look at until the
+ * menu appears.
+ */
+const HOLD_MENU_MS = 450
+
+/**
+ * How long the hold has to last before the pointer says so. A plain right-click —
+ * the selection — is over well inside this, so the ring never flashes on one, and
+ * what it leaves is the wait that is actually there.
+ */
+const HOLD_HINT_MS = 150
+
+/** The rest of the hold, which is therefore how long the ring takes to fill. */
+const HOLD_FILL_MS = HOLD_MENU_MS - HOLD_HINT_MS
+
+/**
+ * How far the pointer may drift while held before the gesture is the *other* one:
+ * a right-drag painting a mark across rows. A trackpad's press wobbles under the
+ * finger, so the slack is real pixels rather than none.
+ */
+const HOLD_SLOP_PX = 6
+
+/**
+ * The right button down on a row, before it is known which gesture it is. The
+ * press itself has already moved the cursor — the row the gesture is about is
+ * therefore the row it is on, whether this ends as a selection, a paint or a
+ * menu. Two things can end what is left:
+ *
+ * - the pointer moves (`beginPaintFromHold`) — the swipe-to-select gesture;
+ * - the hold runs out (`endHoldWithMenu`) — the row's menu.
+ *
+ * The button coming up before the hold runs out ends nothing at all, which is the
+ * point: the click is the selection the press already made, and waiting to see
+ * whether it becomes a hold costs the user nothing. Nothing is marked while it is
+ * pending, for the same reason — a mark made on the press would have to be taken
+ * back when the gesture turns out to be the menu, and taking back something the
+ * user just did is exactly the flicker this avoids.
+ */
+interface HoldGesture {
+  /** The row it went down on, by path: the pane re-lists under a held button. */
+  path: string
+  /** The mark the drag would set, decided from the row as it was pressed. */
+  select: boolean
+  x: number
+  y: number
+  /** The timer that ends the hold. */
+  timer: number
+  /** The timer that puts the ring on the pointer. */
+  hint: number
+}
+
+let hold: HoldGesture | null = null
+
+/** Where the ring is drawn, while there is one to draw. */
+const holdHint = ref<{ x: number; y: number } | null>(null)
+
+function clearHold(): void {
+  if (!hold) return
+  window.clearTimeout(hold.timer)
+  window.clearTimeout(hold.hint)
+  hold = null
+  holdHint.value = null
+}
+
+/**
+ * The hold has run out: this row wants its menu. Nothing has been marked — the
+ * ring is taken down first, so the menu is what the pointer's wait turned into
+ * rather than something drawn over the feedback.
+ */
+function endHoldWithMenu(): void {
+  const gesture = hold
+  if (!gesture) return
+  clearHold()
+  emit('context-menu', { path: gesture.path, x: gesture.x, y: gesture.y })
+}
+
+/**
+ * The pointer left the row it went down on, so the gesture is a paint rather than
+ * a hold. The run starts on the row the button went down on — the mark it would
+ * have set was decided from that row's state as it was pressed — which is what
+ * keeps a swipe beginning exactly where it always did.
+ */
+function beginPaintFromHold(): void {
+  const gesture = hold
+  if (!gesture) return
+  clearHold()
+  props.controller.setSelected(gesture.path, gesture.select)
+  painting = { select: gesture.select }
+}
+
+/**
+ * The pointer moved with the button held. A hold that drifts is not a hold: the
+ * gesture it becomes is the one the button already had.
+ */
+function onHoldMove(event: MouseEvent): void {
+  const gesture = hold
+  if (!gesture) return
+  if (
+    Math.abs(event.clientX - gesture.x) > HOLD_SLOP_PX ||
+    Math.abs(event.clientY - gesture.y) > HOLD_SLOP_PX
+  ) {
+    beginPaintFromHold()
+  }
+}
+
+/**
+ * Focus left the window with the button still down, so no release is coming that
+ * this pane will hear. The gesture is abandoned rather than resolved: neither of
+ * its two answers was asked for.
+ */
+function cancelHold(): void {
+  clearHold()
+}
+
 function onRowLeftDown(index: number): void {
   draggingCursor = true
   props.controller.moveTo(index)
@@ -2283,16 +2448,44 @@ function onRowLeftDown(index: number): void {
 
 function onRowRightDown(index: number, event: MouseEvent): void {
   const entry = props.controller.state.entries[index]
-  if (!entry || entry.isParent) return
+  if (!entry) return
+
+  // The press puts the cursor where it landed, exactly as the left button's does:
+  // the row the gesture is about is the row the cursor is on, which is what a menu
+  // opened by it acts on and what the drag below paints from. A right *click* is
+  // therefore a selection like any other, and the mark is what the drag makes.
+  props.controller.moveTo(index)
+  if (entry.isParent) return
   event.preventDefault()
 
-  const select = !props.controller.isSelected(entry)
-  props.controller.setSelected(entry.path, select)
-  painting = { select }
+  // Ctrl+right-click asks for the menu outright — the immediate half of the
+  // gesture, for when a hold is a wait too long.
+  if (event.ctrlKey || event.metaKey) {
+    emit('context-menu', { path: entry.path, x: event.clientX, y: event.clientY })
+    return
+  }
+
+  clearHold()
+  hold = {
+    path: entry.path,
+    select: !props.controller.isSelected(entry),
+    x: event.clientX,
+    y: event.clientY,
+    timer: window.setTimeout(endHoldWithMenu, HOLD_MENU_MS),
+    hint: window.setTimeout(() => {
+      if (hold) holdHint.value = { x: hold.x, y: hold.y }
+    }, HOLD_HINT_MS)
+  }
 }
 
 function onRowEnter(index: number): void {
   if (draggingCursor) props.controller.moveTo(index)
+
+  // A held button that has reached another row is a paint, not a hold: the pointer
+  // is no longer on the row the press started on. The row it entered is then
+  // painted by the same pass, since a fast flick can cross a row before the
+  // pointer's own movement is reported.
+  if (hold && props.controller.state.entries[index]?.path !== hold.path) beginPaintFromHold()
 
   if (!painting) return
   const entry = props.controller.state.entries[index]
@@ -2301,6 +2494,10 @@ function onRowEnter(index: number): void {
 }
 
 function endPointerDrag(): void {
+  // A right press that comes up before the hold runs out has already done all it
+  // is going to: the cursor moved on the press, and the mark is the drag's. Only
+  // the hold is left pending, and a release ends it.
+  clearHold()
   painting = null
   draggingCursor = false
 }
@@ -2927,5 +3124,18 @@ function onRenameBlur(): void {
         <span class="text-ui-sm text-fg-dim">Esc or right-click to exit</span>
       </div>
     </div>
+
+    <!-- The right button held on a row, with nothing decided yet: the ring fills
+         over the rest of the hold, and what the hold is waiting for depends on
+         how it ends — the menu, or the paint of a drag (see `HoldGesture`). It is
+         drawn in the pane rather than in the app because the gesture is the
+         pane's, and `fixed` because the pointer it is a badge on knows nothing
+         about panes. -->
+    <HoldRing
+      v-if="holdHint"
+      :x="holdHint.x"
+      :y="holdHint.y"
+      :duration="HOLD_FILL_MS"
+    />
   </section>
 </template>

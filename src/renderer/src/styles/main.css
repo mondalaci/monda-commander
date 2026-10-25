@@ -1,6 +1,7 @@
 @import 'tailwindcss';
 @import '@xterm/xterm/css/xterm.css';
 @import './flash.css';
+@import './hold.css';
 @import './notice.css';
 @import './osd.css';
 @import './swap.css';

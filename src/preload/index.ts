@@ -49,6 +49,8 @@ const api: McApi = {
       ipcRenderer.invoke('fs:move', sources, destination, baseDir),
     remove: (targets: string[]): Promise<Result<DeleteOutcome>> =>
       ipcRenderer.invoke('fs:delete', targets),
+    hideAdd: (dir: string, name: string): Promise<Result<string>> =>
+      ipcRenderer.invoke('fs:hide-add', dir, name),
     watch: (dir: string): Promise<void> => ipcRenderer.invoke('fs:watch', dir),
     unwatch: (dir: string): Promise<void> => ipcRenderer.invoke('fs:unwatch', dir),
     onChanged: (handler: (event: FsChangeEvent) => void) => {

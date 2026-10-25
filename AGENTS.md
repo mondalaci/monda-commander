@@ -31,9 +31,13 @@ src/main/windowState.ts  the window's size, position and maximized flag, kept in
                          no display covers cannot be reached, so its position is
                          dropped and its size clamped to the display it lands on
 src/main/ipc/fs.ts       IPC: fs:home, fs:list, fs:read, fs:write, fs:read-image,
-                         fs:image-size, fs:open, fs:reveal
+                         fs:image-size, fs:open, fs:reveal, fs:hide-add
                          (fs:read/fs:write serve the viewer: regular text files
                          only, binary and oversized reads refused/truncated)
+                         (fs:hide-add appends a name to a folder's .mchide file:
+                         the pane menu's way of adding to a hide list, and the
+                         only writer of it — the reader is listDirectory's, and
+                         the two share the format's parsing)
                          (fs:read-image serves a pane footer's preview: a
                          decodable image as a data: URL, downscaled in main
                          when the file is too large to hand over whole)
@@ -91,6 +95,12 @@ src/renderer/src/components/TerminalPane.vue xterm over the active workspace's
                                              and, when expanded, the full terminal
 src/renderer/src/components/FileViewer.vue   Monaco overlay: read-only (F3) or
                                              editable with Ctrl+S (F4)
+src/renderer/src/components/PaneContextMenu.vue a row's menu: the app's own items,
+                                             drawn and driven from the keyboard
+src/renderer/src/components/HoldRing.vue     the ring the pointer carries while the
+                                             right button is held on a row, filling
+                                             over the rest of the hold
+                                             (styles/hold.css)
 src/renderer/src/composables/useWorkspace.ts one tab: its two panes, its shell,
                                              and the per-workspace cwd sync
 src/renderer/src/composables/useShell.ts     createShell(id): one shell session
@@ -119,6 +129,11 @@ src/renderer/src/lib/swapAnimation.ts        how a Ctrl+U exchange is shown: cop
                                              carrying the blur a display puts on the
                                              pane's own content, and the layer they
                                              travel in (styles/swap.css)
+src/renderer/src/lib/paneMenu.ts             what a pane asks a menu for (a row, by
+                                             path, and where it was asked for) and
+                                             what one item of that menu is — the item
+                                             carrying its own action, since the
+                                             operations are the app's
 ```
 
 Keys: `Tab` switches panes, arrows/`Home`/`End`/`PgUp`/`PgDn` move the cursor
@@ -152,9 +167,14 @@ transfer follows. "File" is every row that is not a folder, so a symlink counts
 even when it dangles (a broken `~/.steampath` is a `symlink` row, not a `file`
 one) while a link *to* a folder is a folder like any other — claimed only while
 the command line holds nothing, since a typed `*` is a glob for the shell,
-right-click marks a row and dragging the held button paints that mark across
-rows (holding the left button and dragging instead moves the cursor from row to
-row), `Ctrl+O` toggles the terminal, `Ctrl+R` re-lists the active pane,
+a right press puts the cursor on the row it lands on — the left button's own
+move, since a menu opened there acts on that row — and dragging the held right
+button paints a mark across the rows it crosses (holding the left button and
+dragging instead moves the cursor from row to row), while that same press *held*
+still on a row — or `Ctrl+right-click`, or `Shift+F10`, or the keyboard's own
+menu key — opens the row's menu at the pointer, the click and the hold being told
+apart by time (see below), `Ctrl+O` toggles the terminal, `Ctrl+R` re-lists the
+active pane,
 `Ctrl+T` opens a new terminal — a fresh workspace (two panes at home plus a new
 shell) at the right of the tab strip, focused — `Ctrl+W` closes the active one
 (the last workspace is never closed), `Ctrl+PageDown`/`Ctrl+PageUp` step to the
@@ -283,11 +303,31 @@ alone so it edits the line, and reaching the parent is the `..` row's job.
   whole listing in `state.allEntries` and rebuilds `state.allRows` from it
   (`buildRows`), which is also why `toRows` takes entries and a parent rather
   than a `DirListing`. Blank lines are skipped and each line trimmed, so a
-  Windows line ending or a stray space still matches. The file is filtered like
+  Windows line ending or a stray space still matches. The reading and the writing
+  of that format are one function each, next to each other in `main/ipc/fs.ts`
+  (`parseHiddenNames`, which both go through), because a rule that lived in the
+  reader and not the writer would show up as a name that hides nothing. The
+  writing is `fs:hide-add` — the pane menu's `Hide (add to .mchide)`, so a list can
+  be curated without the file being opened in the editor. It *appends*, leaves a
+  name that is already listed alone (the request is "hide this", not "list this
+  twice"), and adds a newline first when the file does not end in one, since
+  otherwise the new name would join the last line and hide whatever that line
+  spelled; a name that is empty or spans lines is refused, because it cannot be
+  spelled in this format at all. The item is left out of the menu for a name the
+  folder already lists — it is on screen only because the mode is off, and the
+  title bar's dim icon is what says so — and the mode is switched *on* with the
+  write, since the file only says what to leave out and the mode is what leaves it
+  out: a name written into a list nothing is applying would look like the item had
+  done nothing. Both panes showing the folder are told the change is the app's own
+  before the listing is re-read, so the row that was asked to disappear does not
+  sweep as though something had happened behind the app's back; the names come from
+  the listing rather than from a read of the file, which is why the folder is
+  listed again at all. The file is filtered like
   any other entry — naming itself in it hides it too — which is safe because
   Alt+. is always there to reveal what the mode is covering, and the title bar's
   icon still stands for the folder having a list. A *folder* called `.mchide` is
-  not the file, and an unreadable one lists nothing. A name that matches nothing
+  not the file (the write is refused with `EISDIR`, which the pane reports), and an
+  unreadable one lists nothing. A name that matches nothing
   is simply a name: nothing is said about it.
 - **The hide mode is one state for the whole app, and it is remembered.** Alt+.
   flips it (`toggleHideMode` in `composables/useHideMode.ts`), which is a
@@ -349,6 +389,87 @@ alone so it edits the line, and reaching the parent is the `..` row's job.
   returns as soon as the cursor leaves. The gold reaches the size and the date
   too. That is what keeps "the row I am on" and "the row I marked" tellable
   apart when the two coincide.
+- **A right press selects the row it lands on; a right *drag* marks rows; a right
+  press *held* on a row opens that row's menu.** One button, told apart by what
+  the pointer does rather than by a modifier. The press puts the cursor on the row
+  (the left button's own move, and the reason a menu opened there is about that
+  row), travelling past `HOLD_SLOP_PX` makes it the swipe that paints a mark
+  across the rows it crosses, and staying put for `HOLD_MENU_MS` makes it the
+  menu. A single row is therefore *marked* by the drag rather than by the click —
+  a swipe of a few pixels — while `Insert` and `*` are unchanged, and the click is
+  a selection like any other. That is what a hold has to be built out of: the
+  mark belongs to the gesture that means it, so nothing has to be taken back when
+  the press turns out to be the menu instead. Holding is shown rather than guessed
+  at — 150ms in (`HOLD_HINT_MS`) a ring appears where the button went down and
+  fills over the rest of the hold (`HoldRing.vue`, `styles/hold.css`), so a plain
+  click never flashes one — and `HOLD_MENU_MS` is 450ms rather than the second
+  Total Commander uses for exactly this collision (a marking right button meeting
+  a context menu) because the ring makes the wait visible where that one gives
+  nothing to look at until the menu is up. The ring is an element rather than a
+  `cursor:` image because a cursor image cannot animate, and what *decides* the
+  gesture is the JS timer: the animation is decoration, so a throttled or disabled
+  one costs the ring and not the menu. The row entered during a fast flick is
+  painted in the same pass that starts the paint, because `mouseenter` is reported
+  *before* `mousemove` for one pointer move: a swipe that crossed a row inside the
+  slop would otherwise start painting from the wrong place. `Ctrl+right-click` asks
+  for the menu outright, and a hold is abandoned rather than resolved when the
+  window loses focus with the button still down — no release is coming that the
+  pane will hear.
+- **The menu is the app's; the pane only asks for it.** `FilePanel` emits
+  `context-menu` with the row's *path* — a held button gives the pane time to
+  re-list, so an index taken at the press can name a different row by the time it
+  is read — and the app owns the menu (`PaneContextMenu.vue`, `lib/paneMenu.ts`),
+  since the items are the keys' own operations and those are the app's. Opening it
+  puts the cursor on that row: `F5`, `F8` and `F3` act on the cursor, or on the
+  marks, so the row the menu is *about* has to be the row they would act on, or the
+  menu is a trap rather than a shortcut — a mouse press has already moved it, and
+  doing it here as well is what brings the keyboard's route, which has no press
+  behind it, to the same place. The entries are captured as it
+  opens, exactly as the delete and copy dialogs capture their targets, so a
+  refresh under it cannot change what they say or do. **Opening the row is
+  deliberately not an item**: `Enter` and a double-click are the row's own gesture,
+  and a menu that repeats what the pointer has just done is a longer way to the
+  same place — so what the menu carries is what the listing cannot say with one
+  click, which is View/Edit for a file, the full-screen mode for media, the
+  transfers, Rename, Delete, the mark, and `Hide (add to .mchide)` (written up with
+  the file it writes — see the hide mode above). Each item carries the key that does
+  the same thing without a menu, since being where those are found is half of what
+  the menu is for, and the separators are put *between* the groups that came out
+  with something in them rather than written into the list: what a row can offer
+  depends on what it is — a folder has no view, edit or full-screen — and a divider
+  with nothing on one side of it is a line the menu has nothing to say. `Shift+F10`
+  and the
+  keyboard's own `Menu` key ask for it on the cursor row, anchored from the same
+  index-against-`ROW_HEIGHT` arithmetic the windowed listing is built on
+  (`cursorMenuAnchor`), because a scrolled-out row has no element to measure.
+  `Shift+F10` is claimed *globally*, beside `Ctrl+O`/`Ctrl+R`, rather than after
+  the expanded-terminal check: it is the app's own chrome, and it is `Shift+F10`
+  rather than `F10` because `F10` alone is what the programs running in the
+  terminal use (`mc`'s quit, `vim`'s menu). The full-screen presentation is the
+  one it leaves alone: the panes are covered by the display, so a menu about a
+  cursor nobody can see is not a thing to offer — while a display *in a pane*
+  leaves the asking pane's own listing where it was, and its menu is that pane's
+  business like any other. While it is up the menu holds the keyboard by holding
+  the *focus*: its own handler moves the highlight with the arrows and picks with
+  Enter, Escape (claimed by the app, which closes it) is the way out, and
+  `restoreFocus` leaves it alone. **A hidden element cannot be focused**, which is
+  the one thing that has to be got right about that: the menu is drawn `invisible`
+  for the single frame its own size is being measured in, and `focus()` on it while
+  it is still hidden is silently ignored — the arrows then drive the shell's line
+  editor behind the menu, which reads as the menu ignoring the keyboard entirely.
+  So the focus waits for the placement to reach the DOM. As a second line of
+  defence the app also *drops* any key that is not the menu's own
+  (`ownsKey(event.target)`), so a key that arrives while the focus is somewhere
+  else cannot reach the panes or the shell behind a menu that is meant to be the
+  only thing listening. Its backdrop is the
+  whole window, which is what makes a click anywhere else, or a wheel, a
+  dismissal. The backdrop carries `@contextmenu.prevent` for the release that ends
+  a hold: the button is still down when the menu appears, so that release lands on
+  the backdrop, and a platform that fires `contextmenu` on the way *up* would
+  otherwise find an element with no handler for it. That release is deliberately
+  not a click on anything — a menu opened under a held button must not pick the
+  item under the pointer when the button comes up. Two places have no menu on
+  purpose: the `..` row, and the empty space below the listing.
 - **A file the user can run is named in green.** The rule is `isRunnable` in
   `lib/executable.ts`, and it needs both halves: an exec bit on a regular file,
   *and* a name the icon table has not already recognized as data. So a screenshot
