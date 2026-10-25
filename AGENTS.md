@@ -89,7 +89,9 @@ src/renderer/src/components/FilePanel.vue    one pane: path bar, list, footer
                                              icon; the footer previews the cursor's
                                              image, and plays its video; the whole
                                              pane becomes a display when the other
-                                             pane asks it to)
+                                             pane asks it to; and the listing's one
+                                             marked-and-cursored row is drawn by
+                                             styles/mark.css)
 src/renderer/src/components/TerminalPane.vue xterm over the active workspace's
                                              shell: the collapsed command line
                                              and, when expanded, the full terminal
@@ -379,16 +381,28 @@ alone so it edits the line, and reaching the parent is the `..` row's job.
   including the green of something runnable, the size and the date keep the plain
   `text-fg` a filename has, and only the symlink target beside them stays its
   own color — the dim gray of a target that resolves, red when it does not.
-  The band yields to the cursor's blue when the two coincide: the row then takes
-  the cursor's ordinary band (active or inactive) and its text turns the mark's
-  gold (`text-selected`, `--color-selected`). So the background keeps saying
-  where the keyboard is and the text says which rows F5/F6/F8 act on, instead of
-  the two claims competing for one band. The gold outranks even a runnable
-  name's green while the cursor is on the row — the mark is what that row has to
-  say, and a green name would be the one exception that does not — and the green
-  returns as soon as the cursor leaves. The gold reaches the size and the date
-  too. That is what keeps "the row I am on" and "the row I marked" tellable
-  apart when the two coincide.
+  The band yields to the cursor's blue when the two coincide, and the mark is
+  then added to that band rather than replacing it: the row takes the cursor's
+  ordinary band (active or inactive) *plus* `row-mark`, which weaves the mark's
+  gold through the band on a diagonal and frames the row in it. So the background
+  goes on saying where the keyboard is, the weave and the frame say this is one of
+  the rows F5/F6/F8 act on, and every color on the row — the runnable green among
+  them — goes on reading as itself. That is what keeps "the row I am on" and "the
+  row I marked" tellable apart when the two coincide.
+- **How the one row that is both marked and under the cursor is drawn.**
+  `styles/mark.css`, through the `row-mark` class `rowClass` adds: gold woven
+  through the cursor's band on a `\` diagonal, 3px of the mark's gold at 135deg,
+  and a gold frame around the row's whole box in the mark's own bright hue at 70%
+  (`--color-selected`, the yellow that names the mode elsewhere in the app). Two
+  things about that file are deliberate. The band inside the pattern is
+  `transparent` rather than the band's own color, so the row's background-color
+  shows through and the weave lands on the *inactive* pane's grey instead of
+  painting the blue that means "focused". And the weave is withheld while a row is
+  hot (`.row-mark:not(.flash-row)`) rather than outranked, because
+  `background-image` is one property and a refresh sweep and a weave cannot both
+  be on it — the refresh notice is the one that has to be seen, and a question of
+  which stylesheet was imported last is not something to leave a silent rule to.
+  The frame is a `box-shadow`, so it is the one part that stays through the sweep.
 - **A right press selects the row it lands on; a right *drag* marks rows; a right
   press *held* on a row opens that row's menu.** One button, told apart by what
   the pointer does rather than by a modifier. The press puts the cursor on the row

@@ -2508,20 +2508,21 @@ function rowClass(index: number): string {
 
   // A marked row takes the gold band (`bg-marked`) and nothing else, so every
   // text color on the row goes on reading as itself. When the cursor lands on
-  // one, the row takes the cursor's usual band and the mark moves to the text:
-  // gold (`text-selected`) on the blue (or inactive grey) says both "this is
-  // where the keyboard is" and "this is one of the rows F5/F6/F8 act on".
+  // one, the band stays the cursor's — the plain cursor row's own band, so the
+  // only thing telling the two apart is the mark — and the mark is added to it
+  // as `row-mark` (styles/mark.css): gold woven through the band on a diagonal,
+  // and a gold frame around the row. The background goes on saying where the
+  // keyboard is, the weave and the frame say this is one of the rows F5/F6/F8 act
+  // on, and the name, the size and the date keep their own colors — including the
+  // green of something runnable, which an answer carried in the text would have
+  // had to spend.
+  const cursorBand = props.active ? 'bg-selection text-fg-bright' : 'bg-selection-inactive text-fg'
+
   let base: string
   if (entry && props.controller.isSelected(entry)) {
-    if (cursor) {
-      base = props.active
-        ? 'bg-selection text-selected'
-        : 'bg-selection-inactive text-selected'
-    } else {
-      base = 'bg-marked'
-    }
+    base = cursor ? `${cursorBand} row-mark` : 'bg-marked'
   } else if (cursor) {
-    base = props.active ? 'bg-selection text-fg-bright' : 'bg-selection-inactive text-fg'
+    base = cursorBand
   } else {
     base = 'text-fg'
   }
@@ -2533,32 +2534,14 @@ function rowClass(index: number): string {
 
 /**
  * The name's own color: the green of a file the user can run (`--color-runnable`,
- * lib/executable.ts). A marked row keeps it — the mark's band is a tint, so the
- * name goes on reading in its own color. The one exception is the cursor on a
- * marked row: the mark has moved to the text there, and its gold outranks the
- * green, or a runnable would be the one marked row that does not say so.
+ * lib/executable.ts). A marked row keeps it, the one under the cursor included —
+ * that row carries the mark in its band (see `rowClass`), so nothing here has to
+ * take the green away.
  */
 function nameClass(index: number): string {
   const entry = props.controller.state.entries[index]
   if (!entry) return ''
-  if (index === props.controller.state.cursor && props.controller.isSelected(entry)) {
-    return 'text-selected'
-  }
   return isRunnable(entry) ? 'text-runnable' : ''
-}
-
-/**
- * The size and the date. On a marked row the cursor's gold reaches them too
- * (see `rowClass`), so the whole row's text carries the mark while the band
- * goes on saying where the keyboard is; everywhere else they stay `text-fg`.
- */
-function metaClass(index: number): string {
-  const entry = props.controller.state.entries[index]
-  return entry &&
-    index === props.controller.state.cursor &&
-    props.controller.isSelected(entry)
-    ? 'text-selected'
-    : 'text-fg'
 }
 
 /**
@@ -2568,8 +2551,8 @@ function metaClass(index: number): string {
  * link failed, which is a loop, a permission, or by far the common case a
  * target that is not there — so a broken `~/.steampath` reads as broken at a
  * glance. Only the target takes the color; the name goes on reading as the
- * name, and this span is its own either way — the row's cursor and mark have
- * never touched it — so a broken link is red on a marked row too.
+ * name, and this span is its own either way, so a broken link is red on a marked
+ * row too.
  */
 function symlinkTargetClass(index: number): string {
   const entry = props.controller.state.entries[index]
@@ -2813,12 +2796,11 @@ function onRenameBlur(): void {
             </span>
           </span>
 
-          <span class="w-16 shrink-0 text-right tabular-nums" :class="metaClass(row.index)">
+          <span class="w-16 shrink-0 text-right tabular-nums text-fg">
             {{ row.entry.kind === 'directory' ? '' : formatSize(row.entry.size) }}
           </span>
           <span
-            class="w-24 shrink-0 text-right tabular-nums"
-            :class="metaClass(row.index)"
+            class="w-24 shrink-0 text-right tabular-nums text-fg"
             :title="row.entry.isParent ? undefined : formatExactDate(row.entry.mtimeMs)"
           >
             {{ row.entry.isParent ? '' : formatRelativeDate(row.entry.mtimeMs) }}
