@@ -219,10 +219,13 @@ read once on mount before the first listing, so it outlives the window and a
 `.mchide` folder opens the way it was left rather than flashing its contents
 first. The key is claimed *after* the expanded-terminal check on purpose: in a
 real terminal Alt+. is readline's yank-last-arg, and the shell keeps it. The icon
-in the pane title bar is the mode's state — gold eye-off while it is on, a dim
-open eye while it is off, each with its own tooltip naming the file and the key —
-and it appears wherever a folder has a list, so turning the mode off leaves a
-place to see and undo that. The name, the key and both tooltips live in
+in the pane title bar is the mode's state — an eye-off while it is on, a dim open
+eye while it is off, each with its own tooltip naming the file and the key — and
+it appears wherever a folder has a list, so turning the mode off leaves a place
+to see and undo that. The eye-off is drawn in the title text's own color
+(`text-fg-bright` on the active pane, `text-fg-dim` on the other), not the gold
+the marks and the cursor take, so it reads as a note about the pane rather than a
+second selection. The name, the key and both tooltips live in
 `src/shared/hide.ts` so the file and the gesture are spelled one way.
 
 ## Marks, the right button, and the context menu

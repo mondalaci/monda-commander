@@ -2689,11 +2689,14 @@ function onRenameBlur(): void {
         <!-- The mode is otherwise invisible: the rows it covers are simply not
              there, so nothing in the listing says they were left out on purpose.
              The icon is a state as much as a notice — the dim open eye is the
-             mode switched off in a folder that still has a list to apply. -->
+             mode switched off in a folder that still has a list to apply, and the
+             eye-off that says it is on is the title's own color rather than the
+             gold the marks and the cursor take, so nothing here competes with a
+             selection further down. -->
         <span
           v-if="hideListed"
           class="flex shrink-0 items-center"
-          :class="hideMode ? 'text-selected' : 'text-fg-dim'"
+          :class="hideMode && active ? 'text-fg-bright' : 'text-fg-dim'"
           :title="hideMode ? HIDE_MODE_TOOLTIP : HIDE_MODE_OFF_TOOLTIP"
           aria-hidden="true"
         >

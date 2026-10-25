@@ -161,7 +161,8 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   is a module-level ref; covered marks are dropped (`pruneSelection`); it is
   persisted via `hide:get`/`hide:set` to `userData/hide-mode.json` and read once
   on mount before the first listing. Alt+. is claimed *after* the
-  expanded-terminal check. The title-bar icon is gold eye-off (on) / dim eye (off).
+  expanded-terminal check. The pane title bar's icon is an eye-off (on) / a dim
+  eye (off), both in the title text's color, never gold.
 
 ### Marks, the right button, and the context menu
 
