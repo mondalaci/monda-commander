@@ -199,7 +199,9 @@ part of the one argument, and both typed into the shell's own line so its echo
 and history see a real command line), `Alt+.` switches the hide mode off and on
 — a `.mchide` file in a folder lists entries for it to leave out, and the mode is
 one remembered state for the whole app, so the gesture is the panes' rather than
-the shell's: in a real terminal `Alt+.` stays readline's yank-last-arg — `F5`
+the shell's: in a real terminal `Alt+.` stays readline's yank-last-arg, as
+`Alt+S`, `Alt+A`, `Alt+Enter`, `Ctrl+R` and `Shift+F10` stay the program's there
+too (see the strip below) — `F5`
 copies the marked entries (or the
 cursor row) into the other pane, `F6` moves them there (both take a destination
 field naming a directory to act into, but for a single entry a path that is not
@@ -218,7 +220,17 @@ back replays its session buffer (see `useWorkspace.ts`).
 The bottom strip is the active workspace's shell itself: the same xterm,
 collapsed to a single visible line, so the prompt, font and echo are the shell's
 own rather than a look-alike widget. `Ctrl+O` expands it into the full terminal,
-which then owns the keyboard outright. While it is collapsed, printable
+which then owns the keyboard outright — and *outright* is the word: what
+`onKeydown` claims below that check is gestures for a *pane* (its listing, the
+row under its cursor, the mode it is in), which an expanded terminal has left no
+room to be seen in, so they are all handed to whatever is running in it.
+Midnight commander is what makes that matter, since the gesture and the program
+want the same key: `Alt+S` (Search), `Alt+A` (PutCurrentPath), `Alt+Enter`
+(PutCurrentSelected), `Ctrl+R` (Reread) and `Alt+.` (ShowHidden) are pane
+gestures of ours *and* of mc's, and a plain shell's readline has `Ctrl+R` and
+`Alt+.` of its own. Above that line is only the app's own chrome — the overlays,
+`Ctrl+O`, the tab keys, and the `Escape` of a display that covers the whole
+window. While it is collapsed, printable
 characters go to the shell and navigation keys still drive the panels; `Enter`
 runs the typed line, or activates the panel entry when the line is empty. `Backspace` is left
 alone so it edits the line, and reaching the parent is the `..` row's job.
@@ -456,8 +468,9 @@ alone so it edits the line, and reaching the parent is the `..` row's job.
   keyboard's own `Menu` key ask for it on the cursor row, anchored from the same
   index-against-`ROW_HEIGHT` arithmetic the windowed listing is built on
   (`cursorMenuAnchor`), because a scrolled-out row has no element to measure.
-  `Shift+F10` is claimed *globally*, beside `Ctrl+O`/`Ctrl+R`, rather than after
-  the expanded-terminal check: it is the app's own chrome, and it is `Shift+F10`
+  `Shift+F10` is claimed after the expanded-terminal check, with the panes' own
+  keys, since what it is about is a row of a listing an expanded terminal has left
+  no room for, and it is `Shift+F10`
   rather than `F10` because `F10` alone is what the programs running in the
   terminal use (`mc`'s quit, `vim`'s menu). The full-screen presentation is the
   one it leaves alone: the panes are covered by the display, so a menu about a
@@ -789,6 +802,11 @@ alone so it edits the line, and reaching the parent is the `..` row's job.
   Everything else is untouched: the pane that asked keeps the keyboard, so
   arrowing still browses the folder and the media follows the cursor; seek,
   play/pause, the wheel, the transport and the sound ramp are the same code. The
+  display is the panes' business, so a pane presentation's `Tab` and `Escape` are
+  claimed with the panes' other keys — only while the panes hold the keyboard —
+  while the full-screen presentation, covering the window, owns the two wherever
+  the keyboard is, as the viewer owns its `Escape`: a terminal nobody can see must
+  not be the thing that answers them. The
   reveal still grows out of the footer thumbnail — the source pane is behind the
   overlay, not unmounted, so its footer is still measurable — and the reverse
   still shrinks back onto it. A display that is already up changes *presentation*

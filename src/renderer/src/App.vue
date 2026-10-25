@@ -1390,10 +1390,90 @@ function onKeydown(event: KeyboardEvent): void {
     return
   }
 
-  // A display is a mode of the panes rather than an overlay of their own: the
-  // cursor stays in the pane that asked for it, so Tab must not move the
-  // keyboard — and with it which cursor is being displayed — to the other pane,
-  // and Escape is what leaves.
+  // A display *over the whole window* is the one presentation that is not the
+  // panes' any more: it is drawn over everything, so it owns its keys wherever
+  // the keyboard is, exactly like the viewer — a terminal nobody can see must not
+  // be the thing that answers them. The presentation inside a pane is a mode of
+  // the panes and keeps its keys below, with the rest of them.
+  if (stageFullscreen.value) {
+    if (event.key === 'Escape') {
+      consume(event)
+      exitStage()
+      return
+    }
+    if (event.key === 'Tab') {
+      consume(event)
+      return
+    }
+  }
+
+  const isTerminalToggle =
+    event.ctrlKey &&
+    !event.shiftKey &&
+    !event.altKey &&
+    !event.metaKey &&
+    event.key.toLowerCase() === 'o'
+
+  if (isTerminalToggle) {
+    event.preventDefault()
+    event.stopPropagation()
+    toggleTerminal()
+    return
+  }
+
+  // Shift+Ctrl+PageUp/PageDown reorder the active tab rather than stepping to
+  // another one. Claimed globally, like the plain-Ctrl tab keys below.
+  if (isCtrlShift(event) && (event.key === 'PageUp' || event.key === 'PageDown')) {
+    consume(event)
+    moveWorkspace(activeIndex.value, activeIndex.value + (event.key === 'PageUp' ? -1 : 1))
+    return
+  }
+
+  // Workspace tabs are the app's own chrome rather than a pane's, so they are
+  // claimed like Ctrl+O, above the terminal: a new terminal is wanted from
+  // inside the one that is running, and a tab that could not be closed while it
+  // was in front would be a tab the terminal owns.
+  if (isPlainCtrl(event)) {
+    const key = event.key.toLowerCase()
+    if (key === 't') {
+      consume(event)
+      addWorkspace()
+      return
+    }
+    if (key === 'w') {
+      consume(event)
+      closeWorkspace(activeIndex.value)
+      return
+    }
+    if (event.key === 'PageDown') {
+      consume(event)
+      switchWorkspace(1)
+      return
+    }
+    if (event.key === 'PageUp') {
+      consume(event)
+      switchWorkspace(-1)
+      return
+    }
+  }
+
+  // Expanded and focused means it is a real terminal, and that is the whole of
+  // what decides the keys below: every one of them is a gesture for a *pane* —
+  // its listing, the row under its cursor, the mode it is in — and an expanded
+  // terminal leaves the panes no height to be seen in, so they have no claim on
+  // the key. Handing it over is not a small thing either, because the programs
+  // running there want these keys: midnight commander binds Alt+S to Search,
+  // Alt+A to PutCurrentPath, Alt+Enter to PutCurrentSelected, Ctrl+R to Reread
+  // and Alt+. to ShowHidden, and a plain shell's readline binds Ctrl+R to
+  // reverse-search and Alt+. to yank-last-arg. What is claimed *above* this line
+  // is the app's own chrome — the overlays, Ctrl+O, the tab keys, a display over
+  // the whole window — which has to work wherever the keyboard is.
+  if (terminalExpanded.value && terminalFocused.value) return
+
+  // A display *inside a pane* is a mode of the panes rather than an overlay of
+  // their own: the cursor stays in the pane that asked for it, so Tab must not
+  // move the keyboard — and with it which cursor is being displayed — to the
+  // other pane, and Escape is what leaves.
   if (stageSide.value !== null) {
     if (event.key === 'Escape') {
       consume(event)
@@ -1406,6 +1486,9 @@ function onKeydown(event: KeyboardEvent): void {
     }
   }
 
+  // Alt+S starts an incremental search in the pane being browsed, over the
+  // listing the pane is showing — which is what makes it the panes' rather than
+  // the shell's.
   const isSearchToggle =
     event.altKey &&
     !event.ctrlKey &&
@@ -1414,16 +1497,15 @@ function onKeydown(event: KeyboardEvent): void {
     event.code === 'KeyS'
 
   if (isSearchToggle) {
-    event.preventDefault()
-    event.stopPropagation()
+    consume(event)
     toggleSearch()
     return
   }
 
   // Alt+Enter and Alt+A paste the cursor's entry onto the command line: its
-  // name, and the directory holding it closed with a separator. Claimed
-  // globally, like Alt+S, so they work wherever the keyboard is — the collapsed
-  // strip is the shell's own line either way.
+  // name, and the directory holding it closed with a separator. They are the
+  // pane's own too — the entry they paste is the row under a cursor nobody can
+  // see once the terminal has the room.
   const isPasteName =
     event.altKey &&
     !event.ctrlKey &&
@@ -1450,20 +1532,8 @@ function onKeydown(event: KeyboardEvent): void {
     return
   }
 
-  const isTerminalToggle =
-    event.ctrlKey &&
-    !event.shiftKey &&
-    !event.altKey &&
-    !event.metaKey &&
-    event.key.toLowerCase() === 'o'
-
-  if (isTerminalToggle) {
-    event.preventDefault()
-    event.stopPropagation()
-    toggleTerminal()
-    return
-  }
-
+  // Ctrl+R re-lists the pane being browsed (mc's Reread), rather than clearing
+  // the shell's screen, which is what Ctrl+L is for.
   const isRefresh =
     event.ctrlKey &&
     !event.shiftKey &&
@@ -1472,18 +1542,17 @@ function onKeydown(event: KeyboardEvent): void {
     event.key.toLowerCase() === 'r'
 
   if (isRefresh) {
-    event.preventDefault()
-    event.stopPropagation()
+    consume(event)
     void activePane.value.refresh()
     return
   }
 
   // Shift+F10 — and the keyboard's own menu key — ask for the pane menu: the
-  // keyboard's half of the long right-press, on the cursor row. Claimed globally
-  // like Ctrl+O and Ctrl+R, because it is the app's own chrome rather than a key
-  // of the shell's, and it is Shift+F10 rather than F10 because F10 alone is what
-  // the programs running in the terminal use (mc's quit, vim's menu). The menu
-  // key carries no modifier because it *is* the gesture: nothing else means it.
+  // keyboard's half of the long right-press, on the cursor row. It is Shift+F10
+  // rather than F10 because F10 alone is what the programs running in the
+  // terminal use (mc's quit, vim's menu), and the menu key carries no modifier
+  // because it *is* the gesture: nothing else means it. Both act on a row of the
+  // pane's listing, so they are claimed here with the rest of the panes' keys.
   const isPaneMenu =
     event.key === 'ContextMenu' ||
     (event.key === 'F10' &&
@@ -1498,47 +1567,9 @@ function onKeydown(event: KeyboardEvent): void {
     return
   }
 
-  // Shift+Ctrl+PageUp/PageDown reorder the active tab rather than stepping to
-  // another one. Claimed globally, like the plain-Ctrl tab keys below.
-  if (isCtrlShift(event) && (event.key === 'PageUp' || event.key === 'PageDown')) {
-    consume(event)
-    moveWorkspace(activeIndex.value, activeIndex.value + (event.key === 'PageUp' ? -1 : 1))
-    return
-  }
-
-  // Workspace tabs are claimed globally, like Ctrl+O and Ctrl+R, so they manage
-  // tabs even while the expanded terminal owns the keyboard.
-  if (isPlainCtrl(event)) {
-    const key = event.key.toLowerCase()
-    if (key === 't') {
-      consume(event)
-      addWorkspace()
-      return
-    }
-    if (key === 'w') {
-      consume(event)
-      closeWorkspace(activeIndex.value)
-      return
-    }
-    if (event.key === 'PageDown') {
-      consume(event)
-      switchWorkspace(1)
-      return
-    }
-    if (event.key === 'PageUp') {
-      consume(event)
-      switchWorkspace(-1)
-      return
-    }
-  }
-
-  // Expanded and focused means it is a real terminal: it owns the keyboard.
-  if (terminalExpanded.value && terminalFocused.value) return
-
-  // Alt+. switches the hide mode off and on. It is claimed here rather than with
-  // the global Alt keys above on purpose: in a real terminal Alt+. is readline's
-  // yank-last-arg, and the shell is welcome to it — this is a pane gesture, for
-  // the panes' own listing.
+  // Alt+. switches the hide mode off and on: the panes' own gesture, for the
+  // panes' own listing — and readline's yank-last-arg in a real terminal, which
+  // is why it is claimed here rather than anywhere above.
   const isHideToggle =
     event.altKey &&
     !event.ctrlKey &&
