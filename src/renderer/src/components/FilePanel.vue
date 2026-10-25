@@ -2304,14 +2304,19 @@ function onNameClick(index: number, event: MouseEvent): void {
 }
 
 /**
- * A *dragged* right button paints a mark across every row the pointer enters —
- * the swipe-to-select gesture, which is where the right button's marking lives:
- * a press that stays put is a selection (the cursor moves to it) and, held, that
- * row's menu (see `HoldGesture` below). The paint mode is decided once, from the
- * row the gesture started on: starting on an unmarked row selects, starting on a
- * marked row clears.
+ * A *dragged* right button paints a mark across the rows it sweeps over — the
+ * swipe-to-select gesture, which is where the right button's marking lives: a
+ * press that stays put is the same mark made on the release, and one that is held
+ * is that row's menu (see `HoldGesture` below). The paint mode is decided once,
+ * from the row the gesture started on: starting on an unmarked row selects,
+ * starting on a marked row clears.
+ *
+ * `last` is the row the sweep most recently painted, which is what the next row
+ * it reaches fills *from* — the pointer is only reported at a certain rate, so
+ * the rows between two of its reports are exactly the ones a fast flick would
+ * otherwise leave out of the region being drawn.
  */
-let painting: { select: boolean } | null = null
+let painting: { select: boolean; last: number } | null = null
 
 /**
  * The left button held down over the listing: the cursor follows the pointer
@@ -2350,25 +2355,30 @@ const HOLD_FILL_MS = HOLD_MENU_MS - HOLD_HINT_MS
 const HOLD_SLOP_PX = 6
 
 /**
- * The right button down on a row, before it is known which gesture it is. The
- * press itself has already moved the cursor — the row the gesture is about is
- * therefore the row it is on, whether this ends as a selection, a paint or a
- * menu. Two things can end what is left:
+ * The right button down on a row, before it is known which of the gesture's three
+ * endings it is. The press itself moves nothing — not the cursor and not a mark —
+ * because which ending it is is exactly what it has not said yet:
  *
- * - the pointer moves (`beginPaintFromHold`) — the swipe-to-select gesture;
- * - the hold runs out (`endHoldWithMenu`) — the row's menu.
+ * - the pointer travels past `HOLD_SLOP_PX` (`beginPaintFromHold`) — the
+ *   swipe-to-select, painting the rows it sweeps over;
+ * - another row is reached (`onRowEnter`, for a flick that crosses one before the
+ *   pointer's movement is reported) — the same sweep;
+ * - the hold runs out (`endHoldWithMenu`) — the row's menu, at the pointer;
+ * - the button comes up first (`endPointerDrag`) — the *click*, whose mark is made
+ *   on the release.
  *
- * The button coming up before the hold runs out ends nothing at all, which is the
- * point: the click is the selection the press already made, and waiting to see
- * whether it becomes a hold costs the user nothing. Nothing is marked while it is
- * pending, for the same reason — a mark made on the press would have to be taken
- * back when the gesture turns out to be the menu, and taking back something the
- * user just did is exactly the flicker this avoids.
+ * Nothing is marked while it is pending, for the same reason the press does not
+ * mark: a mark made on the way down would have to be taken back when the gesture
+ * turns out to be the menu, and taking back something the user just did is
+ * exactly the flicker this avoids. Each ending but the release clears the gesture,
+ * so the release that follows a menu or a sweep has nothing left to do.
  */
 interface HoldGesture {
   /** The row it went down on, by path: the pane re-lists under a held button. */
   path: string
-  /** The mark the drag would set, decided from the row as it was pressed. */
+  /** Its place in the listing then, which a sweep re-reads from the path. */
+  index: number
+  /** The mark a click or a sweep would set, decided from the row as it was pressed. */
   select: boolean
   x: number
   y: number
@@ -2404,17 +2414,57 @@ function endHoldWithMenu(): void {
 }
 
 /**
- * The pointer left the row it went down on, so the gesture is a paint rather than
- * a hold. The run starts on the row the button went down on — the mark it would
- * have set was decided from that row's state as it was pressed — which is what
- * keeps a swipe beginning exactly where it always did.
+ * Where a row is in the listing *now*, falling back to the index the gesture
+ * recorded when the row it names is gone: the pane re-lists on its own — under a
+ * held button as much as at rest — so an index taken at the press can point at a
+ * different row by the time the sweep reads it, while the path is what the row
+ * *is*.
+ */
+function listingIndexOf(path: string, fallback: number): number {
+  const index = props.controller.state.entries.findIndex((row) => row.path === path)
+  return index >= 0 ? index : fallback
+}
+
+/**
+ * The pointer left the row it went down on, so the gesture is a sweep rather than
+ * a hold or a click. The run starts on the row the button went down on — the mark
+ * it would have set was decided from that row's state as it was pressed — which is
+ * what keeps a swipe beginning exactly where it always did.
  */
 function beginPaintFromHold(): void {
   const gesture = hold
   if (!gesture) return
   clearHold()
   props.controller.setSelected(gesture.path, gesture.select)
-  painting = { select: gesture.select }
+  painting = { select: gesture.select, last: listingIndexOf(gesture.path, gesture.index) }
+}
+
+/**
+ * Paint every row between the one the sweep last painted and the one the pointer
+ * has just reached, so the mark covers the whole region swept rather than the rows
+ * the pointer happened to be *reported* over: pointer events arrive at their own
+ * rate, so a flick crosses a dozen rows between two of them, and those rows are
+ * exactly the ones the gesture was drawing a line through. The value is the
+ * sweep's own — a paint, not a per-row toggle — so crossing a row twice, or coming
+ * back over it, leaves it as the gesture first set it. The ".." row is skipped
+ * like every other selection.
+ */
+function paintSweepTo(index: number): void {
+  const sweep = painting
+  if (!sweep) return
+
+  const last = props.controller.state.entries.length - 1
+  const to = Math.min(Math.max(index, 0), last)
+  const from = Math.min(Math.max(sweep.last, 0), last)
+  const step = to >= from ? 1 : -1
+
+  for (let i = from; ; i += step) {
+    const row = props.controller.state.entries[i]
+    if (row && !row.isParent) props.controller.setSelected(row.path, sweep.select)
+    if (i === to) break
+  }
+
+  sweep.last = to
 }
 
 /**
@@ -2434,8 +2484,8 @@ function onHoldMove(event: MouseEvent): void {
 
 /**
  * Focus left the window with the button still down, so no release is coming that
- * this pane will hear. The gesture is abandoned rather than resolved: neither of
- * its two answers was asked for.
+ * this pane will hear. The gesture is abandoned rather than resolved: none of its
+ * endings was asked for.
  */
 function cancelHold(): void {
   clearHold()
@@ -2448,14 +2498,13 @@ function onRowLeftDown(index: number): void {
 
 function onRowRightDown(index: number, event: MouseEvent): void {
   const entry = props.controller.state.entries[index]
-  if (!entry) return
+  if (!entry || entry.isParent) return
 
-  // The press puts the cursor where it landed, exactly as the left button's does:
-  // the row the gesture is about is the row the cursor is on, which is what a menu
-  // opened by it acts on and what the drag below paints from. A right *click* is
-  // therefore a selection like any other, and the mark is what the drag makes.
-  props.controller.moveTo(index)
-  if (entry.isParent) return
+  // The press says *which* row the gesture is about and nothing more — by path,
+  // because the pane re-lists under a held button — and the release is what says
+  // whether it was a click. The cursor is deliberately left alone: a right-click
+  // marks a row, and where the keyboard is standing is not a thing marking moves
+  // (the menu moves it, since the menu's items are the keys' own operations).
   event.preventDefault()
 
   // Ctrl+right-click asks for the menu outright — the immediate half of the
@@ -2468,6 +2517,7 @@ function onRowRightDown(index: number, event: MouseEvent): void {
   clearHold()
   hold = {
     path: entry.path,
+    index,
     select: !props.controller.isSelected(entry),
     x: event.clientX,
     y: event.clientY,
@@ -2481,25 +2531,30 @@ function onRowRightDown(index: number, event: MouseEvent): void {
 function onRowEnter(index: number): void {
   if (draggingCursor) props.controller.moveTo(index)
 
-  // A held button that has reached another row is a paint, not a hold: the pointer
+  // A held button that has reached another row is a sweep, not a hold: the pointer
   // is no longer on the row the press started on. The row it entered is then
   // painted by the same pass, since a fast flick can cross a row before the
   // pointer's own movement is reported.
   if (hold && props.controller.state.entries[index]?.path !== hold.path) beginPaintFromHold()
 
-  if (!painting) return
-  const entry = props.controller.state.entries[index]
-  if (!entry || entry.isParent) return
-  props.controller.setSelected(entry.path, painting.select)
+  paintSweepTo(index)
 }
 
 function endPointerDrag(): void {
-  // A right press that comes up before the hold runs out has already done all it
-  // is going to: the cursor moved on the press, and the mark is the drag's. Only
-  // the hold is left pending, and a release ends it.
+  // A right press still pending is the *click*, and its mark is made now, on the
+  // release, rather than on the way down: that is what leaves the hold free to be
+  // the menu instead, and it is why a press that becomes either of the other two
+  // endings — both of which clear the gesture — marks nothing at all. The row is
+  // looked up by path because the listing may have been re-read under the press,
+  // and the mark is the one the press decided: the value that row was not.
+  const pending = hold
   clearHold()
   painting = null
   draggingCursor = false
+  if (!pending) return
+
+  const entry = props.controller.state.entries.find((row) => row.path === pending.path)
+  if (entry && !entry.isParent) props.controller.setSelected(entry.path, pending.select)
 }
 
 function rowClass(index: number): string {

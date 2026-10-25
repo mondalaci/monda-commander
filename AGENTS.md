@@ -169,13 +169,16 @@ transfer follows. "File" is every row that is not a folder, so a symlink counts
 even when it dangles (a broken `~/.steampath` is a `symlink` row, not a `file`
 one) while a link *to* a folder is a folder like any other — claimed only while
 the command line holds nothing, since a typed `*` is a glob for the shell,
-a right press puts the cursor on the row it lands on — the left button's own
-move, since a menu opened there acts on that row — and dragging the held right
-button paints a mark across the rows it crosses (holding the left button and
-dragging instead moves the cursor from row to row), while that same press *held*
-still on a row — or `Ctrl+right-click`, or `Shift+F10`, or the keyboard's own
-menu key — opens the row's menu at the pointer, the click and the hold being told
-apart by time (see below), `Ctrl+O` toggles the terminal, `Ctrl+R` re-lists the
+a right press marks the row it lands on, on the *release* rather than on the way
+down, and leaves the cursor where it was — the right button marks, the left one
+is where the cursor goes — while dragging the held right button paints that same
+mark across every row it sweeps over, the rows between its own reports filled in
+as it goes (holding the left button and dragging instead moves the cursor from
+row to row), and that same press *held* still on a row — or `Ctrl+right-click`,
+or `Shift+F10`, or the keyboard's own menu key — opens the row's menu at the
+pointer, the click, the sweep and the hold being told apart by time and by what
+the pointer does rather than by a modifier (see below), `Ctrl+O` toggles the
+terminal, `Ctrl+R` re-lists the
 active pane,
 `Ctrl+T` opens a new terminal — a fresh workspace (two panes at home plus a new
 shell) at the right of the tab strip, focused — `Ctrl+W` closes the active one
@@ -415,17 +418,23 @@ alone so it edits the line, and reaching the parent is the `..` row's job.
   be on it — the refresh notice is the one that has to be seen, and a question of
   which stylesheet was imported last is not something to leave a silent rule to.
   The frame is a `box-shadow`, so it is the one part that stays through the sweep.
-- **A right press selects the row it lands on; a right *drag* marks rows; a right
-  press *held* on a row opens that row's menu.** One button, told apart by what
-  the pointer does rather than by a modifier. The press puts the cursor on the row
-  (the left button's own move, and the reason a menu opened there is about that
-  row), travelling past `HOLD_SLOP_PX` makes it the swipe that paints a mark
-  across the rows it crosses, and staying put for `HOLD_MENU_MS` makes it the
-  menu. A single row is therefore *marked* by the drag rather than by the click —
-  a swipe of a few pixels — while `Insert` and `*` are unchanged, and the click is
-  a selection like any other. That is what a hold has to be built out of: the
-  mark belongs to the gesture that means it, so nothing has to be taken back when
-  the press turns out to be the menu instead. Holding is shown rather than guessed
+- **A right *click* toggles the row's mark on the release; a right *drag* paints
+  one across the rows it sweeps over; a right press *held* on a row opens that
+  row's menu.** One button, told apart by what the pointer does rather than by a
+  modifier, and none of the three moves the cursor: the right button marks a row
+  and the left one is where the cursor goes, so a mark is not also a jump. The
+  press itself therefore settles nothing but *which* row the gesture is about,
+  taken by path because a held button gives the pane time to re-list: travelling
+  past `HOLD_SLOP_PX` makes it the sweep, staying put for `HOLD_MENU_MS` makes it
+  the menu, and the button coming up first makes it the click — whose mark is
+  applied on the release, which is exactly what leaves the hold free to be the
+  menu instead. So *nothing* is marked while the press is pending, and the ending
+  that turns out to be the menu has nothing to take back: the mark belongs to the
+  gesture that means it. The mark the click would set is decided from the row as it
+  was pressed — the value that row was *not*, so a marked row unmarks — and that
+  one answer is what a sweep paints too: a paint rather than a per-row toggle, so
+  crossing a row twice, or coming back over it, leaves it as the gesture first set
+  it. Holding is shown rather than guessed
   at — 150ms in (`HOLD_HINT_MS`) a ring appears where the button went down and
   fills over the rest of the hold (`HoldRing.vue`, `styles/hold.css`), so a plain
   click never flashes one — and `HOLD_MENU_MS` is 450ms rather than the second
@@ -434,8 +443,14 @@ alone so it edits the line, and reaching the parent is the `..` row's job.
   nothing to look at until the menu is up. The ring is an element rather than a
   `cursor:` image because a cursor image cannot animate, and what *decides* the
   gesture is the JS timer: the animation is decoration, so a throttled or disabled
-  one costs the ring and not the menu. The row entered during a fast flick is
-  painted in the same pass that starts the paint, because `mouseenter` is reported
+  one costs the ring and not the menu. The sweep is a *region*, not the rows the
+  pointer was reported over (`paintSweepTo`): pointer events arrive at their own
+  rate, so a flick crosses a dozen rows between two of them, and the rows it
+  crossed are what the gesture was drawing a line through — each one paints
+  forward from the last row it painted, which is also what makes a fast flick
+  correct rather than merely less wrong, since the row it started painting from is
+  the row the button went down on. The row entered during a fast flick is
+  painted in the same pass that starts the sweep, because `mouseenter` is reported
   *before* `mousemove` for one pointer move: a swipe that crossed a row inside the
   slop would otherwise start painting from the wrong place. `Ctrl+right-click` asks
   for the menu outright, and a hold is abandoned rather than resolved when the
@@ -448,9 +463,11 @@ alone so it edits the line, and reaching the parent is the `..` row's job.
   since the items are the keys' own operations and those are the app's. Opening it
   puts the cursor on that row: `F5`, `F8` and `F3` act on the cursor, or on the
   marks, so the row the menu is *about* has to be the row they would act on, or the
-  menu is a trap rather than a shortcut — a mouse press has already moved it, and
-  doing it here as well is what brings the keyboard's route, which has no press
-  behind it, to the same place. The entries are captured as it
+  menu is a trap rather than a shortcut. And it is the menu that has to do it, since
+  the right press that asks for it moves the cursor nowhere (see the right button
+  above): this is the one thing that brings both routes to the same place — the
+  pointer's, which marks rather than moves, and the keyboard's `Shift+F10`, which
+  has no press behind it at all. The entries are captured as it
   opens, exactly as the delete and copy dialogs capture their targets, so a
   refresh under it cannot change what they say or do. **Opening the row is
   deliberately not an item**: `Enter` and a double-click are the row's own gesture,
