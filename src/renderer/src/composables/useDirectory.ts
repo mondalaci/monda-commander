@@ -76,6 +76,7 @@ export interface PaneController {
   deletionTargets(): PaneEntry[]
   copyEntries(destination: string): Promise<string | null>
   moveEntries(destination: string): Promise<string | null>
+  createDirectory(name: string): Promise<string | null>
   deleteEntries(): Promise<void>
   openSearch(): void
   updateSearch(query: string): void
@@ -739,6 +740,35 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     return result.data.destination
   }
 
+  /**
+   * Make a directory inside this pane's own directory (F7). The name is what the
+   * user typed: a plain folder name, or a path — absolute, or relative to this
+   * pane, exactly as the transfer dialogs read their destination. Main refuses a
+   * name that is already there and answers the resolved directory, which the pane
+   * then re-lists onto: the cursor lands on the new folder, the way an in-place
+   * rename lands on the renamed entry. A name that cannot be made (a collision, a
+   * permission, a missing parent) surfaces through the pane's error line with the
+   * directory untouched.
+   */
+  async function createDirectory(name: string): Promise<string | null> {
+    const wanted = name.trim()
+    if (!wanted || !state.path) return null
+
+    const result = await window.mc.fs.mkdir(state.path, wanted)
+    if (!result.ok) {
+      state.error = `${result.error.code}: ${result.error.message}`
+      return null
+    }
+
+    state.error = null
+    // A filter is closed before the re-list, exactly as an in-place rename closes
+    // one: the folder just made is what the cursor is meant to land on, and a
+    // query it does not match would hide it the moment it appears.
+    if (state.searchActive) closeSearch()
+    await refresh(result.data)
+    return result.data
+  }
+
   async function deleteEntries(): Promise<void> {
     const targets = deletionTargets()
     if (targets.length === 0) return
@@ -847,6 +877,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     deletionTargets,
     copyEntries,
     moveEntries,
+    createDirectory,
     deleteEntries,
     openSearch,
     updateSearch,

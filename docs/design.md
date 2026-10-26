@@ -418,6 +418,26 @@ pane's box changing rather than the listing moving, which is a resize
 shell takes no second command, so Enter on an executable while one runs is refused
 with the pane's own notice rather than fed to whatever is running.
 
+### `F7` creates a directory, and the dialog takes a name rather than a path field
+
+Making a folder is the sibling of `F5`/`F6`/`F8`, so it is the same shape: a key
+stages a modal the app owns (`ConfirmMkdir.vue`, `mkdirOpen` in `App.vue`) and the
+dialog's confirm is what acts. The field is a *name*, not a destination: the pane
+the gesture was made on is where the folder goes (`activePane`), and the name is
+what to call it — while a path typed there still works, resolved by main the way
+the transfer dialogs resolve their destination (absolute as given, relative
+against the pane), so `notes` and `~/work/notes` both land where they read.
+`fs:mkdir` is deliberately *not* recursive: the gesture is "make this directory",
+so a name that is already there is an `EEXIST` the pane reports through its notice
+rather than a success that changed nothing, and a missing parent is a real error
+rather than a chain of folders nobody asked for. (The transfers *are* recursive,
+because there a folder destination is a place to put things, not the thing asked
+for.) The resolved directory comes back, so the pane re-lists with its cursor on
+the new folder, exactly as an in-place rename lands on the renamed entry, and
+every pane showing that directory is muted around the operation (`beginSelfChange`)
+so the folder it just made does not sweep as though a program had written it —
+the same reason `mkdir foo` at the prompt is muted.
+
 ## The preview footer
 
 ### Images

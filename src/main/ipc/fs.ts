@@ -565,6 +565,50 @@ export function registerFsHandlers(): void {
     }
   )
 
+  /**
+   * Make a directory for the pane the gesture was made in (F7). The name is
+   * whatever the user typed: a plain folder name, or a path — absolute, or
+   * relative to the pane's directory, exactly as the transfer dialogs resolve
+   * their destination. Creation is deliberately *not* recursive: the gesture is
+   * "make this directory", so a name that is already there (`EEXIST`) or one
+   * whose parent is not (`ENOENT`) is the honest answer rather than something
+   * papered over by making a chain of folders, and `recursive` would report an
+   * existing directory as a silent success. The resolved directory that was made
+   * is returned, so the pane can land its cursor on it.
+   */
+  ipcMain.handle(
+    'fs:mkdir',
+    async (_event, dir: string, name: string): Promise<Result<string>> => {
+      if (typeof name !== 'string' || name.length === 0) {
+        return { ok: false, error: { code: 'EINVAL', message: 'No directory name' } }
+      }
+      if (name.includes('\0')) {
+        return { ok: false, error: { code: 'EINVAL', message: 'Invalid directory name' } }
+      }
+
+      // A relative name belongs to the pane the gesture was made in, not to the
+      // process working directory — typing `sub` must mean `<pane>/sub`.
+      const base =
+        typeof dir === 'string' && dir.length > 0 ? path.resolve(dir) : process.cwd()
+      const target = path.isAbsolute(name) ? path.resolve(name) : path.resolve(base, name)
+
+      try {
+        await fs.mkdir(target, { recursive: false })
+        return { ok: true, data: target }
+      } catch (error) {
+        // A name that is already taken reads better named than quoted from the
+        // machine's own `mkdir` failure, exactly as rename's collision does.
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+          return {
+            ok: false,
+            error: { code: 'EEXIST', message: `"${path.basename(target)}" already exists` }
+          }
+        }
+        return { ok: false, error: toFsError(error) }
+      }
+    }
+  )
+
   ipcMain.handle(
     'fs:copy',
     async (

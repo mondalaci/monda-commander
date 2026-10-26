@@ -35,6 +35,8 @@ const api: McApi = {
     reveal: (target: string) => ipcRenderer.invoke('fs:reveal', target),
     rename: (source: string, target: string): Promise<Result<string>> =>
       ipcRenderer.invoke('fs:rename', source, target),
+    mkdir: (dir: string, name: string): Promise<Result<string>> =>
+      ipcRenderer.invoke('fs:mkdir', dir, name),
     copy: (
       sources: string[],
       destination: string,

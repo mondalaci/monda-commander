@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import FilePanel from '@renderer/components/FilePanel.vue'
 import ConfirmTransfer from '@renderer/components/ConfirmTransfer.vue'
+import ConfirmMkdir from '@renderer/components/ConfirmMkdir.vue'
 import ConfirmDelete from '@renderer/components/ConfirmDelete.vue'
 import ConfirmDiscard from '@renderer/components/ConfirmDiscard.vue'
 import TerminalPane from '@renderer/components/TerminalPane.vue'
@@ -135,6 +136,14 @@ const copyJob = ref<{ entries: PaneEntry[]; destination: string } | null>(null)
  * pane's directory, which the dialog can edit before confirming.
  */
 const moveJob = ref<{ entries: PaneEntry[]; destination: string } | null>(null)
+
+/**
+ * F7 stages the name of a directory to make in the active pane. Like the other
+ * dialogs, a true value is what "the dialog is open" means — the pane being
+ * browsed is `activePane`, which cannot change while the dialog holds the
+ * keyboard, so it is read when the name is confirmed rather than captured.
+ */
+const mkdirOpen = ref(false)
 
 /**
  * The pane that is displaying another pane's media, or null when none is. Enter
@@ -553,7 +562,14 @@ function focusIsUnclaimed(): boolean {
 function restoreFocus(): void {
   if (viewerPath.value !== null) return
   if (paneMenu.value !== null) return
-  if (deleteTargets.value.length > 0 || copyJob.value !== null || moveJob.value !== null) return
+  if (
+    deleteTargets.value.length > 0 ||
+    copyJob.value !== null ||
+    moveJob.value !== null ||
+    mkdirOpen.value
+  ) {
+    return
+  }
   if (!focusIsUnclaimed()) return
   focusPanes()
 }
@@ -919,6 +935,41 @@ async function confirmMove(destination: string): Promise<void> {
     if (resolved && target.state.path === resolved) await target.refresh()
   } finally {
     for (const pane of panes) pane.endSelfChange()
+  }
+  focusPanes()
+}
+
+/**
+ * F7 stages the create-directory dialog for the active pane. The pane itself is
+ * read when the name is confirmed, since the dialog only asks for the name.
+ */
+function requestMkdir(): void {
+  if (!activePane.value.state.path) return
+  mkdirOpen.value = true
+}
+
+function cancelMkdir(): void {
+  mkdirOpen.value = false
+  focusPanes()
+}
+
+/**
+ * Make the directory the dialog named. The folder appears in every pane showing
+ * the directory it was made in — both panes can show one — and it is the user's
+ * own `mkdir`, so none of them sweeps it: they are told the change is the app's
+ * own for its length, exactly as a hide-list write is (`hideEntry`). The pane
+ * re-lists and lands its cursor on the new folder.
+ */
+async function confirmMkdir(name: string): Promise<void> {
+  const pane = activePane.value
+  mkdirOpen.value = false
+
+  const showing = [left.value, right.value].filter((other) => other.state.path === pane.state.path)
+  for (const other of showing) other.beginSelfChange()
+  try {
+    await pane.createDirectory(name)
+  } finally {
+    for (const other of showing) other.endSelfChange()
   }
   focusPanes()
 }
@@ -1321,6 +1372,10 @@ function handlePaneKey(event: KeyboardEvent): void {
       if (event.shiftKey) pane.beginRename()
       else requestMove()
       break
+    case 'F7':
+      consume(event)
+      requestMkdir()
+      break
     case 'Enter':
       // With a line typed, fall through to the shell and leave the terminal
       // exactly as the user left it.
@@ -1377,13 +1432,15 @@ function onKeydown(event: KeyboardEvent): void {
   // dialog (its default button is focused, arrows move between the buttons,
   // Enter activates the focused one) instead of reaching the panes or shell.
   if (
+    mkdirOpen.value ||
     deleteTargets.value.length > 0 ||
     copyJob.value !== null ||
     moveJob.value !== null
   ) {
     if (event.key === 'Escape') {
       consume(event)
-      if (deleteTargets.value.length > 0) cancelDelete()
+      if (mkdirOpen.value) cancelMkdir()
+      else if (deleteTargets.value.length > 0) cancelDelete()
       else if (moveJob.value !== null) cancelMove()
       else cancelCopy()
     }
@@ -1785,6 +1842,12 @@ onBeforeUnmount(() => {
       mode="move"
       @confirm="confirmMove"
       @cancel="cancelMove"
+    />
+
+    <ConfirmMkdir
+      v-if="mkdirOpen"
+      @confirm="confirmMkdir"
+      @cancel="cancelMkdir"
     />
 
     <ConfirmDelete

@@ -34,7 +34,7 @@ for when it is wanted are in [`docs/verifying.md`](docs/verifying.md).
 src/main/index.ts        window lifecycle, single-instance lock
 src/main/windowState.ts  remembered window size/position/maximized flag
 src/main/ipc/fs.ts       IPC: fs:home, fs:list, fs:read, fs:write, fs:read-image,
-                         fs:image-size, fs:open, fs:reveal, fs:hide-add
+                         fs:image-size, fs:open, fs:reveal, fs:hide-add, fs:mkdir
 src/main/imageSize.ts    header-only image dimensions (PNG/JPEG+EXIF/GIF/BMP/ICO/WebP/SVG)
 src/main/videoCodec.ts   header-only codec sniff for ISOBMFF (mp4/m4v/mov)
 src/main/media.ts        mc-media scheme: ranged video stream + live ffmpeg transcode
@@ -202,6 +202,11 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   is the green rule less a `.desktop`; `runInShell` types the quoted path and
   submits it, so it echoes and reaches history. The terminal is shown for as long
   as it runs; the run ends on `shell.idle`. A busy shell refuses a second command.
+- **`F7` makes a directory in the pane being browsed.** `fs:mkdir` resolves the
+  name against that pane (absolute, or relative, as the transfer dialogs do) and
+  is deliberately *not* recursive, so an existing name is an `EEXIST` the pane
+  reports rather than a silent success; the new folder does not sweep, because
+  every pane showing the directory is told the change is the app's own.
 
 ### The preview footer
 

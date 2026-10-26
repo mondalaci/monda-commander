@@ -64,6 +64,14 @@ export interface McFsApi {
   open(target: string): Promise<string>
   reveal(target: string): Promise<void>
   rename(source: string, target: string): Promise<Result<string>>
+  /**
+   * Make a directory (F7). `name` is what the user typed — a folder name, or a
+   * path: absolute, or relative to `dir`, which is the pane the gesture was made
+   * in. Not recursive, so an existing name and a missing parent each come back as
+   * an error rather than being papered over; returns the resolved directory that
+   * was made.
+   */
+  mkdir(dir: string, name: string): Promise<Result<string>>
   copy(sources: string[], destination: string, baseDir: string): Promise<Result<CopyOutcome>>
   move(sources: string[], destination: string, baseDir: string): Promise<Result<MoveOutcome>>
   remove(targets: string[]): Promise<Result<DeleteOutcome>>

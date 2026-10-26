@@ -87,8 +87,10 @@ moves them there (both take a destination field naming a directory to act into,
 but for a single entry a path that is not a directory is the entry's new name —
 so `blah` -> `blah2` renames or copies to `blah2`, rather than making a `blah2`
 folder and putting `blah` inside it, and a trailing separator, `blah2/`, asks for
-a folder instead), `Shift+F6` renames the cursor row in place, and `F8` deletes
-them after confirmation.
+a folder instead), `Shift+F6` renames the cursor row in place, `F7` makes a
+directory in the pane being browsed — a dialog takes the name, which is a folder
+name or a path, relative to that pane or absolute, and the cursor lands on the
+new folder — and `F8` deletes them after confirmation.
 
 `Backspace` never navigates: it belongs to the shell's line editor (or the search
 box), so the `..` row is the way up.
