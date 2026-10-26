@@ -34,6 +34,59 @@ export interface DirListing {
   hiddenNames: string[]
 }
 
+/**
+ * One entry a repository's status has something to say about — the mirror of a
+ * record in `git status --porcelain=v2`. `index` and `worktree` are git's own two
+ * status characters, in git's own order, with `.` left in place for the side that
+ * is unmodified, so the pair can be shown as `git status --short` shows it and
+ * means exactly what it means there. `path` is the path git printed: relative to
+ * the repository root, forward-slashed, and ending in `/` when it names a whole
+ * untracked directory rather than a file — porcelain collapses one when nothing
+ * inside it is tracked, which is also the cheaper answer for a listing to roll up.
+ */
+export interface GitFileStatus {
+  path: string
+  index: string
+  worktree: string
+  /**
+   * For a rename or a copy, the path the entry came from; null for everything
+   * else. Only porcelain's rename records carry it, and only a staged rename
+   * normally produces one.
+   */
+  from: string | null
+}
+
+/**
+ * A repository's status in one read: where its root is, what HEAD is on, how far
+ * it has drifted from its upstream, and every path git has something to say
+ * about. Read once per repository rather than once per row — porcelain answers
+ * for the whole work tree in a single call, which is what makes a per-row marker
+ * affordable at all.
+ */
+export interface GitStatus {
+  /** The work tree's root, absolute, as `rev-parse --show-toplevel` gives it. */
+  root: string
+  /** The branch HEAD is on; null when detached, or on an unborn branch. */
+  branch: string | null
+  /** HEAD's commit, or null on an unborn branch — what a detached label needs. */
+  oid: string | null
+  detached: boolean
+  /** Commits the upstream is behind and ahead, both zero with no upstream. */
+  ahead: number
+  behind: number
+  files: GitFileStatus[]
+}
+
+/**
+ * Pushed to the renderer when a repository may have changed: a stage, a commit, a
+ * checkout, or an ordinary write to a directory of it that main already watches.
+ * `root` is the work tree's own path, matching `GitStatus.root`, so a pane can
+ * tell whether the news is about the repository it is looking at.
+ */
+export interface GitChangeEvent {
+  root: string
+}
+
 export interface FsError {
   code: string
   message: string

@@ -4,6 +4,8 @@ import type {
   DirListing,
   FileContent,
   FsChangeEvent,
+  GitChangeEvent,
+  GitStatus,
   ImagePreview,
   PixelSize,
   MoveOutcome,
@@ -119,9 +121,34 @@ export interface McHideApi {
   set(enabled: boolean): Promise<void>
 }
 
+export interface McGitApi {
+  /**
+   * A repository's status, read from `git status --porcelain=v2` for the whole
+   * work tree in one call. `dir` is any directory; the answer names the work
+   * tree that holds it. A directory outside one comes back as an `ENOTREPO`
+   * error rather than an empty status, so a pane can tell a folder with nothing
+   * to report from one git does not know about — which is also how a machine
+   * with no git at all answers, so nothing has to ask whether one is there.
+   * `MC_GIT` names the binary when it is not the one on `PATH`, as `MC_FFMPEG`
+   * does for transcoding.
+   */
+  status(dir: string): Promise<Result<GitStatus>>
+  /**
+   * Watch a work tree for changes to what git thinks. `root` is the
+   * `GitStatus.root`, not an arbitrary directory, because a pane keeps one
+   * watcher per repository: it re-targets the watch only when it moves to a
+   * different work tree, so walking between folders of one repository does not
+   * close and reopen the watchers. Refcounted in main like the directory watch.
+   */
+  watch(root: string): Promise<void>
+  unwatch(root: string): Promise<void>
+  onChanged(handler: (event: GitChangeEvent) => void): () => void
+}
+
 export interface McApi {
   fs: McFsApi
   pty: McPtyApi
   win: McWindowApi
   hide: McHideApi
+  git: McGitApi
 }

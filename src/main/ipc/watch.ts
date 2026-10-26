@@ -1,5 +1,6 @@
 import { watch as watchDir, type FSWatcher } from 'node:fs'
 import { ipcMain, webContents } from 'electron'
+import { noteDirectoryChanged } from './git'
 import type { FsChangeEvent } from '@shared/types'
 
 /**
@@ -68,6 +69,12 @@ function closeWatcher(dir: string): void {
 function notify(dir: string): void {
   const entry = watched.get(dir)
   if (!entry) return
+
+  // The panes' git markers are keyed off the same writes: a file edited in a
+  // watched directory of a work tree changes that repository's status too, and
+  // the panes looking at *another* directory of it are owed the news. A `git`
+  // read is only invalidated for a repository this app already resolved.
+  noteDirectoryChanged(dir)
 
   const payload: FsChangeEvent = { path: dir }
   for (const id of entry.refs.keys()) {

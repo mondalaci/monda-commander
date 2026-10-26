@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { app, BrowserWindow } from 'electron'
 import { registerFsHandlers } from './ipc/fs'
+import { closeAllGitWatchers, registerGitHandlers } from './ipc/git'
 import { registerHideHandlers } from './ipc/hide'
 import { killAllSessions, registerPtyHandlers } from './ipc/pty'
 import { closeAllWatchers, registerWatchHandlers } from './ipc/watch'
@@ -87,6 +88,7 @@ registerMediaScheme()
 registerMediaHandlers()
 registerFsHandlers()
 registerHideHandlers()
+registerGitHandlers()
 registerPtyHandlers()
 registerWatchHandlers()
 registerWindowHandlers()
@@ -118,6 +120,7 @@ if (!gotLock) {
   app.on('before-quit', () => {
     killAllSessions()
     closeAllWatchers()
+    closeAllGitWatchers()
     killAllTranscodes()
   })
 }

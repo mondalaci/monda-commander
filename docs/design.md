@@ -438,6 +438,149 @@ every pane showing that directory is muted around the operation (`beginSelfChang
 so the folder it just made does not sweep as though a program had written it —
 the same reason `mkdir foo` at the prompt is muted.
 
+## Git status
+
+### Git is asked, not reimplemented
+
+The panes read a repository's status by running `git status --porcelain=v2`
+(`src/main/ipc/git.ts`), the same way a clip Chromium cannot play is transcoded by
+running ffmpeg: an external binary this app can do without, gated behind a probe
+(`MC_GIT` names one that is not on `PATH`), and answered with nothing drawn when it
+is not there. A library was the obvious alternative and was measured before being
+turned down. `isomorphic-git`'s `statusMatrix` takes 23ms on this repository's 70
+files and 380ms on a 9,409-file work tree, where the binary takes 1.2ms and 10ms
+for the same answer — and forking git at all costs 0.7ms, which is not where a
+status read spends its time. Status is index-parse, tree-walk and `lstat` work that
+git does in C with index v4, `core.untrackedCache` and `core.fsmonitor` behind it,
+and the JavaScript one redoes all of it with none of those caches, so the gap
+widens on exactly the repositories where it would matter. `nodegit` is worse: a
+native module would need `electron-rebuild` and a libgit2 in the package, which is
+the thing node-pty is praised here for *not* needing. The binary is also the more
+truthful reader — it detects renames (the library reports a staged rename as a
+delete plus an untracked add, so the `R` a file manager most wants is simply
+absent), it has a vocabulary for unmerged paths, it understands worktrees and
+submodules, and every one of those stays right as the user's git version,
+gitattributes and configuration change. The fear a library would answer is forks
+per file, and there is no such thing: porcelain answers for the whole work tree in
+one call, so it is one fork per repository per refresh.
+
+Two flags matter more than they look. `--no-optional-locks` (with
+`GIT_OPTIONAL_LOCKS=0` in the environment) stops the read from refreshing the index
+in place: without it, asking git a question rewrites the index, races the user's own
+git and every editor open on the same work tree, and fires our own watcher for a
+notification about nothing. `-z` is what lets a path hold a space or a newline
+without being quoted, and it is what makes a rename's origin an unambiguous field.
+`maxBuffer` is raised well past `execFile`'s 1 MiB, because the status of a large
+work tree is precisely the output that outgrows it.
+
+### A row's mark is a dot on its own icon
+
+A row git has something to say about carries a small dot on the corner of its icon,
+in the colour the status carries: amber for a modification, green for an addition or
+an untracked path, red for a deletion or a conflict, blue for a rename. It is filled
+when the entry itself is what changed and a ring when the folder merely holds what
+did, so "this file" and "inside here" are told apart without reading anything beside
+them.
+
+The colour is the whole of the mark, which is what makes it free: a dot costs no
+width, so the listing's columns never move and no row has to reserve space for a
+character it might not have. It also cannot live on the *name* — green there already
+means runnable and gold means marked, and a broken symlink's target is red, so a
+fourth meaning in the same place would be a collision rather than a feature. The
+palette lives in `lib/gitMark.ts` beside `fileIcon.ts`'s for the reason it does
+there: it is chosen per entry, from what git said about it, so it cannot be a class.
+
+What a colour cannot say, the title and the footer do — words are what a dot has no
+room for, and both of those places have room. Git's two status characters are still
+what all of it is *read* from, the pair being what tells one modification from two;
+they are simply not drawn, because a row's width is worth more to the listing than a
+repetition of what the dot already says.
+
+### A folder shows the best of what is inside it
+
+The pane does not ask per row. `buildGitView` turns one status into a `Map` of
+changed absolute paths and another of every folder holding one — rolled up in main's
+own terms at build time, so a row's mark is a `Map.get` and the window's thirty rows
+cost nothing. A folder's mark is the most interesting thing beneath it (a conflict
+before a staged change, a staged change before a deletion, which matters because a
+deletion's own row is *gone* — the path is no longer in the listing — so the folder
+is the only place it can ever appear), with the count in the title. Deleted files
+are the one status a listing cannot show as a row, and the roll-up is what makes
+them visible at all.
+
+One case needed care: git reports a *wholly* untracked directory as a single
+`/`-suffixed record rather than listing the files in it, which is cheaper and is
+what the folder's own row wants — but a pane standing *inside* that directory then
+has nothing of its own to go on, while everything there is untracked. So those
+directories are remembered as a set (`GitView.untracked`) and a row walks its path
+up to the work tree's root to find one, one lookup per level. A pane inside a
+brand-new project therefore says `??` about everything, which is exactly what is
+true of it.
+
+The mark is read off the same window as the rows (`visibleRows`), so a status read
+landing re-renders exactly the rows it could mark, and the pane holds it raw
+(`markRaw`) because it is replaced whole and never edited — there is no reactive
+path inside it worth paying for.
+
+### The status bar says in words what a row's dot says in colour
+
+The footer's right group already describes the row under the cursor — its mode, its
+size, its date — so that row's git mark belongs there too: a dot carrying the
+status's colour, and the status itself to the right of it. A dot on a 22px row has
+no room for words, so this is where they go, and the row's own full label is in the
+footer's title for where even these run out. The dot is drawn the way the row's is
+— filled when the entry is the thing that changed, a ring when the folder only
+holds what did — so "this file" and "inside here" read the same way in both places.
+
+`markSummary` says it in as few words as a status bar has room for, which is a
+second form of the mark rather than the same one clipped: a rename's origin and the
+difference between one modification and two are the title's business, not the
+footer's, and a folder's dot says the kind so its words need only count. A row git
+has nothing to say about shows nothing at all, which is what keeps a clean
+directory's footer as quiet as its rows.
+
+### The work tree's HEAD is the pane's, not the app's
+
+The title bar carries the branch — or `detached@<short sha>` — with how far HEAD has
+drifted from its upstream. Per pane, because the two panes can be in different
+repositories, and in the title's own colour rather than the gold the marks take, so
+nothing up there competes with a selection further down. It is what makes a
+repository visible in a *clean* directory, where every mark is blank by design.
+
+Beside it sits how dirty the tree is, as one count with a dot in the colour of the
+highest thing in it. That count is the *repository's*, not the directory's and not
+the cursor's: the branch name is already an answer about the whole work tree, and a
+count answering about a corner of it would read as a contradiction with the name it
+stands beside — which is the whole difference between this and the footer, whose dot
+and words belong to the row under the cursor. It counts *entries*, not files, because
+a wholly untracked directory is one record naming however many files are inside it,
+and finding that number out would cost exactly the read the collapse exists to save.
+The breakdown the count has no room for is in the chip's title, where the kinds are
+counted so that no entry lands in two of them — "staged and changed again" is its
+own kind rather than a member of both — and so they add up to the count beside them.
+A clean tree adds nothing at all: the branch is then the whole of what there is to
+say, and a repository with nothing to report should not have to be read twice to
+learn it.
+
+### Watching what git thinks, and the writes it does not see
+
+A stage, a commit or a checkout moves nothing in the directory the pane is listing —
+it moves `.git` — so the directory watch cannot see it and a second watcher does
+(`git:watch`, refcounted per work tree like the directory watch, debounced the same
+way because a `git switch` is a burst). It watches the git directory itself, which
+is where `index` and `HEAD` live, and the shared `refs/heads`, because a branch ref
+can be rewritten without either of those moving. A pane re-targets that watch only
+when it moves to a *different* work tree, so walking between a repository's folders
+does not close and reopen main's watchers at every step.
+
+The other direction is the subtle one. A file written in a directory the app already
+watches changes the repository's status too, and the pane that should hear about it
+may be looking somewhere else entirely — so the directory watch calls back into the
+git side (`noteDirectoryChanged`), which drops the repository's cached answer and
+tells every pane watching that work tree. That, plus a short freshness window and
+in-flight sharing so two panes refreshing together cost one status read, is what
+keeps the two panes honest about each other's edits.
+
 ## The preview footer
 
 ### Images

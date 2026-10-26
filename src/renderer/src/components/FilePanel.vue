@@ -20,6 +20,13 @@ import {
   type StageRequest
 } from '@renderer/lib/preview'
 import type { PaneMenuRequest } from '@renderer/lib/paneMenu'
+import {
+  markSummary,
+  markTitle,
+  sideColor,
+  untrackedAbove,
+  type GitMark
+} from '@renderer/lib/gitMark'
 import FileIcon from '@renderer/components/FileIcon.vue'
 import HoldRing from '@renderer/components/HoldRing.vue'
 import PlaybackOsd from '@renderer/components/PlaybackOsd.vue'
@@ -2035,17 +2042,170 @@ const notice = computed(() => {
 })
 
 /**
+ * A row's git mark, with the two things that make a folder's different from a
+ * file's: how many entries put it there, and that it is a roll-up rather than
+ * this row's own status.
+ */
+interface GitRowMark {
+  mark: GitMark
+  count: number
+  rollup: boolean
+}
+
+/**
+ * What git thinks of this pane's directory, when it is inside a work tree. Null
+ * outside one and on a machine with no git to ask — the same nothing, and drawn
+ * as nothing: no dot on any row, and no chip in the title bar.
+ */
+const gitView = computed(() => props.controller.state.git)
+
+/**
+ * The work tree's HEAD, as the title bar's chip names it: the branch, or the
+ * short commit when HEAD is not on one.
+ */
+const gitBranch = computed(() => {
+  const view = gitView.value
+  if (!view) return ''
+  if (view.detached || view.branch === null) {
+    return view.oid === null ? 'detached' : `detached@${view.oid.slice(0, 7)}`
+  }
+  return view.branch
+})
+
+/** How far HEAD has drifted from its upstream, or nothing with no upstream. */
+const gitDrift = computed(() => {
+  const view = gitView.value
+  if (!view || (view.ahead === 0 && view.behind === 0)) return ''
+  return `${view.ahead > 0 ? `↑${view.ahead}` : ''}${view.behind > 0 ? `↓${view.behind}` : ''}`
+})
+
+/**
+ * How dirty the work tree is, as one count beside the branch. It is the
+ * repository's own total rather than the directory's or the cursor's — the branch
+ * name is already an answer about the whole work tree, and a count that answered
+ * about a corner of it would read as a contradiction.
+ *
+ * Nothing at all when the tree is clean, so a tidy repository's title bar says only
+ * where it is.
+ */
+const gitSummaryText = computed(() => {
+  const view = gitView.value
+  if (!view || view.summary.changed === 0) return ''
+  return view.summary.changed === 1 ? '1 change' : `${view.summary.changed} changes`
+})
+
+/** The dot beside that count: the highest thing anywhere in the work tree. */
+const gitSummaryColor = computed(() => {
+  const view = gitView.value
+  return view ? sideColor(view.summary.dominant) : 'transparent'
+})
+
+/**
+ * The breakdown the count cannot fit, in the chip's own title: what each kind was,
+ * counted so that no entry is in two of them, or the word for a tree with nothing
+ * to report.
+ */
+const gitSummaryDetail = computed(() => {
+  const view = gitView.value
+  if (!view) return ''
+
+  const sum = view.summary
+  if (sum.changed === 0) return 'nothing changed'
+
+  const parts: string[] = []
+  if (sum.conflicted > 0) parts.push(`${sum.conflicted} conflicted`)
+  if (sum.staged > 0) parts.push(`${sum.staged} staged`)
+  if (sum.both > 0) parts.push(`${sum.both} staged and changed again`)
+  if (sum.unstaged > 0) parts.push(`${sum.unstaged} modified`)
+  if (sum.untracked > 0) parts.push(`${sum.untracked} untracked`)
+
+  const entries = sum.changed === 1 ? '1 changed entry' : `${sum.changed} changed entries`
+  return `${entries}: ${parts.join(', ')}`
+})
+
+const gitTitle = computed(() => {
+  const view = gitView.value
+  if (!view) return ''
+  const counts =
+    view.ahead || view.behind ? ` (${view.ahead} ahead, ${view.behind} behind)` : ''
+  return [`${gitBranch.value}${counts}`, gitSummaryDetail.value, view.root]
+    .filter((line) => line !== '')
+    .join('\n')
+})
+
+/**
+ * The mark a row shows: the entry's own status for a file, or a roll-up of
+ * everything changed beneath the folder for a directory. The `..` row is never
+ * marked — it names the directory above, and a dot on it would mark every way
+ * out of a repository as though that folder were the one being looked at.
+ */
+function markAt(entry: PaneEntry): GitRowMark | null {
+  const view = gitView.value
+  if (!view || entry.isParent) return null
+
+  if (entry.kind === 'directory') {
+    const dir = view.dirs.get(entry.path)
+    if (dir) return { mark: dir.mark, count: dir.count, rollup: true }
+
+    // A folder below a directory git collapsed as untracked holds nothing but
+    // untracked files, and it is a place the user can be standing.
+    const above = untrackedAbove(view, entry.path)
+    return above ? { mark: above, count: 0, rollup: true } : null
+  }
+
+  const file = view.files.get(entry.path)
+  if (file) return { mark: file, count: 1, rollup: false }
+
+  const above = untrackedAbove(view, entry.path)
+  return above ? { mark: above, count: 1, rollup: false } : null
+}
+
+/**
+ * How a git dot is drawn: the colour the status carries, filled for an entry
+ * itself and hollow for a folder that only holds one, so "this file" and "inside
+ * here" are told apart without reading anything beside it. The row's dot wants a
+ * dark ring with it, because it sits over the icon rather than on a flat
+ * background.
+ */
+function dotStyle(found: GitRowMark, ring: boolean): Record<string, string> {
+  const color = sideColor(found.mark.letter)
+  return {
+    borderColor: color,
+    backgroundColor: found.rollup ? 'transparent' : color,
+    ...(ring ? { boxShadow: '0 0 0 1px #1e1e1e' } : {})
+  }
+}
+
+/**
+ * What git thinks of the row under the cursor, for the footer: the same mark the
+ * row itself carries, which the status bar names in words beside a dot carrying
+ * its colour. Null on a row git has nothing to say about, and the footer then
+ * says nothing either.
+ */
+const entryGit = computed(() => {
+  const current = entry.value
+  return current ? markAt(current) : null
+})
+
+/**
  * The rows to render: the entries the viewport covers, widened by the overscan
  * band and carried with their absolute index, so every handler and the per-row
  * class helpers key off the same index the controller's cursor uses. The
  * arithmetic is index-against-`ROW_HEIGHT` only — no DOM measurement — which is
  * what lets the window be computed before the rows it describes exist.
+ *
+ * Each row carries its git mark too, looked up once here rather than four times
+ * in the markup: the mark is read from the same window, so a status read landing
+ * re-renders exactly the rows it could mark.
  */
-const visibleRows = computed<{ entry: PaneEntry; index: number }[]>(() => {
+const visibleRows = computed<{ entry: PaneEntry; index: number; git: GitRowMark | null }[]>(() => {
   const entries = props.controller.state.entries
   const total = entries.length
   if (total === 0) return []
 
+  // `markAt` below reads the git view first thing, which is what makes this
+  // window — like the rows in it — depend on the status read as well as on the
+  // listing, so a mark arriving re-renders exactly the rows it could mark.
   const height = viewportHeight.value || ROW_HEIGHT * VIEWPORT_FALLBACK_ROWS
   // Clamped so a stale `scrollTop` (a shorter directory than the one scrolled in)
   // still renders its last row rather than an empty band.
@@ -2058,10 +2218,10 @@ const visibleRows = computed<{ entry: PaneEntry; index: number }[]>(() => {
     total
   )
 
-  const rows: { entry: PaneEntry; index: number }[] = []
+  const rows: { entry: PaneEntry; index: number; git: GitRowMark | null }[] = []
   for (let i = first; i < last; i += 1) {
     const entry = entries[i]
-    if (entry) rows.push({ entry, index: i })
+    if (entry) rows.push({ entry, index: i, git: markAt(entry) })
   }
   return rows
 })
@@ -2686,6 +2846,43 @@ function onRenameBlur(): void {
         >
           loading…
         </span>
+        <!-- The work tree this pane is in: its HEAD, how far that has drifted
+             from its upstream, and how much of the tree is changed. Per-pane,
+             because the two panes can be in different repositories — and in the
+             title's own color rather than the gold the marks take, so nothing up
+             here competes with a selection further down. -->
+        <span
+          v-if="gitView"
+          class="flex min-w-0 shrink-0 items-center gap-1 text-ui-sm"
+          :title="gitTitle"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            class="h-3 w-3 shrink-0"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            aria-hidden="true"
+          >
+            <line x1="6" y1="3" x2="6" y2="15" />
+            <circle cx="18" cy="6" r="3" />
+            <circle cx="6" cy="18" r="3" />
+            <path d="M18 9a9 9 0 0 1-9 9" />
+          </svg>
+          <span class="max-w-40 truncate">{{ gitBranch }}</span>
+          <span v-if="gitDrift" class="opacity-80">{{ gitDrift }}</span>
+          <!-- How dirty the work tree is, as one count: the branch already
+               answers for all of it, so this does too, and the breakdown the
+               count cannot fit is in the chip's title. -->
+          <span v-if="gitSummaryText" class="flex shrink-0 items-center gap-1 pl-1 opacity-80">
+            <span
+              class="h-1.5 w-1.5 shrink-0 rounded-full"
+              :style="{ backgroundColor: gitSummaryColor }"
+            />
+            <span>{{ gitSummaryText }}</span>
+          </span>
+        </span>
         <!-- The mode is otherwise invisible: the rows it covers are simply not
              there, so nothing in the listing says they were left out on purpose.
              The icon is a state as much as a notice — the dim open eye is the
@@ -2818,8 +3015,18 @@ function onRenameBlur(): void {
           @click="onRowClick(row.index)"
           @dblclick="onRowDblclick"
         >
-          <span class="flex w-4 shrink-0 items-center justify-center">
+          <span class="relative flex w-4 shrink-0 items-center justify-center">
             <FileIcon :entry="row.entry" />
+            <!-- The row's whole mark: a dot on its own icon, the colour of the
+                 status and nothing else — filled for the entry itself, a ring for
+                 a folder that only holds one. What it means in words is in the
+                 row's title. -->
+            <span
+              v-if="row.git"
+              class="pointer-events-none absolute -right-1 -bottom-1 h-1.5 w-1.5 rounded-full border"
+              :style="dotStyle(row.git, true)"
+              :title="markTitle(row.git.mark, row.git.count, row.git.rollup)"
+            />
           </span>
 
           <input
@@ -2966,6 +3173,25 @@ function onRenameBlur(): void {
         </div>
 
         <div class="flex shrink-0 items-center gap-3">
+          <!-- What git thinks of the row under the cursor. The status bar is
+               where there is room for the words a row's own cell has none for,
+               and the dot beside them is that row's own mark: filled when the
+               entry is the thing that changed, a ring when the folder only holds
+               what did. -->
+          <span
+            v-if="entryGit"
+            class="flex min-w-0 shrink-0 items-center gap-1.5"
+            :title="markTitle(entryGit.mark, entryGit.count, entryGit.rollup)"
+          >
+            <span
+              class="h-2 w-2 shrink-0 rounded-full border"
+              :style="dotStyle(entryGit, false)"
+            />
+            <span class="max-w-40 truncate">{{
+              markSummary(entryGit.mark, entryGit.count, entryGit.rollup)
+            }}</span>
+          </span>
+
           <template v-if="entry && !entry.isParent">
             <span class="hidden tabular-nums lg:inline">{{ formatMode(entry.mode) }}</span>
             <span class="tabular-nums">

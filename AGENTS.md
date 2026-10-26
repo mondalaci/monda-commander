@@ -39,6 +39,9 @@ src/main/imageSize.ts    header-only image dimensions (PNG/JPEG+EXIF/GIF/BMP/ICO
 src/main/videoCodec.ts   header-only codec sniff for ISOBMFF (mp4/m4v/mov)
 src/main/media.ts        mc-media scheme: ranged video stream + live ffmpeg transcode
 src/main/ipc/watch.ts    IPC: fs:watch, fs:unwatch; pushes fs:changed
+src/main/ipc/git.ts      IPC: git:status, git:watch, git:unwatch;
+                         pushes git:changed (one watcher per work tree)
+src/main/gitStatus.ts    the `status --porcelain=v2` reader (pure: no Electron)
 src/main/ipc/pty.ts      IPC: pty:create/write/resize/kill/state; pushes pty:data, pty:exit
 src/main/ipc/window.ts   IPC: window:minimize/toggle-maximize/close/is-maximized
 src/main/ipc/hide.ts     IPC: hide:get, hide:set
@@ -69,6 +72,8 @@ src/renderer/src/lib/preview.ts       preview target, PlaybackClock, stage reque
 src/renderer/src/lib/monaco.ts        lazy monaco import + worker wiring + language
 src/renderer/src/lib/fileIcon.ts      per-entry icon: name/extension -> 24x24 svg
                                       (FILENAME_ICONS, EXTENSION_ICONS, fallback text)
+src/renderer/src/lib/gitMark.ts       git status -> per-row marks, folder roll-ups,
+                                      and the palette they are drawn in
 src/renderer/src/lib/swapAnimation.ts how a Ctrl+U exchange is shown: copies of
                                       both panes travelling to the other column,
                                       carrying the display's blur (styles/swap.css)
@@ -163,6 +168,55 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   on mount before the first listing. Alt+. is claimed *after* the
   expanded-terminal check. The pane title bar's icon is an eye-off (on) / a dim
   eye (off), both in the title text's color, never gold.
+
+### Git status
+
+- **Git is asked, not reimplemented** — one `git status --porcelain=v2 -z
+  --branch` per work tree per refresh, through `MC_GIT` (default `git`), gated on
+  one memoized probe that git can be run at all. A library was measured and
+  rejected: `isomorphic-git` is 35–70× slower here and does not detect renames.
+  Never per-row calls: porcelain answers for the whole tree at once. See the
+  design note before changing this.
+- **`--no-optional-locks` and `GIT_OPTIONAL_LOCKS=0` are not optional.** Without
+  them a read refreshes the index in place, racing the user's own git and firing
+  our own watcher for a notification about nothing. `-z` is what lets paths hold
+  spaces; `maxBuffer` is raised past `execFile`'s 1 MiB, which a large status
+  outgrows.
+- **A row's mark is a dot on its icon** (`dotStyle`), in the status's colour —
+  filled for the entry, a ring for a folder's roll-up. It costs no width, so the
+  listing's columns never move. The palette lives in `lib/gitMark.ts` beside
+  `fileIcon.ts`'s, because it is chosen per entry and cannot be a class; a mark
+  never recolours the *name*, where green is runnable, red is a broken symlink's
+  target and gold is a mark. Git's two status characters are what the colour, the
+  kind and the rank are *read* from, and are not drawn.
+- **A folder shows the best of what is under it.** `buildGitView` rolls up every
+  ancestor at build time, so a row's mark is a `Map.get`. A deleted file has no
+  row at all (its path left the listing), so the roll-up is the only place it can
+  appear.
+- **A wholly untracked directory is one `/`-suffixed record**, not a listing of
+  its files, so a pane *inside* one has nothing of its own — `GitView.untracked`
+  plus `untrackedAbove` walks the path up to the work tree's root to answer `??`
+  for everything below it.
+- **The pane holds the view `markRaw`** — it is replaced whole, never edited.
+  `visibleRows` reads it through `markAt`, which is what re-renders the window
+  when a status read lands.
+- **The title bar's chip answers about the whole work tree**: HEAD (or
+  `detached@<sha>`), its drift, and one count of how dirty the tree is
+  (`GitView.summary`), with the non-overlapping breakdown in the chip's title. The
+  count is of *entries*, not files — a wholly untracked directory is one record —
+  and a clean tree shows no count at all. The footer's dot is deliberately the
+  opposite: the row under the cursor.
+- **The footer's right group carries the cursor row's mark too** — a dot (filled
+  for the entry, a ring for a folder's roll-up, `dotStyle`) and
+  `markSummary`'s short form beside it, with the full `markTitle` in its title.
+  The short form is a second wording, not a clipped one; a row git says nothing
+  about draws neither dot nor words.
+- **`git:watch` refcounts per work tree, not per directory**, and the pane
+  re-targets it only when the root changes, so walking folders does not churn
+  main's watchers. The other direction is the catch: a directory write calls back
+  into the git side (`noteDirectoryChanged`, from `watch.ts`), which drops that
+  repository's cached answer and tells every pane watching it — that is what keeps
+  the *other* pane's rows honest.
 
 ### Marks, the right button, and the context menu
 

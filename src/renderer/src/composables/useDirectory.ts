@@ -1,5 +1,6 @@
-import { onScopeDispose, reactive, watch } from 'vue'
+import { markRaw, onScopeDispose, reactive, watch } from 'vue'
 import { hideMode } from '@renderer/composables/useHideMode'
+import { buildGitView, type GitView } from '@renderer/lib/gitMark'
 import { shouldExecute } from '@renderer/lib/executable'
 import type { DirEntry, PanelSide } from '@shared/types'
 
@@ -53,6 +54,17 @@ export interface PaneState {
    * (and on navigation) so a later change replays the animation.
    */
   fresh: Set<string>
+  /**
+   * What git thinks of this directory, when it is inside a work tree: the
+   * changed entries and the folders holding them, both keyed by absolute path so
+   * a row's own path is the whole of the lookup. Null outside a repository, and
+   * null on a machine with no git to ask — the same nothing, drawn the same way.
+   *
+   * Replaced whole on every read and never edited, which is why it is held raw:
+   * the mark a row shows is decided by the object the pane was handed, not by
+   * anything reactive inside it.
+   */
+  git: GitView | null
 }
 
 export interface PaneController {
@@ -219,7 +231,8 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     loading: false,
     error: null,
     renaming: null,
-    fresh: new Set<string>()
+    fresh: new Set<string>(),
+    git: null
   })
 
   function current(): PaneEntry | undefined {
@@ -456,13 +469,87 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     void window.mc.fs.watch(state.path)
   }
 
+  /**
+   * What git thinks of this directory, read after the listing lands rather than
+   * before it. The two are independent — a status read is another process and a
+   * walk of the whole work tree — so a pane that waited for both would show
+   * nothing at all until the slower answered, and the marks arriving a frame
+   * after the rows is exactly how a preview's shape already settles.
+   *
+   * Reads are sequenced rather than merely awaited: a pane navigated twice in
+   * quick succession would otherwise let the first answer, for a directory it
+   * has already left, land last and mark the wrong rows.
+   */
+  let gitSeq = 0
+
+  /**
+   * The work tree the pane is inside, as the last read reported it, whether or
+   * not it had anything to say. Kept apart from `state.git` because it is also
+   * what decides whether a change notification is this pane's news, and a
+   * repository with nothing changed has no mark to hold it.
+   */
+  let gitRoot: string | null = null
+
+  async function loadGit(): Promise<void> {
+    const mine = ++gitSeq
+    const result = await window.mc.git.status(state.path)
+    if (mine !== gitSeq) return
+
+    if (result.ok) {
+      gitRoot = result.data.root
+      state.git = markRaw(buildGitView(result.data))
+    } else {
+      gitRoot = null
+      state.git = null
+    }
+    watchCurrentRepo()
+  }
+
+  /**
+   * One watcher per work tree rather than per directory. The pane re-targets it
+   * only when it moves to a different repository, so walking between the folders
+   * of one does not close and reopen main's watchers on `.git` at every step.
+   */
+  let watchedRepo: string | null = null
+
+  function unwatchRepo(): void {
+    if (watchedRepo === null) return
+    const root = watchedRepo
+    watchedRepo = null
+    void window.mc.git.unwatch(root)
+  }
+
+  function watchCurrentRepo(): void {
+    const next = gitRoot
+    if (next === watchedRepo) return
+
+    const previous = watchedRepo
+    watchedRepo = next
+    if (previous !== null) void window.mc.git.unwatch(previous)
+    if (next !== null) void window.mc.git.watch(next)
+  }
+
+  /**
+   * A stage, a commit, a checkout — or an ordinary write to any directory of the
+   * work tree the app is already watching, which main reports here as well, so a
+   * file saved in one pane's folder marks its neighbour's row too.
+   *
+   * Only the status is re-read: a `.git` write is not a change to what a
+   * directory holds, so there is no listing to take again.
+   */
+  const stopGitWatching = window.mc.git.onChanged((event) => {
+    if (event.root === gitRoot) void loadGit()
+  })
+
   const stopWatching = window.mc.fs.onChanged((event) => {
     if (event.path === state.path) void refresh()
   })
 
   onScopeDispose(() => {
     stopWatching()
+    stopGitWatching()
     unwatchCurrent()
+    unwatchRepo()
     clearFresh()
   })
 
@@ -499,6 +586,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     state.renaming = null
     clearFresh()
     watchCurrent()
+    void loadGit()
   }
 
   function indexOfPath(rows: PaneEntry[], target: string): number {
@@ -544,6 +632,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     pruneSelection()
     markFresh(diffEntries(before, rows))
     watchCurrent()
+    void loadGit()
   }
 
   async function goUp(): Promise<void> {

@@ -6,6 +6,8 @@ import type {
   DirListing,
   FileContent,
   FsChangeEvent,
+  GitChangeEvent,
+  GitStatus,
   ImagePreview,
   PixelSize,
   MoveOutcome,
@@ -94,6 +96,16 @@ const api: McApi = {
   hide: {
     get: (): Promise<boolean> => ipcRenderer.invoke('hide:get'),
     set: (enabled: boolean): Promise<void> => ipcRenderer.invoke('hide:set', enabled)
+  },
+  git: {
+    status: (dir: string): Promise<Result<GitStatus>> => ipcRenderer.invoke('git:status', dir),
+    watch: (root: string): Promise<void> => ipcRenderer.invoke('git:watch', root),
+    unwatch: (root: string): Promise<void> => ipcRenderer.invoke('git:unwatch', root),
+    onChanged: (handler: (event: GitChangeEvent) => void) => {
+      const listener = (_event: IpcRendererEvent, payload: GitChangeEvent) => handler(payload)
+      ipcRenderer.on('git:changed', listener)
+      return () => ipcRenderer.off('git:changed', listener)
+    }
   }
 }
 
