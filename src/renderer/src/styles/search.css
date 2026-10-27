@@ -14,6 +14,44 @@
 }
 
 /*
+ * The search bar opens and closes by growing its clipping window, so the listing
+ * below is pushed down and pulled back up with it rather than jumping when a row
+ * lands. Height, not a slide inside a fixed window: the room the bar needs is the
+ * animation, which is what a push that moves the panel wants. 120ms, quick,
+ * because it answers a keystroke. The target height is the bar's own `h-7`
+ * (1.75rem); a touch of opacity keeps the clipped edge from reading as a hard cut.
+ */
+.search-enter-active {
+  animation: search-open 120ms ease-out both;
+}
+
+.search-leave-active {
+  animation: search-close 120ms ease-in both;
+}
+
+@keyframes search-open {
+  from {
+    height: 0;
+    opacity: 0;
+  }
+  to {
+    height: 1.75rem;
+    opacity: 1;
+  }
+}
+
+@keyframes search-close {
+  from {
+    height: 1.75rem;
+    opacity: 1;
+  }
+  to {
+    height: 0;
+    opacity: 0;
+  }
+}
+
+/*
  * The incremental search's refusal: a keystroke that would leave nothing to find
  * is turned away (see FilePanel's `onSearchInput`), and the field it landed in
  * pulses red to say the character did not take. The class is added by hand and

@@ -2963,40 +2963,47 @@ function onRenameBlur(): void {
         <span class="w-24 shrink-0 text-right">Modified</span>
       </div>
 
-      <div
-        v-if="controller.state.searchActive"
-        data-search
-        class="flex h-7 shrink-0 items-center gap-2 border-b border-border-subtle bg-bg-alt px-3"
-      >
-        <svg
-          viewBox="0 0 24 24"
-          class="h-3.5 w-3.5 shrink-0 text-fg-dim"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          aria-hidden="true"
-        >
-          <circle cx="11" cy="11" r="7" />
-          <path d="m20 20-3.6-3.6" />
-        </svg>
-        <input
-          ref="searchInput"
-          type="text"
-          class="search-input min-w-0 flex-1 bg-transparent font-mono text-ui text-fg outline-none placeholder:text-fg-dim"
-          placeholder="incremental search"
-          spellcheck="false"
-          autocomplete="off"
-          :value="controller.state.searchQuery"
-          @input="onSearchInput"
-        />
-        <span
-          v-if="controller.state.searchQuery"
-          class="shrink-0 tabular-nums text-ui-sm text-fg-dim"
-        >
-          {{ controller.state.itemCount }} matches
-        </span>
-      </div>
+      <!-- The bar opens the room it needs instead of appearing inside it: the
+           clipping window's own height animates, so the listing below is pushed
+           down and pulled back up with the bar rather than jumping when a row
+           lands. The bar itself is what the window clips as it grows. -->
+      <Transition name="search">
+        <div v-if="controller.state.searchActive" class="shrink-0 overflow-hidden">
+          <div
+            data-search
+            class="flex h-7 items-center gap-2 border-b border-border-subtle bg-bg-alt px-3"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              class="h-3.5 w-3.5 shrink-0 text-fg-dim"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              aria-hidden="true"
+            >
+              <circle cx="11" cy="11" r="7" />
+              <path d="m20 20-3.6-3.6" />
+            </svg>
+            <input
+              ref="searchInput"
+              type="text"
+              class="search-input min-w-0 flex-1 bg-transparent font-mono text-ui text-fg outline-none placeholder:text-fg-dim"
+              placeholder="incremental search"
+              spellcheck="false"
+              autocomplete="off"
+              :value="controller.state.searchQuery"
+              @input="onSearchInput"
+            />
+            <span
+              v-if="controller.state.searchQuery"
+              class="shrink-0 tabular-nums text-ui-sm text-fg-dim"
+            >
+              {{ controller.state.itemCount }} matches
+            </span>
+          </div>
+        </div>
+      </Transition>
 
       <!-- The window is always there and only clips: the message inside it is
            what travels (see styles/notice.css). Keyed on its text so a new

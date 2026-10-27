@@ -368,6 +368,10 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   dash on a 7.2px cell, so a sub-pixel glyph origin makes adjacent `_` fuse into one
   line or a dash fall between pixels and read as a space; snapping the advance to
   whole pixels keeps the count readable.
+- **The search bar grows its own clipping window open and shut** (`styles/search.css`),
+  animating height rather than sliding inside a fixed window, so the listing below is
+  pushed down and pulled back up with the bar instead of jumping when a row lands.
+  120ms, quick, because it answers a keystroke.
 - **The renderer has a CSP** in `src/renderer/index.html`. `img-src data:` and
   `media-src mc-media:` are what let a footer show a preview the renderer has no
   URL for.
