@@ -68,12 +68,13 @@ on playing as it changes column, and the columns keep the sizes they had, so the
 divider does not move,
 
 `Alt+S` starts an incremental search, `Alt+Enter` pastes the cursor entry's name
-onto the command line and `Alt+A` the directory holding it, closed with a
-separator — the folder rather than the entry's own path, since the line is where
-a command is typed and the folder is what one is handed, and closed because that
-is how the shell reads a path as a folder it can go on completing inside (both
-shell-quoted when they contain anything the shell would act on, so a space or a
-`$` arrives as part of the one argument, and both typed into the shell's own line
+onto the command line followed by a space and `Alt+A` the directory holding it,
+closed with a separator — the folder rather than the entry's own path, since the
+line is where a command is typed and the folder is what one is handed, and closed
+because that is how the shell reads a path as a folder it can go on completing
+inside (both shell-quoted when they contain anything the shell would act on, so a
+space or a `$` arrives as part of the one argument, and both typed into the shell's
+own line
 so its echo and history see a real command line),
 
 `Alt+.` switches the hide mode off and on — a `.mchide` file in a folder lists

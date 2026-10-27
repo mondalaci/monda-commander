@@ -620,11 +620,13 @@ function closeDirectory(dir: string): string {
 }
 
 /**
- * Alt+Enter puts the entry under the cursor on the command line, Alt+A the
- * directory holding it, closed with a separator. Both are typed into the
- * shell's own line (the collapsed strip), exactly as if the user had typed
- * them, so the shell's echo, history and editing keys all see a real line
- * rather than a value set behind its back.
+ * Alt+Enter puts the entry under the cursor on the command line, followed by a
+ * space, and Alt+A the directory holding it, closed with a separator. Both are
+ * typed into the shell's own line (the collapsed strip), exactly as if the user
+ * had typed them, so the shell's echo, history and editing keys all see a real
+ * line rather than a value set behind its back. The trailing space after a
+ * pasted name is what lets the next argument be typed straight away, without
+ * the user first reaching past the end of the name to separate it.
  *
  * The directory rather than the entry's own path, because the line is where a
  * command is typed and a folder is what a command is usually handed: the
@@ -638,7 +640,7 @@ function closeDirectory(dir: string): string {
 function pasteEntryName(): void {
   const entry = activePane.value.current()
   if (!entry || entry.isParent) return
-  shell.value.sendInput(shellQuote(entry.name))
+  shell.value.sendInput(`${shellQuote(entry.name)} `)
 }
 
 function pasteEntryPath(): void {
