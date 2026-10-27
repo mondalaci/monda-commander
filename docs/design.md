@@ -131,6 +131,22 @@ scrolls one period per cycle — a single band with a blank tail leaves a dead b
 between passes, which reads as the animation stalling. A batch over 150 entries is
 skipped so a big copy or checkout cannot animate hundreds of rows.
 
+### The cursor follows its entry, and otherwise the row before it
+
+A re-list keeps the cursor where it was by matching the entry's path, so an
+unrelated change — a file appearing in the folder — does not move it. When that
+entry is *gone* (deleted by another program, by a command at the prompt, by the
+other pane's `F8`, or by this pane's own), the cursor settles on the row closest
+**before** where it was rather than falling to the top of the listing: the nearest
+surviving predecessor in the order the user was looking at, falling forward only
+when nothing before it remains. `resolveAnchor` in `refresh` is the one place this
+rule lives, so `F8` carries no cursor logic of its own — the rows it deleted are
+simply absent from the listing the re-list reads back. Both listings that walk
+hands in are the *visible* ones (`filteredRows`), so a filter is respected: an
+active query cannot strand the cursor on a row it is hiding. `focusPath` still
+wins where the caller knows where the entry went — an in-place rename, a
+same-directory move, a fresh folder.
+
 ### Only changes made behind the app's back sweep
 
 A copy, move or `mkdir` the user asked for must not animate its own result, and

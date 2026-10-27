@@ -91,7 +91,10 @@ folder and putting `blah` inside it, and a trailing separator, `blah2/`, asks fo
 a folder instead), `Shift+F6` renames the cursor row in place, `F7` makes a
 directory in the pane being browsed — a dialog takes the name, which is a folder
 name or a path, relative to that pane or absolute, and the cursor lands on the
-new folder — and `F8` deletes them after confirmation.
+new folder — and `F8` deletes them after confirmation, leaving the cursor on the
+row just before the one that went (the `..` row when that was the first entry). A
+file removed from under the cursor some other way — another program, a command at
+the prompt, the other pane — lands it on the closest row before it all the same.
 
 `Backspace` never navigates: it belongs to the shell's line editor (or the search
 box), so the `..` row is the way up.

@@ -201,6 +201,52 @@ function diffEntries(before: PaneEntry[], after: PaneEntry[]): Set<string> {
   return changed
 }
 
+/**
+ * Where the cursor lands after a re-list: the row it was on when that row is
+ * still there, and otherwise the row closest *before* where it was — an entry
+ * that left the directory must not throw the cursor to the top of the listing.
+ *
+ * Both listings handed in are the *visible* ones (`filteredRows`), so a filter
+ * is respected: the walk reads the order the user was looking at, and a row the
+ * filter is hiding can never become the anchor. `focusPath` wins when it names a
+ * row, since the caller knows the entry under the cursor was renamed to it (an
+ * in-place rename, a move to a name in the same directory, a fresh folder). Only
+ * when nothing before the departed entry survives does the cursor fall forward.
+ *
+ * This is the one rule for a vanished cursor, so `F8` needs no walk of its own:
+ * the rows it deleted are simply absent from the listing handed back in.
+ */
+function resolveAnchor(
+  rows: PaneEntry[],
+  before: PaneEntry[],
+  previous: PaneEntry | undefined,
+  focusPath: string | undefined
+): PaneEntry | undefined {
+  if (focusPath) {
+    const focused = rows.find((row) => row.path === focusPath)
+    if (focused) return focused
+  }
+  if (!previous) return undefined
+
+  const present = new Set(rows.map((row) => row.path))
+  if (present.has(previous.path)) return previous
+
+  // The departed entry's place in the listing it left, so "closest before" is
+  // read from the order the user was looking at rather than from a re-sort.
+  const from = before.findIndex((row) => row.path === previous.path)
+  if (from < 0) return previous
+
+  for (let i = from - 1; i >= 0; i -= 1) {
+    const row = before[i]
+    if (row && present.has(row.path)) return row
+  }
+  for (let i = from + 1; i < before.length; i += 1) {
+    const row = before[i]
+    if (row && present.has(row.path)) return row
+  }
+  return previous
+}
+
 export interface PaneOptions {
   /**
    * Run a file the user asked to run. The pane decides *when* — Enter on a file
@@ -286,14 +332,20 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     return Math.min(Math.max(value, 0), last)
   }
 
-  function applyFilter(previous: PaneEntry | undefined = current()): void {
+  /**
+   * The rows the pane actually shows: `allRows` with the active query applied.
+   * The ".." row survives every filter, so it is never hidden by a search. The
+   * listing the cursor reads for its fallback (`resolveAnchor`) is this one, not
+   * `allRows`, so a filter cannot strand the cursor on a row it is hiding.
+   */
+  function filteredRows(): PaneEntry[] {
     const needle = state.searchQuery.trim().toLowerCase()
+    if (!needle) return state.allRows
+    return state.allRows.filter((row) => row.isParent || row.name.toLowerCase().includes(needle))
+  }
 
-    state.entries = needle
-      ? state.allRows.filter(
-          (row) => row.isParent || row.name.toLowerCase().includes(needle)
-        )
-      : state.allRows
+  function applyFilter(previous: PaneEntry | undefined = current()): void {
+    state.entries = filteredRows()
 
     state.itemCount = countRealRows(state.entries)
 
@@ -301,7 +353,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     // the ".." row survives every filter, so holding it would strand the
     // cursor there instead of landing on the match.
     let preserved = -1
-    if (previous && (needle === '' || !previous.isParent)) {
+    if (previous && (state.searchQuery.trim() === '' || !previous.isParent)) {
       preserved = state.entries.findIndex((row) => row.path === previous.path)
     }
 
@@ -604,6 +656,10 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
    * went — a move that renamed it in place, so its old path no longer exists.
    * The cursor lands on that new path instead of falling back to the first row,
    * exactly as navigateTo places it.
+   *
+   * An entry that simply left the directory — deleted by another program, by a
+   * shell command, or by a pane sharing it — takes the cursor with it only as
+   * far as the row closest before it (`resolveAnchor`), never to the top.
    */
   async function refresh(focusPath?: string): Promise<void> {
     if (!state.path || state.loading) return
@@ -614,9 +670,11 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
       return
     }
 
-    // Captured before `allRows` is replaced, so the diff below compares the
-    // listing as it was against the listing just read.
+    // Captured before the listing is replaced: `before` is what the diff below
+    // compares against, and `beforeVisible` is the order the cursor's fallback
+    // reads when the entry under it has gone.
     const before = state.allRows
+    const beforeVisible = state.entries
     const previous = current()
     state.error = null
     state.path = result.data.path
@@ -625,8 +683,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     state.hideNames = new Set(result.data.hiddenNames)
     const rows = buildRows()
     state.allRows = rows
-    const anchor = focusPath ? rows.find((row) => row.path === focusPath) ?? previous : previous
-    applyFilter(anchor)
+    applyFilter(resolveAnchor(filteredRows(), beforeVisible, previous, focusPath))
     // An entry the mode now covers carries no mark any more, exactly as one that
     // left the directory does not.
     pruneSelection()
@@ -880,36 +937,12 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     }
 
     // Drop the marks that are gone, keep any that failed so a retry still
-    // knows what the user meant, then re-list in place.
+    // knows what the user meant, then re-list in place. The cursor needs nothing
+    // done for it here: `refresh` settles it on the row closest before the one
+    // that went, over the rows the filter is showing, so an entry this delete
+    // took — the one under the cursor or not — falls the same way an externally
+    // deleted one does.
     for (const removed of result.data.deleted) state.selected.delete(removed)
-
-    // Park the cursor on the row just before the deleted one before re-listing:
-    // `refresh` preserves the entry under the cursor by path, and that entry is
-    // gone, so without this the cursor falls back to the first match. A row the
-    // cursor was not on (marked entries deleted from elsewhere) is left alone,
-    // and deleting the first row falls forward to the next one.
-    const deleted = new Set(result.data.deleted)
-    const underCursor = state.entries[state.cursor]
-    if (underCursor && deleted.has(underCursor.path)) {
-      let anchor = -1
-      for (let i = state.cursor - 1; i >= 0; i -= 1) {
-        const row = state.entries[i]
-        if (row && !deleted.has(row.path)) {
-          anchor = i
-          break
-        }
-      }
-      if (anchor < 0) {
-        for (let i = state.cursor + 1; i < state.entries.length; i += 1) {
-          const row = state.entries[i]
-          if (row && !deleted.has(row.path)) {
-            anchor = i
-            break
-          }
-        }
-      }
-      state.cursor = anchor >= 0 ? anchor : 0
-    }
 
     await refresh()
 
