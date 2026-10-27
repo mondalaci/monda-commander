@@ -2422,7 +2422,34 @@ onBeforeUnmount(() => {
 
 function onSearchInput(event: Event): void {
   const target = event.target
-  if (target instanceof HTMLInputElement) props.controller.updateSearch(target.value)
+  if (!(target instanceof HTMLInputElement)) return
+  // A keystroke that would leave the listing with nothing to find is refused:
+  // the input snaps back to the last query that did and the field pulses, so the
+  // typing goes nowhere instead of blanking the pane.
+  if (!props.controller.updateSearch(target.value)) {
+    // Put the last good query back, with the caret where the refused insertion
+    // began: assigning `value` drops the caret at the end, which would move it
+    // for a keystroke made mid-word.
+    const caretAfter = target.selectionStart ?? target.value.length
+    const inserted = target.value.length - props.controller.state.searchQuery.length
+    target.value = props.controller.state.searchQuery
+    const caret = Math.max(0, caretAfter - inserted)
+    target.setSelectionRange(caret, caret)
+    pulseSearchReject()
+  }
+}
+
+/**
+ * Flash the field red for one beat. The class goes off and back on around a
+ * forced layout read, so a second refused keystroke right after the first is not
+ * swallowed as "no change" and the pulse replays every time.
+ */
+function pulseSearchReject(): void {
+  const el = searchInput.value
+  if (!el) return
+  el.classList.remove('search-reject')
+  void el.offsetWidth
+  el.classList.add('search-reject')
 }
 
 function onPointerDown(event: MouseEvent): void {

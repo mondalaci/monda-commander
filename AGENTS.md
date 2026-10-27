@@ -351,6 +351,9 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   setup so it runs ahead of xterm's.
 - **Incremental search holds DOM focus in its input**, so `handlePaneKey` lets
   editing keys through and intercepts only navigation keys.
+- **A search keystroke that would leave nothing to find is refused.** `updateSearch`
+  returns whether it took; on a refusal the pane restores the last good query and
+  pulses the field red (`styles/search.css`), so the listing never blanks out.
 - **Focus model:** the command line holds focus whenever the terminal does not, so
   `focusPanes()` focuses the command line. The search box and the terminal are the
   other two targets.

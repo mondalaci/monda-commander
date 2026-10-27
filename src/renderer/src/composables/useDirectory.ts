@@ -91,7 +91,7 @@ export interface PaneController {
   createDirectory(name: string): Promise<string | null>
   deleteEntries(): Promise<void>
   openSearch(): void
-  updateSearch(query: string): void
+  updateSearch(query: string): boolean
   closeSearch(): void
   beginRename(): void
   cancelRename(): void
@@ -333,15 +333,33 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
   }
 
   /**
-   * The rows the pane actually shows: `allRows` with the active query applied.
-   * The ".." row survives every filter, so it is never hidden by a search. The
-   * listing the cursor reads for its fallback (`resolveAnchor`) is this one, not
-   * `allRows`, so a filter cannot strand the cursor on a row it is hiding.
+   * The rows matching a query, the ".." row always among them: it survives every
+   * filter, so it is never hidden by a search. An empty query is no filter at
+   * all. Both `filteredRows` and the acceptance test below read this, so what the
+   * listing shows and what a keystroke is judged by can never disagree.
    */
-  function filteredRows(): PaneEntry[] {
-    const needle = state.searchQuery.trim().toLowerCase()
+  function matchRows(query: string): PaneEntry[] {
+    const needle = query.trim().toLowerCase()
     if (!needle) return state.allRows
     return state.allRows.filter((row) => row.isParent || row.name.toLowerCase().includes(needle))
+  }
+
+  /**
+   * Whether a query would leave at least one real entry to find. The ".." row
+   * does not count: it is present under every filter, so on its own it is a
+   * search that found nothing.
+   */
+  function hasMatches(query: string): boolean {
+    return matchRows(query).some((row) => !row.isParent)
+  }
+
+  /**
+   * The rows the pane actually shows: `allRows` with the active query applied.
+   * The listing the cursor reads for its fallback (`resolveAnchor`) is this one,
+   * not `allRows`, so a filter cannot strand the cursor on a row it is hiding.
+   */
+  function filteredRows(): PaneEntry[] {
+    return matchRows(state.searchQuery)
   }
 
   function applyFilter(previous: PaneEntry | undefined = current()): void {
@@ -369,10 +387,18 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     applyFilter()
   }
 
-  function updateSearch(query: string): void {
-    if (!state.searchActive) return
+  /**
+   * Apply a keystroke's worth of query. A query that would leave nothing to find
+   * is refused outright rather than shown: the listing stays as it was and the
+   * caller is told, so the pane can put the last good query back and say why.
+   * Returns whether the query was accepted.
+   */
+  function updateSearch(query: string): boolean {
+    if (!state.searchActive) return false
+    if (!hasMatches(query)) return false
     state.searchQuery = query
     applyFilter()
+    return true
   }
 
   function closeSearch(): void {

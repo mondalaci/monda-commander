@@ -1,0 +1,22 @@
+/*
+ * The incremental search's refusal: a keystroke that would leave nothing to find
+ * is turned away (see FilePanel's `onSearchInput`), and the field it landed in
+ * pulses red to say the character did not take. The class is added by hand and
+ * never removed, so the animation runs once and the styles fall back to the
+ * field's own; the caller takes it off before putting it back on to replay it.
+ */
+.search-reject {
+  border-radius: 2px;
+  animation: search-reject-pulse 320ms ease-out;
+}
+
+@keyframes search-reject-pulse {
+  0%,
+  100% {
+    background-color: transparent;
+  }
+  25%,
+  75% {
+    background-color: color-mix(in srgb, var(--color-danger) 35%, transparent);
+  }
+}
