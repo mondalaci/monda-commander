@@ -2983,7 +2983,7 @@ function onRenameBlur(): void {
         <input
           ref="searchInput"
           type="text"
-          class="min-w-0 flex-1 bg-transparent font-mono text-ui text-fg outline-none placeholder:text-fg-dim"
+          class="search-input min-w-0 flex-1 bg-transparent font-mono text-ui text-fg outline-none placeholder:text-fg-dim"
           placeholder="incremental search"
           spellcheck="false"
           autocomplete="off"

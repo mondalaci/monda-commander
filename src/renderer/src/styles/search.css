@@ -1,4 +1,19 @@
 /*
+ * The search field is the mono font, and the body's `optimizeLegibility` lets
+ * Chromium place each glyph at a sub-pixel x. The mono cell is 7.2px at 12px but
+ * JetBrains Mono draws the underscore as an 80%-wide dash, so a sub-pixel offset
+ * decides whether two of them touch: "s__" rendered as one continuous line while
+ * "s___" rendered as three separate dashes, and a dash could go faint enough to
+ * read as a space — the query is in the field, but its length is not readable.
+ * `optimizeSpeed` snaps the advances to whole pixels, which keeps every dash and
+ * every gap the same at any count. It is the only mode that does: geometric
+ * precision and legibility both leave the sub-pixel placement in.
+ */
+.search-input {
+  text-rendering: optimizeSpeed;
+}
+
+/*
  * The incremental search's refusal: a keystroke that would leave nothing to find
  * is turned away (see FilePanel's `onSearchInput`), and the field it landed in
  * pulses red to say the character did not take. The class is added by hand and
