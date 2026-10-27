@@ -266,6 +266,20 @@ notice is the one that has to be seen, and a question of which stylesheet was
 imported last is not something to leave a silent rule to. The frame is a
 `box-shadow`, so it is the one part that stays through the sweep.
 
+### A mark is spent by the operation it asked for
+
+Once F5 or F6 has acted on the marks, the pane clears them: a mark is the promise
+about what the *next* transfer acts on, not a record of what the last one did, so
+rows left gold after a copy read as though the copy were still pending. A move
+drops them anyway — the entries leave the directory, and `refresh` prunes whatever
+the new listing does not hold — but a copy leaves its sources exactly where they
+were, so `copyEntries` has to apply the same rule by hand. It does it per target
+rather than as one `clearSelection`, leaving a source that *failed* still marked so
+a retry after a collision still knows what the user meant. That is the same rule
+delete already follows, whose removed rows take their marks with them while the
+failures keep theirs; only copy had nothing to prune it, because only copy leaves
+the entries behind.
+
 ### The right button: click, drag, hold
 
 A right *click* toggles the row's mark on the release; a right *drag* paints one

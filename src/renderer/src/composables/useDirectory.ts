@@ -751,8 +751,9 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
    * resolved against this pane's directory, so `sub` means `<pane>/sub` rather
    * than a path next to the app. Best-effort like delete: entries that collide
    * or cannot be read are reported without aborting the rest, and the source
-   * listing is re-read in place. Returns the resolved destination directory so
-   * the caller can refresh a pane showing it, or null on failure.
+   * listing is re-read in place. Marks for entries that copied are dropped, as
+   * a move's are when it takes them away. Returns the resolved destination
+   * directory so the caller can refresh a pane showing it, or null on failure.
    */
   async function copyEntries(destination: string): Promise<string | null> {
     const targets = selectionTargets()
@@ -766,6 +767,16 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     if (!result.ok) {
       state.error = `${result.error.code}: ${result.error.message}`
       return null
+    }
+
+    // A copy leaves the source in place, so nothing prunes the marks the way a
+    // move's departure does — but they have been spent all the same: a mark is
+    // the promise about what the *next* F5 acts on, not a record of what the
+    // last one did. A source that failed keeps its mark so a retry still knows
+    // what the user meant, exactly as `moveEntries` leaves it.
+    const failedPaths = new Set(result.data.failed.map((failure) => failure.path))
+    for (const target of targets) {
+      if (!failedPaths.has(target.path)) state.selected.delete(target.path)
     }
 
     await refresh()
