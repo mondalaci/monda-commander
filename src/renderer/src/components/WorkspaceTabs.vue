@@ -77,7 +77,7 @@ function onDrop(event: DragEvent): void {
         class="flex h-5 shrink-0 items-center rounded transition-colors"
         :class="[
           index === activeIndex
-            ? 'bg-selection text-fg-bright'
+            ? 'bg-accent text-fg-bright'
             : 'text-fg-dim hover:bg-hover hover:text-fg',
           dragIndex === index ? 'opacity-50' : ''
         ]"

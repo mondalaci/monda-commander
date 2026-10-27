@@ -46,7 +46,6 @@
   --color-fg-bright: #f0f0f0;
   --color-accent: #0e639c;
   --color-accent-strong: #1177bb;
-  --color-selection: #04395e;
   --color-selection-inactive: #37373d;
   --color-selected: #f2c94c;
   /* A marked row's band: the mark's own hue (45deg), hand-picked rather than
