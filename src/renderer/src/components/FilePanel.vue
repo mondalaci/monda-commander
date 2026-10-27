@@ -2758,7 +2758,7 @@ function rowClass(index: number): string {
   // on, and the name, the size and the date keep their own colors — including the
   // green of something runnable, which an answer carried in the text would have
   // had to spend.
-  const cursorBand = props.active ? 'bg-selection text-fg-bright' : 'bg-selection-inactive text-fg'
+  const cursorBand = props.active ? 'bg-accent text-fg-bright' : 'bg-selection-inactive text-fg'
 
   let base: string
   if (entry && props.controller.isSelected(entry)) {
