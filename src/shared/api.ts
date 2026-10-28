@@ -34,6 +34,12 @@ export interface McFsApi {
    */
   dirSize(target: string): Promise<Result<DirSize>>
   /**
+   * Stop every folder walk this window has running. The walks give up at their
+   * next batch, so a tree that is still being traversed does not keep the disk
+   * busy after the gesture that asked for it has been taken back.
+   */
+  cancelDirSize(): void
+  /**
    * The running total of a walk still in progress, so the row can show the size
    * as subdirectories are traversed. `path` is the folder the walk was asked
    * about; a pane ignores reports for folders it is not sizing.

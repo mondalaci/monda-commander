@@ -2812,6 +2812,15 @@ function rowBar(entry: PaneEntry): boolean {
 }
 
 /**
+ * Whether the number in the size column is an old answer whose recalculation is
+ * still queued: the row draws it dimmed until the walk starts, so a stale total
+ * is never mistaken for a fresh one.
+ */
+function rowStale(entry: PaneEntry): boolean {
+  return entry.kind === 'directory' && props.controller.state.sizeStale.has(entry.path)
+}
+
+/**
  * The size column's text. A file's size is its own metadata; a folder's is not
  * something a listing knows, so a folder's column stays blank until Space walks
  * it — and then it holds the running total, in the same column and the same
@@ -3128,8 +3137,11 @@ function onRenameBlur(): void {
           </span>
 
           <span
-            class="relative flex w-16 shrink-0 items-center justify-end tabular-nums text-fg"
-            :class="rowBar(row.entry) ? 'size-cell-bar' : ''"
+            class="relative flex w-16 shrink-0 items-center justify-end tabular-nums"
+            :class="[
+              rowBar(row.entry) ? 'size-cell-bar' : '',
+              rowStale(row.entry) ? 'text-fg-dim' : 'text-fg'
+            ]"
           >
             {{ sizeText(row.entry) }}
           </span>

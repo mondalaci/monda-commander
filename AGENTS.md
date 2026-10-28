@@ -33,9 +33,9 @@ for when it is wanted are in [`docs/verifying.md`](docs/verifying.md).
 ```
 src/main/index.ts        window lifecycle, single-instance lock
 src/main/windowState.ts  remembered window size/position/maximized flag
-src/main/ipc/fs.ts       IPC: fs:home, fs:list, fs:dir-size, fs:read, fs:write,
-                         fs:read-image, fs:image-size, fs:open, fs:reveal,
-                         fs:hide-add, fs:mkdir
+src/main/ipc/fs.ts       IPC: fs:home, fs:list, fs:dir-size, fs:dir-size-cancel,
+                         fs:read, fs:write, fs:read-image, fs:image-size, fs:open,
+                         fs:reveal, fs:hide-add, fs:mkdir
 src/main/imageSize.ts    header-only image dimensions (PNG/JPEG+EXIF/GIF/BMP/ICO/WebP/SVG)
 src/main/videoCodec.ts   header-only codec sniff for ISOBMFF (mp4/m4v/mov)
 src/main/media.ts        mc-media scheme: ranged video stream + live ffmpeg transcode
@@ -279,8 +279,22 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   a few files is walked faster than the eye catches and a bar that blinked for it
   would say nothing useful. `sizeSlow` is kept apart from `sizing` — the walk
   itself — so the delay is a display matter and not a second guess at when the
-  walk began. `Space` only reaches this when there is no clip to play, and
-  otherwise stays the shell's own space.
+  walk began. Space on the `..` row sizes every folder in the listing at once
+  and leaves the cursor where it is, since there is no row below that the gesture
+  could mean. The work is shaped for the fs thread pool rather than for fan-out:
+  main keeps a batch of `SIZE_STAT_BATCH` (12) `lstat`s in flight per walk, so a
+  single folder's stats are not one wait after another, while the pane allows only
+  `SIZE_WALK_LIMIT` (2) walks at a time and queues the rest — enough to saturate
+  the pool, not enough to flood it, and the rows then fill in the order they were
+  asked instead of all crawling at once. While a recalculation waits in that
+  queue, a folder that already had a size keeps showing it dimmed (`sizeStale`),
+  so an old total is never mistaken for a fresh one; the dim goes the moment the
+  walk starts and its running total takes the column. `Escape` stops every walk
+  in the app (`stopAllSizeWalks`): the queue is dropped by bumping an epoch, main
+  is told by `fs:dir-size-cancel` and gives up at its next batch, and each pane
+  restores the size the row showed before the walk (or blanks it), so a partial
+  sum is never left looking like a total. `Space` only reaches this when there is
+  no clip to play, and otherwise stays the shell's own space.
 
 - **`F7` makes a directory in the pane being browsed.** `fs:mkdir` resolves the
   name against that pane (absolute, or relative, as the transfer dialogs do) and

@@ -61,6 +61,14 @@ export interface PaneState {
    */
   sizeSlow: Set<string>
   /**
+   * Folders whose displayed size is stale: a recalculation is queued behind
+   * `SIZE_WALK_LIMIT` but has not started, so the number on the row is the
+   * previous answer. The row draws it dimmed rather than letting an old total
+   * pass for a fresh one while the walk waits for its turn; it is dropped the
+   * moment the walk starts, at which point the running total takes the column.
+   */
+  sizeStale: Set<string>
+  /**
    * Path of the entry currently being renamed in place, or null. The row list
    * keys off this to swap the name cell for an input; it is null whenever the
    * pane is not editing.
@@ -209,6 +217,72 @@ const QUIET_TAIL_MS = 1000
 const SIZE_BAR_DELAY_MS = 300
 
 /**
+ * How many folder walks may run at once, for the whole app. Each walk keeps a
+ * batch of stats in flight (see `SIZE_STAT_BATCH` in main), so two is already
+ * enough to saturate the fs thread pool; more would only queue behind it while
+ * costing memory, progress messages and — on a mechanical disk — the locality
+ * of walking one tree at a time. Two also fills the rows in an order that can be
+ * read, instead of every row crawling at once.
+ */
+const SIZE_WALK_LIMIT = 2
+
+/** Walks waiting for one of the `SIZE_WALK_LIMIT` slots, oldest first. */
+const sizeWalkQueue: Array<() => void> = []
+let sizeWalksRunning = 0
+
+/**
+ * Start queued walks while there is room. A job whose pane has moved on by the
+ * time it starts returns at once, so a queue left behind by a navigation drains
+ * without doing work whose answer no row could show.
+ */
+function pumpSizeWalks(): void {
+  while (sizeWalksRunning < SIZE_WALK_LIMIT && sizeWalkQueue.length > 0) {
+    const job = sizeWalkQueue.shift()
+    if (!job) break
+    sizeWalksRunning += 1
+    job()
+  }
+}
+
+/** Hold a walk until a slot is free, keeping the limit shared by both panes. */
+function queueSizeWalk(job: () => Promise<void>): void {
+  sizeWalkQueue.push(() => {
+    void job().finally(() => {
+      sizeWalksRunning -= 1
+      pumpSizeWalks()
+    })
+  })
+  pumpSizeWalks()
+}
+
+/**
+ * Bumped when Escape stops every walk in the app. A queued job carries the epoch
+ * it was asked under, so a queue that was still waiting is dropped whole instead
+ * of waking later for a listing whose walk has been taken back.
+ */
+let sizeEpoch = 0
+
+/** What each live pane does when the walks are stopped, one entry per controller. */
+const sizeStops = new Set<() => void>()
+
+/**
+ * Stop every folder walk in the app — the ones running and everything queued
+ * behind them — the way Escape takes back any other gesture. Main is told so a
+ * tree it is still traversing gives up at its next batch, and every pane clears
+ * the marks it was showing (restoring the size it had before the walk, if any).
+ * Answers whether there was anything to stop.
+ */
+export function stopAllSizeWalks(): boolean {
+  if (sizeWalkQueue.length === 0 && sizeWalksRunning === 0) return false
+
+  sizeWalkQueue.length = 0
+  sizeEpoch += 1
+  window.mc.fs.cancelDirSize()
+  for (const stop of sizeStops) stop()
+  return true
+}
+
+/**
  * Which entries a re-list found new or altered, by path. "Altered" is a changed
  * size, mtime or kind, which is exactly what the row's metadata columns show, so
  * a rewritten file is highlighted for the same reason a fresh one is.
@@ -308,7 +382,8 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     git: null,
     dirSizes: new Map<string, number>(),
     sizing: new Set<string>(),
-    sizeSlow: new Set<string>()
+    sizeSlow: new Set<string>(),
+    sizeStale: new Set<string>()
   })
 
   function current(): PaneEntry | undefined {
@@ -667,6 +742,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     stopWatching()
     stopGitWatching()
     stopDirSizeProgress()
+    sizeStops.delete(stopSizing)
     unwatchCurrent()
     unwatchRepo()
     clearFresh()
@@ -681,6 +757,37 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
    * the listing they were asked from, exactly as marks and the filter do.
    */
   let sizeRun = 0
+
+  /**
+   * What a folder's size column showed before the walk in flight overwrote it
+   * with a running total. `null` means there was no earlier answer. Stopping the
+   * walks puts this back, so Escape never leaves a partial sum looking like a
+   * size, nor erases a total the folder already had.
+   */
+  const sizePrior = new Map<string, number | null>()
+
+  /**
+   * Escape's half of the stop: clear the marks, put back what the rows showed
+   * before, and bump the run so an in-flight answer is ignored. Registered for
+   * the app's `stopAllSizeWalks`, which also tells main to give up.
+   */
+  const stopSizing = (): void => {
+    if (state.sizing.size === 0 && state.sizeSlow.size === 0) return
+
+    for (const path of state.sizing) {
+      const prior = sizePrior.get(path)
+      if (prior === undefined || prior === null) state.dirSizes.delete(path)
+      else state.dirSizes.set(path, prior)
+      sizePrior.delete(path)
+    }
+
+    state.sizing.clear()
+    state.sizeSlow.clear()
+    state.sizeStale.clear()
+    sizeRun += 1
+  }
+
+  sizeStops.add(stopSizing)
 
   async function navigateTo(dir: string, focusPath?: string): Promise<void> {
     state.loading = true
@@ -717,6 +824,8 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     state.dirSizes.clear()
     state.sizing.clear()
     state.sizeSlow.clear()
+    state.sizeStale.clear()
+    sizePrior.clear()
     clearFresh()
     watchCurrent()
     void loadGit()
@@ -810,48 +919,101 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
   }
 
   /**
+   * Start one folder's walk, if it is not already running. The running total
+   * lands in `dirSizes` as it arrives, the bar's timer raises `sizeSlow` after
+   * `SIZE_BAR_DELAY_MS`, and the final answer overwrites the running one. Each
+   * walk carries the run it began under, so one started before a navigation is
+   * dropped when its answer comes back for a listing the pane has left.
+   *
+   * The walk itself waits for one of the app's `SIZE_WALK_LIMIT` slots: the
+   * folder is marked as sizing at once (so Space cannot ask twice for it), but
+   * neither the request nor the bar's timer starts before a slot is free.
+   */
+  function startSizeWalk(path: string): void {
+    if (state.sizing.has(path)) return
+
+    const run = sizeRun
+    const epoch = sizeEpoch
+    state.sizing.add(path)
+    // Keep what the row showed before the running total overwrites it, so
+    // Escape's stop can put it back (`stopSizing`).
+    if (!sizePrior.has(path)) sizePrior.set(path, state.dirSizes.get(path) ?? null)
+    // A row already showing an answer is stale the moment a recalculation is
+    // asked for: the number is the old one until this walk actually starts.
+    if (state.dirSizes.has(path)) state.sizeStale.add(path)
+
+    queueSizeWalk(async () => {
+      // The pane may have left the listing, or Escape may have stopped the
+      // walks, while this waited for a slot: no answer it could bring would
+      // belong to the rows on screen any more.
+      if (run !== sizeRun || epoch !== sizeEpoch) return
+
+      // The slot is this walk's: the dim old number gives way to the running
+      // total that is about to replace it.
+      state.sizeStale.delete(path)
+
+      const slowTimer = window.setTimeout(() => {
+        if (run !== sizeRun) return
+        state.sizeSlow.add(path)
+      }, SIZE_BAR_DELAY_MS)
+
+      try {
+        const result = await window.mc.fs.dirSize(path)
+        if (run !== sizeRun) return
+        if (result.ok) {
+          state.dirSizes.set(path, result.data.bytes)
+        } else {
+          state.error = `${result.error.code}: ${result.error.message}`
+        }
+      } finally {
+        // The walk is over before the mark is cleared, so a late progress report
+        // can no longer revise the final total and the bar's timer cannot raise
+        // a bar for a walk that has ended.
+        window.clearTimeout(slowTimer)
+        if (run === sizeRun) {
+          state.sizing.delete(path)
+          state.sizeSlow.delete(path)
+          state.sizeStale.delete(path)
+          sizePrior.delete(path)
+        }
+      }
+    })
+  }
+
+  /**
    * Space on a folder: walk its contents for their total size, in the
    * background, and step to the next row so a column of folders can be asked
    * about in one pass. The answer lands in the row's own size column, exactly
    * where a file's size is; nothing waits for it, since a tree can take a
    * moment and the gesture asks the question rather than waiting for it.
    *
-   * A bar appears under the number only once the walk has been running for
+   * Space on the ".." row asks about all of them at once: every folder in the
+   * listing is walked, and the cursor is left where it is, since there is no
+   * row below to step to that the gesture could mean.
+   *
+   * A bar appears under a number only once its walk has been running for
    * `SIZE_BAR_DELAY_MS`: a small folder is walked in a millisecond or two and a
    * bar that blinked for it would say nothing useful.
    *
-   * Answers false for anything Space is not this: a file, the ".." row, an empty
-   * pane. The caller then lets the key go on to the clip's play/pause and to the
-   * shell's own space, so nothing a Space did before is taken away.
+   * Answers false for anything Space is not this: a file, an empty directory, a
+   * listing with no folder in it. The caller then lets the key go on to the
+   * clip's play/pause and to the shell's own space, so nothing a Space did
+   * before is taken away.
    */
   function sizeDirectory(): boolean {
     const entry = current()
-    if (!entry || entry.isParent || entry.kind !== 'directory') return false
+    if (!entry) return false
 
-    if (!state.sizing.has(entry.path)) {
-      const run = sizeRun
-      state.sizing.add(entry.path)
-      const slowTimer = window.setTimeout(() => {
-        if (run !== sizeRun) return
-        state.sizeSlow.add(entry.path)
-      }, SIZE_BAR_DELAY_MS)
-
-      void window.mc.fs.dirSize(entry.path).then((result) => {
-        if (run !== sizeRun) return
-        // The walk is over before anything else, so a late progress report can
-        // no longer revise the final total and a fresh ask is not refused, and
-        // the bar's own timer must not raise a bar for a walk that has ended.
-        window.clearTimeout(slowTimer)
-        state.sizing.delete(entry.path)
-        state.sizeSlow.delete(entry.path)
-        if (result.ok) {
-          state.dirSizes.set(entry.path, result.data.bytes)
-        } else {
-          state.error = `${result.error.code}: ${result.error.message}`
-        }
-      })
+    if (entry.isParent) {
+      const folders = state.allRows.filter((row) => !row.isParent && row.kind === 'directory')
+      if (folders.length === 0) return false
+      for (const folder of folders) startSizeWalk(folder.path)
+      return true
     }
 
+    if (entry.kind !== 'directory') return false
+
+    startSizeWalk(entry.path)
     moveCursor(1)
     return true
   }

@@ -25,6 +25,7 @@ const api: McApi = {
     list: (dir: string): Promise<Result<DirListing>> => ipcRenderer.invoke('fs:list', dir),
     dirSize: (target: string): Promise<Result<DirSize>> =>
       ipcRenderer.invoke('fs:dir-size', target),
+    cancelDirSize: () => ipcRenderer.send('fs:dir-size-cancel'),
     onDirSizeProgress: (handler: (event: DirSizeProgress) => void) => {
       const listener = (_event: IpcRendererEvent, payload: DirSizeProgress) => handler(payload)
       ipcRenderer.on('fs:dir-size-progress', listener)

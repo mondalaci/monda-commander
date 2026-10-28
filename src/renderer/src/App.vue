@@ -12,7 +12,7 @@ import FileViewer from '@renderer/components/FileViewer.vue'
 import PaneContextMenu from '@renderer/components/PaneContextMenu.vue'
 import { loadHideMode, hideMode, toggleHideMode } from '@renderer/composables/useHideMode'
 import { createWorkspace, type Workspace } from '@renderer/composables/useWorkspace'
-import type { PaneController, PaneEntry } from '@renderer/composables/useDirectory'
+import { stopAllSizeWalks, type PaneController, type PaneEntry } from '@renderer/composables/useDirectory'
 import {
   loadTranscodeSupport,
   previewKeyFor,
@@ -1254,8 +1254,9 @@ function handlePaneKey(event: KeyboardEvent): void {
   // display's clip, or the footer preview under the cursor. With nothing to
   // play it asks about the folder under the cursor instead: its contents are
   // walked and the row's size column says how much is in there, and the cursor
-  // steps on so a column of folders can be sized in one pass. With neither,
-  // it stays a space for the shell, so a command can still start with one.
+  // steps on so a column of folders can be sized in one pass — or, from the
+  // ".." row, every folder in the listing at once. With none of that, it stays
+  // a space for the shell, so a command can still start with one.
   if (event.key === ' ' && !event.repeat && !searching && !hasInput) {
     if (togglePlayback() || pane.sizeDirectory()) {
       consume(event)
@@ -1277,6 +1278,10 @@ function handlePaneKey(event: KeyboardEvent): void {
       collapseTerminal()
       return
     }
+    // A folder walk is the only thing still working in the background, and
+    // Escape is the gesture that takes back whatever is running. Stopping it
+    // first keeps the notice below as the last thing Escape has to leave.
+    if (stopAllSizeWalks()) return
     // The pane's notice is the last thing Escape has to leave: a refused F3/F4
     // (a binary file), a failed copy or a directory that would not list. It
     // stays until dismissed or replaced, and this is the way to put it away.

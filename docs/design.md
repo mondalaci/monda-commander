@@ -486,7 +486,11 @@ the entry: a `DirEntry` is the listing's own metadata and a walk is a separate
 question with a separate lifetime. It is asked in the background and the cursor
 steps to the next row immediately — the gesture is "size this one and move on",
 so holding `Space` walks a column of folders while the rows fill in behind the
-cursor. The row does not sit at `…` until the end: main sends the running total
+cursor. The `..` row is that gesture's widest form: `Space` there starts a walk
+for every folder in the listing and leaves the cursor alone, because the row is
+not a way down into anything and there is no "next" it could mean. The rows then
+fill in independently, each with its own bar if its own walk outlasts the delay.
+The row does not sit at `…` until the end: main sends the running total
 back as `fs:dir-size-progress`, throttled to one report per hundred milliseconds
 so a tree of hundreds of thousands of files costs messages in the tens rather
 than one per file, and the pane writes each report into the same map the final
@@ -500,6 +504,36 @@ started for the folder the pane just left cannot land in the new listing's rows,
 exactly as marks and the filter do not cross directories. `refresh` leaves the
 map alone — a write in the pane's own directory says nothing about the contents
 of a folder below it.
+
+The work is shaped for the fs thread pool, not for fan-out. A walk keeps a batch
+of `SIZE_STAT_BATCH` (12) `lstat`s in flight per directory, so a folder's stats
+are not a chain of one-syscall waits; that is what actually reduces wall time,
+because a stat is mostly latency. Fanning out every folder at once would add no
+parallelism past the pool's four threads — it would only queue, multiply the
+per-walk `readdir` arrays and progress messages, scatter a mechanical disk's
+seeks across many trees, and make every row crawl instead of finishing in order.
+So the pane allows `SIZE_WALK_LIMIT` (2) walks at a time and queues the rest
+(`queueSizeWalk` in `useDirectory.ts`): two walks with a batch each already keep
+the pool full, the rows fill in the order they were asked, and a queued folder is
+marked `sizing` from the ask (so Space cannot ask twice) while its bar's timer
+starts only when its slot is reached — a wait in a queue is not progress. A folder
+that already had a total keeps showing it while it waits, but dimmed
+(`sizeStale`): the number is the previous answer, not this walk's, and the dim is
+what says so until the walk starts and the running total takes the column. That is
+the difference between "this is what I found before" and "this is what I am
+finding now", drawn in the one place both would otherwise look identical.
+
+Escape takes the walks back, because they are the only thing the app still does
+in the background. `stopAllSizeWalks` drops the queue by bumping a shared epoch,
+tells main with `fs:dir-size-cancel` (a flag per walk, checked between stat
+batches — a `readdir` already in flight cannot be un-read), and calls each pane's
+`stopSizing`. Each pane bumps its own run so an answer still on its way is
+ignored, clears `sizing`/`sizeSlow`, and restores the size the row showed before
+the walk started (`sizePrior`), or blanks it if it had none: a partial sum that
+stops with Escape must not be left looking like the folder's total. The gesture is
+global on purpose — walks belong to panes of workspaces that may not even be on
+screen, and one Escape meaning "stop that" is simpler than a per-pane rule nobody
+can see.
 
 A long walk says it is still going with a bar, because a walk is indeterminate:
 the total is precisely what is not known yet. It is a 2px bar sliding along the
@@ -515,8 +549,9 @@ separate from `sizing` — the walk itself — so the delay is a display matter 
 not a second guess at when the walk started.
 
 `Space` reaches this only after the clip call has declined: a display or a footer
-preview under the cursor keeps `Space` as play/pause, and a file or the `..` row
-leaves it to the shell, so no key that already meant something lost it.
+preview under the cursor keeps `Space` as play/pause, and a file, an empty folder
+or a listing with no folder in it leaves it to the shell, so no key that already
+meant something lost it.
 
 ## Git status
 

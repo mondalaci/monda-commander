@@ -18,8 +18,9 @@ accept-line; `Space` pauses or resumes the clip being watched there — the
 display's, or the footer preview if none is up — and with no clip it walks the
 folder under the cursor, counting the total up in the row's size column as
 subdirectories are traversed, and steps to the next row so a column of folders can
-be sized in one pass; with neither a clip nor a folder it stays the shell's own
-space),
+be sized in one pass — or, from the `..` row, sizes every folder in the listing
+at once and leaves the cursor where it is; with none of that it stays the shell's
+own space),
 
 `Enter` descends, or runs a file the user can run in the workspace's own shell —
 the green name is a promise, and the shell is where it is kept, shown for as long
@@ -98,6 +99,9 @@ new folder — and `F8` deletes them after confirmation, leaving the cursor on t
 row just before the one that went (the `..` row when that was the first entry). A
 file removed from under the cursor some other way — another program, a command at
 the prompt, the other pane — lands it on the closest row before it all the same.
+
+`Escape` stops the size walks: a folder walk is the only thing still working in
+the background, so it is taken back before the pane's notice is dismissed.
 
 `Backspace` never navigates: it belongs to the shell's line editor (or the search
 box), so the `..` row is the way up.

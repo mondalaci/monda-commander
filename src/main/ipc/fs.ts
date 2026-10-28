@@ -180,6 +180,17 @@ export async function listDirectory(input: string): Promise<DirListing> {
 const SIZE_PROGRESS_MS = 100
 
 /**
+ * How many `lstat`s one walk keeps in flight. A walk used to stat a directory's
+ * files one at a time, which leaves three of the fs thread pool's four threads
+ * idle while every call waits; a batch keeps the pool busy without a single walk
+ * monopolising it. The batch is small on purpose: the walks themselves are
+ * limited too (two at a time in the pane), so the worst case is a handful of
+ * queued stats rather than an unbounded fan-out that would delay the app's
+ * listings and previews.
+ */
+const SIZE_STAT_BATCH = 12
+
+/**
  * The total size of everything under a directory, in bytes. The walk does not
  * follow symlinks — a link back up its own tree would make it endless, and the
  * answer is about what the folder itself holds — so a link is counted as the
@@ -192,18 +203,25 @@ const SIZE_PROGRESS_MS = 100
  *
  * `onProgress` is called with the running total, throttled to `SIZE_PROGRESS_MS`,
  * so a row can say how much has been found while the rest is still being walked.
+ *
+ * `isCancelled` is checked between batches: a walk that has been taken back
+ * answers `null` rather than a total, so a partial sum is never presented as the
+ * size of the folder.
  */
 async function directorySize(
   input: string,
-  onProgress?: (bytes: number) => void
-): Promise<DirSize> {
+  onProgress?: (bytes: number) => void,
+  isCancelled?: () => boolean
+): Promise<DirSize | null> {
   const root = path.resolve(input)
   let bytes = 0
   let lastReport = 0
   const pending: string[] = [root]
 
+  const cancelled = (): boolean => isCancelled?.() ?? false
+
   const report = (): void => {
-    if (onProgress === undefined) return
+    if (onProgress === undefined || cancelled()) return
     const now = Date.now()
     if (lastReport !== 0 && now - lastReport < SIZE_PROGRESS_MS) return
     lastReport = now
@@ -211,6 +229,8 @@ async function directorySize(
   }
 
   while (pending.length > 0) {
+    if (cancelled()) return null
+
     const dir = pending.pop() as string
 
     let dirents
@@ -224,18 +244,31 @@ async function directorySize(
       continue
     }
 
-    for (const dirent of dirents) {
-      const full = path.join(dir, dirent.name)
-      if (dirent.isDirectory()) {
-        pending.push(full)
-        continue
-      }
-      try {
-        bytes += (await fs.lstat(full)).size
-      } catch {
-        // Vanished, or not ours to read: it contributes nothing.
-      }
-      // The first entry reports at once, so a row says something is happening
+    for (let start = 0; start < dirents.length; start += SIZE_STAT_BATCH) {
+      if (cancelled()) return null
+
+      // A batch of entries at a time, so the stats of one directory are not a
+      // chain of waits. Subdirectories are only queued here — the walk visits
+      // them in turn below — and the pushed paths keep the walk's own order.
+      const batch = dirents.slice(start, start + SIZE_STAT_BATCH)
+      const sizes = await Promise.all(
+        batch.map(async (dirent) => {
+          const full = path.join(dir, dirent.name)
+          if (dirent.isDirectory()) {
+            pending.push(full)
+            return 0
+          }
+          try {
+            return (await fs.lstat(full)).size
+          } catch {
+            // Vanished, or not ours to read: it contributes nothing.
+            return 0
+          }
+        })
+      )
+      for (const size of sizes) bytes += size
+
+      // The first batch reports at once, so a row says something is happening
       // even when the walk is spread over many directories.
       report()
     }
@@ -509,6 +542,17 @@ async function readImageSizeForPreview(input: string): Promise<PixelSize | null>
   }
 }
 
+/**
+ * One folder walk's cancellation flag. The walks of a window are kept together
+ * by the webContents that asked, because Escape's "stop that" is the window's,
+ * and a cancel must reach every walk it started.
+ */
+interface SizeWalk {
+  cancelled: boolean
+}
+
+const sizeWalks = new Map<number, Set<SizeWalk>>()
+
 export function registerFsHandlers(): void {
   ipcMain.handle('fs:home', () => os.homedir())
 
@@ -524,6 +568,16 @@ export function registerFsHandlers(): void {
     if (typeof target !== 'string' || target.length === 0) {
       return { ok: false, error: { code: 'EINVAL', message: 'No directory to size' } }
     }
+
+    const sender = event.sender
+    const walk: SizeWalk = { cancelled: false }
+    let walks = sizeWalks.get(sender.id)
+    if (!walks) {
+      walks = new Set()
+      sizeWalks.set(sender.id, walks)
+    }
+    walks.add(walk)
+
     try {
       // `stat` rather than `lstat` so a link to a folder is a folder here too,
       // exactly as the listing shows it: the walk below is what must not follow
@@ -539,14 +593,36 @@ export function registerFsHandlers(): void {
       }
 
       const resolved = path.resolve(target)
-      const data = await directorySize(resolved, (bytes) => {
-        if (event.sender.isDestroyed()) return
-        event.sender.send('fs:dir-size-progress', { path: resolved, bytes })
-      })
+      const data = await directorySize(
+        resolved,
+        (bytes) => {
+          if (sender.isDestroyed()) return
+          sender.send('fs:dir-size-progress', { path: resolved, bytes })
+        },
+        () => walk.cancelled || sender.isDestroyed()
+      )
+
+      // A taken-back walk has no answer: reporting a partial total as the size
+      // of the folder would be worse than reporting nothing.
+      if (data === null) {
+        return { ok: false, error: { code: 'EABORTED', message: 'Size walk stopped' } }
+      }
       return { ok: true, data }
     } catch (error) {
       return { ok: false, error: toFsError(error) }
+    } finally {
+      walks.delete(walk)
+      if (walks.size === 0) sizeWalks.delete(sender.id)
     }
+  })
+
+  // Escape gives the walks back. A flag rather than an abort of a socket: the
+  // walk is a set of fs calls already in flight, and the batch boundary is the
+  // soonest it can honestly stop without leaving a readdir half-consumed.
+  ipcMain.on('fs:dir-size-cancel', (event) => {
+    const walks = sizeWalks.get(event.sender.id)
+    if (!walks) return
+    for (const walk of walks) walk.cancelled = true
   })
 
   ipcMain.handle('fs:open', async (_event, target: string) => {
