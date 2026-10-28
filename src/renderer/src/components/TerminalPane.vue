@@ -69,8 +69,41 @@ let promptColumn = 0
 let promptRow = -1
 let promptKnown = false
 
+// Readline draws the line itself only in response to keys, and those keys are
+// the ones that put text on the line the model cannot see: history recall (Up,
+// Ctrl+P/Ctrl+N), reverse search (Ctrl+R) and yank (Ctrl+Y). While one is in
+// flight the prompt cannot be re-read — the cursor is not at the prompt's end —
+// so the remembered spot is left alone, which is what lets a recalled line read
+// as occupied. A key that submits or clears the line turns the guard off again,
+// so the prompt the shell prints next is read fresh. (The shell's own prompt
+// prints, which is what the cwd sync ends with, do not carry these keys, and so
+// are free to move the remembered spot.)
+const LINE_EDIT_SEQUENCES = ['\u001b[A', '\u001b[B', '\u001bOA', '\u001bOB']
+let lineEditPending = false
+
+function noteLineEdit(data: string): void {
+  for (const char of data) {
+    const code = char.codePointAt(0) ?? 0
+    if (code === 13 || code === 10 || code === 3 || code === 21) {
+      lineEditPending = false
+      return
+    }
+  }
+  if (LINE_EDIT_SEQUENCES.some((seq) => data.includes(seq))) {
+    lineEditPending = true
+    return
+  }
+  for (const char of data) {
+    const code = char.codePointAt(0) ?? 0
+    if (code === 0x10 || code === 0x0e || code === 0x12 || code === 0x19) {
+      lineEditPending = true
+      return
+    }
+  }
+}
+
 function capturePrompt(): void {
-  if (!term) return
+  if (!term || lineEditPending) return
   if (!props.shell.idle.value || props.shell.inputLine.value.length > 0) return
   const buffer = term.buffer.active
   promptColumn = buffer.cursorX
@@ -243,6 +276,7 @@ function startTerminal(): void {
   refit()
 
   term.onData((data) => {
+    noteLineEdit(data)
     props.shell.noteInput(data)
     props.shell.write(data)
   })
@@ -250,6 +284,15 @@ function startTerminal(): void {
   // Output scrolls the two-row buffer, and the sync's erase moves the cursor
   // back up a row; either way the strip has to follow the cursor's row.
   term.onCursorMove(() => applyStripViewport())
+
+  // The prompt is re-read from every parse, not only from the shell's idle
+  // transition: the panel -> shell `cd` sync is a builtin, so it never leaves
+  // the shell's process group and `pty:state` never sees a busy spell — no
+  // transition comes, yet the prompt it prints (a new cwd, so a new length and
+  // possibly a new row) has moved the spot the arrows compare against. Reading
+  // after each parse lets the last one — the prompt — win, while a key-driven
+  // readline redraw is held off by `lineEditPending` above.
+  term.onWriteParsed(() => capturePrompt())
 
   term.attachCustomKeyEventHandler((event) => {
     const isTerminalToggle =
@@ -283,6 +326,12 @@ function startTerminal(): void {
 // to be empty and the cursor's resting place is the prompt's own.
 watch(() => props.shell.idle.value, (idle) => {
   if (idle) capturePrompt()
+})
+
+// A line the app clears behind readline's back — `Escape` sends a kill-line
+// itself rather than going through `onData` — still ends the edit guard.
+watch(() => props.shell.inputLine.value, (line) => {
+  if (line.length === 0) lineEditPending = false
 })
 
 watch(

@@ -63,6 +63,13 @@ to the clip (`seekPreview`) instead of the line — so the panes' keys take the
 terminal's word for it as well: `TerminalPane.lineHasContent()` remembers where
 the cursor rests while the shell reports it is waiting at a prompt (that spot is
 the prompt's end), and calls the line occupied once the cursor is anywhere else.
+The spot is re-read from every parsed write, not only from the idle transition,
+because the panel → shell `cd` sync is a **builtin**: it never leaves the shell's
+process group, so `pty:state` never reports a busy spell and the transition that
+a `cd` typed into the shell would produce never comes, while the prompt it prints
+(a new cwd, so a new length and possibly a new row) has still moved the spot. A
+key-driven readline redraw — the exact thing that must read as occupied — is held
+off, so it does not overwrite the spot with the end of the recalled line.
 The remembered spot can go stale and read an empty line as occupied, which only
 costs the clip scrub; the reverse — an occupied line read as empty — would send
 the arrows away from the text, which is the one thing that must not happen.
