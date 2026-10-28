@@ -133,6 +133,17 @@ const VIEWPORT_FALLBACK_ROWS = 60
 // The footer mirrors the status of this pane's own cursor and marks.
 const entry = computed(() => props.controller.current())
 const selectedCount = computed(() => props.controller.selectedCount())
+const selectedSize = computed(() => props.controller.selectedSize())
+
+/**
+ * What the marked entries add up to, as the footer shows it. A total that leaves
+ * a marked folder's contents uncounted reads as a lower bound (`≥`), so an
+ * unsized folder is never taken for an empty one.
+ */
+const selectedSizeText = computed(() => {
+  const { bytes, partial } = selectedSize.value
+  return `${partial ? '≥ ' : ''}${formatSize(bytes)}`
+})
 
 /**
  * Whether this directory has a hide list at all — a `.mchide` file naming
@@ -3883,7 +3894,7 @@ function onRenameBlur(): void {
           </template>
 
           <span v-if="selectedCount > 0" class="tabular-nums text-selected">
-            {{ selectedCount }} selected
+            {{ selectedCount }} selected · {{ selectedSizeText }}
           </span>
         </div>
       </div>

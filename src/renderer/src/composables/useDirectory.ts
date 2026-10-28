@@ -201,6 +201,11 @@ export interface PaneController {
   removeFocusedColumn(): void
   isSelected(entry: PaneEntry): boolean
   selectedCount(): number
+  /**
+   * The total size of the marked entries, and whether that total is only a lower
+   * bound — a marked folder whose contents no walk has counted yet.
+   */
+  selectedSize(): { bytes: number; partial: boolean }
   setSelected(path: string, value: boolean): void
   toggleSelection(): void
   toggleSelectAll(): void
@@ -1443,6 +1448,34 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     return state.selected.size
   }
 
+  /**
+   * What the marked entries add up to, for the footer beside the count. A file's
+   * size is its own metadata, and a folder's is the total Space walked it to when
+   * it has been walked — the same number its own row shows — while a marked
+   * folder no walk has answered for yet is reported as `partial` rather than
+   * counted as nothing, so the footer can say "at least" and an unsized folder
+   * never passes for an empty one. Read from `allRows` like `selectionTargets`,
+   * so a filter cannot hide a mark from the total.
+   */
+  function selectedSize(): { bytes: number; partial: boolean } {
+    let bytes = 0
+    let partial = false
+    for (const row of state.allRows) {
+      if (row.isParent || !state.selected.has(row.path)) continue
+      if (row.kind === 'directory') {
+        const walked = state.dirSizes.get(row.path)
+        if (walked === undefined) {
+          partial = true
+          continue
+        }
+        bytes += walked
+      } else {
+        bytes += row.size
+      }
+    }
+    return { bytes, partial }
+  }
+
   function setSelected(path: string, value: boolean): void {
     if (value) state.selected.add(path)
     else state.selected.delete(path)
@@ -1716,6 +1749,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     removeFocusedColumn,
     isSelected,
     selectedCount,
+    selectedSize,
     setSelected,
     toggleSelection,
     toggleSelectAll,
