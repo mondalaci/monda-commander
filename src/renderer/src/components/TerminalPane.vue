@@ -51,6 +51,45 @@ function measureStripRow(): void {
   if (measured > 0) stripRowHeight = measured
 }
 
+// Where the prompt ends, as a terminal position. The app models the command
+// line from the bytes xterm sends (`shell.inputLine`), which is enough while the
+// user types — but readline also puts text on the line itself: an entry recalled
+// from history with Up or Ctrl+P, a Tab completion, a Ctrl+Y yank. The model
+// cannot see those, yet emptiness is what decides whether the arrows edit the
+// line or scrub the clip, so it has to come from the terminal. While the shell
+// reports it is waiting at a prompt with an empty line, the cursor rests at the
+// prompt's end; that spot is remembered, and any later cursor position that
+// differs from it means the line holds something. The cost is one-sided on
+// purpose: a stale spot can make an empty line look occupied (the arrows go to
+// the shell, which does nothing at an empty line, and only the clip scrub is
+// missed until the next prompt), while a missed line — the model saying empty
+// when readline has drawn text — would send the arrows to the clip instead of
+// the line, which is exactly what must not happen.
+let promptColumn = 0
+let promptRow = -1
+let promptKnown = false
+
+function capturePrompt(): void {
+  if (!term) return
+  if (!props.shell.idle.value || props.shell.inputLine.value.length > 0) return
+  const buffer = term.buffer.active
+  promptColumn = buffer.cursorX
+  promptRow = buffer.baseY + buffer.cursorY
+  promptKnown = true
+}
+
+/**
+ * Whether the command line holds anything at all, read from the terminal so
+ * text readline produced on its own is seen as well as what was typed. False
+ * until a prompt has been read, so before that the model's word stands.
+ */
+function lineHasContent(): boolean {
+  if (!term || !promptKnown) return false
+  const buffer = term.buffer.active
+  const row = buffer.baseY + buffer.cursorY
+  return buffer.cursorX !== promptColumn || row !== promptRow
+}
+
 // The last styles written by applyStripViewport. It runs on every cursor move
 // (onCursorMove), so unchanged values must not be rewritten.
 let stripHeight = ''
@@ -232,14 +271,28 @@ function startTerminal(): void {
   void props.shell.ensureStarted(props.cwd, term.cols, term.rows).then(() => {
     refit()
     scheduleRefit()
+    // A remount (a workspace switch, an HMR update) reattaches to a shell that
+    // may already be sitting at a prompt, so the idle transition the watcher
+    // below waits for may already have happened: read the prompt's end here too.
+    capturePrompt()
   })
 }
+
+// The shell reports it is at a prompt a poll after the prompt is printed, so
+// this is where the prompt's end is read off — the one moment the line is known
+// to be empty and the cursor's resting place is the prompt's own.
+watch(() => props.shell.idle.value, (idle) => {
+  if (idle) capturePrompt()
+})
 
 watch(
   () => props.expanded,
   (expanded) => {
     void nextTick(() => {
       refit()
+      // Expanding and collapsing reflows the grid, moving the prompt's end; a
+      // fresh read keeps the remembered spot honest.
+      capturePrompt()
       if (expanded) focusTerminal()
     })
   },
@@ -283,7 +336,7 @@ function onFocusOut(event: FocusEvent): void {
   emit('focused-change', false)
 }
 
-defineExpose({ focusTerminal })
+defineExpose({ focusTerminal, lineHasContent })
 </script>
 
 <template>

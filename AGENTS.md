@@ -124,7 +124,11 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   remount re-attaches instead of respawning.
 - **The collapsed strip is the shell, so its input line is state we model.**
   `shell.inputLine` (one per workspace) is fed from `onData`; it decides whether
-  `Enter` runs the line or activates the panel entry.
+  `Enter` runs the line or activates the panel entry. It cannot see what readline
+  draws itself (Up/Ctrl+P recall, completion, yank), so the panes' keys ask the
+  terminal whether the line is occupied through `TerminalPane.lineHasContent()`
+  (the cursor against the remembered prompt end), which is what keeps the arrows
+  on the line rather than on the clip after a history recall.
 - **The panel and the shell keep their cwd in sync in both directions**, which
   needs a guard: the shell's cwd is polled (300ms), so `pendingPush` in
   `useWorkspace.ts` marks the path we asked for so stale reads cannot bounce the

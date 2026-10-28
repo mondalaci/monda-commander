@@ -1193,7 +1193,11 @@ function isCtrlShift(event: KeyboardEvent): boolean {
 function handlePaneKey(event: KeyboardEvent): void {
   const pane = activePane.value
   const searching = pane.state.searchActive
-  const hasInput = shellInput.value.length > 0
+  // The model only sees what was typed, so a line readline drew itself — a
+  // history entry recalled with Up or Ctrl+P, a completion — is asked of the
+  // terminal, which knows where its prompt ends.
+  const hasInput =
+    shellInput.value.length > 0 || (terminalRef.value?.lineHasContent() ?? false)
 
   // An in-place rename hands the keyboard to its input, exactly like search:
   // printable characters, Backspace and the arrow keys edit the text, and

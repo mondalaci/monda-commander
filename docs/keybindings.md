@@ -11,8 +11,10 @@ to the shell and the navigation keys still drive the panes.
 `Tab` switches panes, arrows/`Home`/`End`/`PgUp`/`PgDn` move the cursor
 (`←`/`→` step the clip being previewed by ten seconds, and `Ctrl+J`/`Ctrl+L` by
 a minute back/forward while `Ctrl+H`/`Ctrl+;` step it by ten minutes — all only
-while the command line is empty; with anything typed there — or in an open search
-box — the arrows are the line's own keys again and the Ctrl steps belong to the
+while the command line is empty; with anything on it — typed, or put there by
+readline itself (Up/Ctrl+P history recall, a completion, a yank), which the
+terminal is asked about rather than the keystroke model — or in an open search
+box, the arrows are the line's own keys again and the Ctrl steps belong to the
 shell, whose `Ctrl+H` is backspace, `Ctrl+L` clear-screen and `Ctrl+J`
 accept-line; `Space` pauses or resumes the clip being watched there — the
 display's, or the footer preview if none is up — and with no clip it walks the

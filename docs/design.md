@@ -55,6 +55,20 @@ respawns.
 whether `Enter` runs the line or activates the panel entry, and it stops the cwd
 sync from injecting a `cd` into a half-typed command.
 
+The model only sees what was *typed*, and readline also draws the line itself: a
+history entry recalled with Up or Ctrl+P, a Tab completion, a Ctrl+Y yank are put
+there without a byte reaching `onData`, so the model reads empty while the line
+is full. Emptiness has consequences beyond `Enter` — it is what hands the arrows
+to the clip (`seekPreview`) instead of the line — so the panes' keys take the
+terminal's word for it as well: `TerminalPane.lineHasContent()` remembers where
+the cursor rests while the shell reports it is waiting at a prompt (that spot is
+the prompt's end), and calls the line occupied once the cursor is anywhere else.
+The remembered spot can go stale and read an empty line as occupied, which only
+costs the clip scrub; the reverse — an occupied line read as empty — would send
+the arrows away from the text, which is the one thing that must not happen.
+(`shell.inputLine`, unfixed, still gates the cwd sync, so the sync can still
+append to a line recalled from history.)
+
 ### Panel → shell cwd sync
 
 The panel and the shell keep their cwd in sync in both directions, which is why
