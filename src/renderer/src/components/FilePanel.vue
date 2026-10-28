@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { ComponentPublicInstance } from 'vue'
-import type { PaneController, PaneEntry, ScrollAlign } from '@renderer/composables/useDirectory'
+import type { PaneController, PaneEntry, ScrollAlign, SortKey } from '@renderer/composables/useDirectory'
 import { isRunnable } from '@renderer/lib/executable'
 import {
   formatDuration,
@@ -135,6 +135,187 @@ const selectedCount = computed(() => props.controller.selectedCount())
  * reads as on or off is the app-wide mode, which `hideMode` carries.
  */
 const hideListed = computed(() => props.controller.state.hideNames.size > 0)
+
+/**
+ * The column the listing is ordered by, and the way it runs. The header draws
+ * the direction beside the column in use, and clicking a header asks the pane to
+ * re-order — the pane owns the choice, so it survives this view being remounted
+ * and stays with the directory it was made in.
+ */
+const sortKey = computed(() => props.controller.state.sortKey)
+const sortDir = computed(() => props.controller.state.sortDir)
+
+/**
+ * The arrow beside a sorted column: a downward one for ascending, an upward one
+ * for descending. It is drawn only on the column in use, so an unsorted header
+ * says nothing about an order it is not part of.
+ */
+function sortArrow(key: SortKey): string | null {
+  if (sortKey.value !== key) return null
+  return sortDir.value === 'asc' ? '↓' : '↑'
+}
+
+function onSortClick(key: SortKey): void {
+  props.controller.sortBy(key)
+}
+
+/**
+ * The columns left to right, which the header, the rows and the drag all read
+ * from one place: a dropped header reorders this, and both the header and every
+ * row's cells follow it, so a column can never be shown in one and not the other.
+ */
+const columnOrder = computed(() => props.controller.state.columnOrder)
+
+/** The heading each column is labelled with, wherever it has been dragged to. */
+const COLUMN_LABELS: Record<SortKey, string> = {
+  name: 'Name',
+  size: 'Size',
+  modified: 'Modified'
+}
+
+/**
+ * How a column's header is laid out: the name takes the room left over and its
+ * text leads, while the two metadata columns keep their measured widths and
+ * right-align their numbers, matching the cells below them.
+ */
+function headerClass(key: SortKey): string {
+  if (key === 'name') return 'min-w-0 flex-1 gap-1.5 text-left'
+  return `${key === 'size' ? 'w-16' : 'w-24'} shrink-0 justify-end gap-1`
+}
+
+/**
+ * The header being dragged, and the gap it would be dropped into. The dragged
+ * column says what would move; the gap is where the insertion point is drawn and
+ * is what the drop uses — the gesture says *between which columns*, never "onto
+ * this one".
+ */
+const draggingColumn = ref<SortKey | null>(null)
+const dropIndex = ref<number | null>(null)
+
+/** The header row, for measuring the columns against the pointer. */
+const headerEl = ref<HTMLElement | null>(null)
+
+/**
+ * When the last column drag ended, so a click the browser still delivers after
+ * it can be told from a real one. A header is both sortable and draggable, and
+ * without this a reorder would also re-sort the listing on the drop.
+ */
+let columnDragEndedAt = 0
+
+function onColumnDragStart(key: SortKey, event: DragEvent): void {
+  draggingColumn.value = key
+
+  const data = event.dataTransfer
+  const target = event.currentTarget
+  if (!data || !(target instanceof HTMLElement)) return
+
+  data.effectAllowed = 'move'
+  // Some platforms need a payload for the drop to be allowed at all; the key is
+  // the only thing it could mean.
+  data.setData('text/plain', key)
+
+  // The header is a transparent button, so the image the browser would lift on
+  // its own is bare text. Build a chip instead — the same label on a solid
+  // background, the way the column reads in the bar — so what is being dragged
+  // is legible against whatever it passes over. The clone is laid out offscreen
+  // (it must be in the document to be painted) and taken away once the browser
+  // has captured it.
+  const ghost = target.cloneNode(true) as HTMLElement
+  ghost.removeAttribute('data-column')
+  ghost.removeAttribute('draggable')
+  Object.assign(ghost.style, {
+    position: 'fixed',
+    top: '-1000px',
+    left: '-1000px',
+    height: `${target.offsetHeight}px`,
+    boxSizing: 'border-box',
+    padding: '0 6px',
+    background: 'var(--color-surface-2)',
+    color: 'var(--color-fg-bright)',
+    border: '1px solid var(--color-accent-strong)',
+    borderRadius: '3px',
+    boxShadow: '0 2px 6px rgba(0, 0, 0, 0.45)',
+    opacity: '1'
+  })
+  document.body.appendChild(ghost)
+  data.setDragImage(ghost, ghost.offsetWidth / 2, ghost.offsetHeight / 2)
+  window.setTimeout(() => ghost.remove(), 0)
+}
+
+/**
+ * Where the dragged column would land: the gap nearest the pointer, read from
+ * which column's midpoint the pointer has passed. Measuring the columns rather
+ * than the gap under the pointer is what keeps a fast drag honest — the pointer
+ * may be over no column at all between two of them, and the nearest midpoint
+ * still names the gap it means.
+ */
+function onHeaderDragOver(event: DragEvent): void {
+  if (draggingColumn.value === null) return
+  const container = headerEl.value
+  if (container === null) return
+
+  const columns = container.querySelectorAll<HTMLElement>('[data-column]')
+  let index = columns.length
+  for (let i = 0; i < columns.length; i += 1) {
+    const rect = columns[i]!.getBoundingClientRect()
+    if (event.clientX < rect.left + rect.width / 2) {
+      index = i
+      break
+    }
+  }
+  dropIndex.value = index
+}
+
+function onHeaderDrop(): void {
+  const from = draggingColumn.value
+  const to = dropIndex.value
+  if (from !== null && to !== null) props.controller.moveColumn(from, to)
+  onColumnDragEnd()
+}
+
+/**
+ * Whether a gap is where the dragged column already sits — its own before-gap or
+ * after-gap. Dropping there can change nothing, so no insertion point is shown
+ * for it and the gesture does not offer a place it would not move to.
+ */
+function gapIsNoop(index: number): boolean {
+  const from = draggingColumn.value
+  if (from === null) return false
+  const at = columnOrder.value.indexOf(from)
+  return index === at || index === at + 1
+}
+
+function onColumnDragEnd(): void {
+  draggingColumn.value = null
+  dropIndex.value = null
+  columnDragEndedAt = performance.now()
+  releaseHeaderFocus()
+}
+
+/**
+ * Hand the keyboard back after a header was used. A header is a real button, so
+ * clicking it leaves DOM focus on it — where typing would go nowhere and the
+ * command line would render unfocused. Blurring it lands focus on the body,
+ * which the app's own focus model re-claims for the command line, exactly as a
+ * click on any other piece of chrome does. Dragging must not `preventDefault`
+ * its mousedown — that would cancel the drag — so the focus is given back here
+ * instead, once the gesture is over.
+ */
+function releaseHeaderFocus(): void {
+  const active = document.activeElement
+  if (active instanceof HTMLElement && active.closest('.pane-header-gutter')) active.blur()
+}
+
+function onHeaderClick(key: SortKey): void {
+  // A drop can be followed by a click on the header it landed on; a gesture that
+  // only just ended a drag is that click, not a request to sort.
+  if (performance.now() - columnDragEndedAt < 250) {
+    releaseHeaderFocus()
+    return
+  }
+  onSortClick(key)
+  releaseHeaderFocus()
+}
 
 /**
  * The row this pane's footer previews: the cursor row when it is a regular file
@@ -2997,11 +3178,48 @@ function onRenameBlur(): void {
       </div>
 
       <div
-        class="pane-header-gutter flex h-6 shrink-0 items-center gap-1.5 border-b border-border-subtle bg-bg pl-3 text-ui-sm text-fg-dim"
+        ref="headerEl"
+        class="pane-header-gutter relative flex h-6 shrink-0 items-center gap-1.5 border-b border-border-subtle bg-bg pl-3 text-ui-sm text-fg-dim"
+        @dragover.prevent="onHeaderDragOver"
+        @drop.prevent="onHeaderDrop"
       >
-        <span class="min-w-0 flex-1">Name</span>
-        <span class="w-16 shrink-0 text-right">Size</span>
-        <span class="w-24 shrink-0 text-right">Modified</span>
+        <!-- Each header is the column's own switch: clicking it orders the
+             listing by that column, and dragging it moves the column to another
+             place among the headers. The arrow sits to the right of the name and
+             only on the column in use, so the header itself says what the listing
+             is ordered by and which way it runs. -->
+        <button
+          v-for="(col, i) in columnOrder"
+          :key="col"
+          type="button"
+          draggable="true"
+          data-column
+          class="relative flex cursor-pointer select-none items-center transition-colors hover:text-fg"
+          :class="[
+            headerClass(col),
+            sortKey === col ? 'text-fg-bright' : '',
+            draggingColumn === col ? 'opacity-50' : ''
+          ]"
+          :title="`Sort by ${COLUMN_LABELS[col]} — drag to move the column`"
+          @click="onHeaderClick(col)"
+          @dragstart="onColumnDragStart(col, $event)"
+          @dragend="onColumnDragEnd"
+        >
+          <!-- Where the dragged column would land: a gap, drawn between two
+               headers, never a highlight on a column — a column is not the thing
+               being dropped onto, a place between columns is what is being
+               chosen. -->
+          <span
+            v-if="dropIndex === i && !gapIsNoop(i)"
+            class="pointer-events-none absolute inset-y-0 -left-[3px] w-0.5 rounded-full bg-accent-strong"
+          />
+          <span :class="col === 'name' ? 'min-w-0 truncate' : ''">{{ COLUMN_LABELS[col] }}</span>
+          <span v-if="sortArrow(col)" class="shrink-0">{{ sortArrow(col) }}</span>
+          <span
+            v-if="i === columnOrder.length - 1 && dropIndex === columnOrder.length && !gapIsNoop(columnOrder.length)"
+            class="pointer-events-none absolute inset-y-0 -right-[3px] w-0.5 rounded-full bg-accent-strong"
+          />
+        </button>
       </div>
 
       <!-- The bar opens the room it needs instead of appearing inside it: the
@@ -3090,67 +3308,76 @@ function onRenameBlur(): void {
           @click="onRowClick(row.index)"
           @dblclick="onRowDblclick"
         >
-          <span class="relative flex w-4 shrink-0 items-center justify-center">
-            <FileIcon :entry="row.entry" />
-            <!-- The row's whole mark: a dot on its own icon, the colour of the
-                 status and nothing else — filled for the entry itself, a ring for
-                 a folder that only holds one. What it means in words is in the
-                 row's title. -->
-            <span
-              v-if="row.git"
-              class="pointer-events-none absolute -right-1 -bottom-1 h-1.5 w-1.5 rounded-full border"
-              :style="dotStyle(row.git, true)"
-              :title="markTitle(row.git.mark, row.git.count, row.git.rollup)"
-            />
-          </span>
+          <template v-for="col in columnOrder" :key="col">
+            <!-- The name column carries the row's icon, its name and the link
+                 that name may point to, so all of it travels together when the
+                 column is dragged to another place. -->
+            <span v-if="col === 'name'" class="flex min-w-0 flex-1 items-center gap-2">
+              <span class="relative flex w-4 shrink-0 items-center justify-center">
+                <FileIcon :entry="row.entry" />
+                <!-- The row's whole mark: a dot on its own icon, the colour of the
+                     status and nothing else — filled for the entry itself, a ring
+                     for a folder that only holds one. What it means in words is in
+                     the row's title. -->
+                <span
+                  v-if="row.git"
+                  class="pointer-events-none absolute -right-1 -bottom-1 h-1.5 w-1.5 rounded-full border"
+                  :style="dotStyle(row.git, true)"
+                  :title="markTitle(row.git.mark, row.git.count, row.git.rollup)"
+                />
+              </span>
 
-          <input
-            v-if="controller.state.renaming === row.entry.path"
-            :ref="setRenameInput"
-            type="text"
-            class="min-w-0 flex-1 rounded border border-accent-strong bg-bg px-1 font-mono text-ui text-fg outline-none"
-            :value="row.entry.name"
-            spellcheck="false"
-            autocomplete="off"
-            @keydown="onRenameKey"
-            @blur="onRenameBlur"
-            @mousedown.stop
-            @click.stop
-            @dblclick.stop
-          />
-          <span v-else class="flex min-w-0 flex-1 items-center gap-2">
-            <span
-              class="min-w-0 shrink truncate"
-              :class="nameClass(row.index)"
-              @click="onNameClick(row.index, $event)"
-              >{{ row.entry.name }}</span
-            >
+              <input
+                v-if="controller.state.renaming === row.entry.path"
+                :ref="setRenameInput"
+                type="text"
+                class="min-w-0 flex-1 rounded border border-accent-strong bg-bg px-1 font-mono text-ui text-fg outline-none"
+                :value="row.entry.name"
+                spellcheck="false"
+                autocomplete="off"
+                @keydown="onRenameKey"
+                @blur="onRenameBlur"
+                @mousedown.stop
+                @click.stop
+                @dblclick.stop
+              />
+              <span v-else class="flex min-w-0 flex-1 items-center gap-2">
+                <span
+                  class="min-w-0 shrink truncate"
+                  :class="nameClass(row.index)"
+                  @click="onNameClick(row.index, $event)"
+                  >{{ row.entry.name }}</span
+                >
 
-            <span
-              v-if="row.entry.isSymlink && row.entry.symlinkTarget"
-              class="min-w-0 shrink truncate text-ui-sm"
-              :class="symlinkTargetClass(row.index)"
-              :title="row.entry.symlinkTarget"
-            >
-              → {{ row.entry.symlinkTarget }}
+                <span
+                  v-if="row.entry.isSymlink && row.entry.symlinkTarget"
+                  class="min-w-0 shrink truncate text-ui-sm"
+                  :class="symlinkTargetClass(row.index)"
+                  :title="row.entry.symlinkTarget"
+                >
+                  → {{ row.entry.symlinkTarget }}
+                </span>
+              </span>
             </span>
-          </span>
 
-          <span
-            class="relative flex w-16 shrink-0 items-center justify-end tabular-nums"
-            :class="[
-              rowBar(row.entry) ? 'size-cell-bar' : '',
-              rowStale(row.entry) ? 'text-fg-dim' : 'text-fg'
-            ]"
-          >
-            {{ sizeText(row.entry) }}
-          </span>
-          <span
-            class="w-24 shrink-0 text-right tabular-nums text-fg"
-            :title="row.entry.isParent ? undefined : formatExactDate(row.entry.mtimeMs)"
-          >
-            {{ row.entry.isParent ? '' : formatRelativeDate(row.entry.mtimeMs) }}
-          </span>
+            <span
+              v-else-if="col === 'size'"
+              class="relative flex w-16 shrink-0 items-center justify-end tabular-nums"
+              :class="[
+                rowBar(row.entry) ? 'size-cell-bar' : '',
+                rowStale(row.entry) ? 'text-fg-dim' : 'text-fg'
+              ]"
+            >
+              {{ sizeText(row.entry) }}
+            </span>
+            <span
+              v-else
+              class="w-24 shrink-0 text-right tabular-nums text-fg"
+              :title="row.entry.isParent ? undefined : formatExactDate(row.entry.mtimeMs)"
+            >
+              {{ row.entry.isParent ? '' : formatRelativeDate(row.entry.mtimeMs) }}
+            </span>
+          </template>
         </li>
         <li
           v-if="bottomPad > 0"

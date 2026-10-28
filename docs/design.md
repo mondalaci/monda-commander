@@ -204,6 +204,54 @@ smaller. The message is keyed by its text, so a new one replaces the old through
 the animation (out-in: the old ascends, the next descends) while a repeat of an
 identical one is the same notice still standing and does not re-announce itself.
 
+### The columns sort, and can be rearranged
+
+Each header is its column's switch. Clicking one orders the listing by that
+column; a column not in use becomes the sort ascending, and the column already in
+use flips (ascending → descending → ascending), so one header walks both
+directions with no third state. The direction is drawn beside the name it belongs
+to — a downward arrow for ascending, an upward one for descending — and only on
+the column in use, so an unsorted header claims nothing about an order it is not
+part of.
+
+The order lives in the pane (`sortKey` / `sortDir` in `useDirectory`), not in
+`FilePanel`, so it survives the view being remounted on a tab switch and stays
+with the directory it was chosen in rather than resetting on navigation. Folders
+keep their place in front whatever the column — a directory is not a row among
+files, it is where they live — and within each group the chosen column decides,
+in the chosen direction. The name is the tie-break, always ascending: entries the
+column cannot tell apart (two files of one size) keep a stable, alphabetical
+order rather than whatever order the read happened to return. When the column
+*is* the name, that tie-break is the comparison itself, so the default is exactly
+the old folders-then-name order. The `..` row is prepended rather than sorted in,
+so no column — a size, a time — can move the way up out of first place.
+
+The columns can also be dragged into another order. `columnOrder` in the pane is
+the single source both the header and the rows' cells read, so a dropped header
+can never put a column in one and not the other; the name column carries the
+row's icon, its name and its symlink target, so all of it travels together. The
+gesture chooses a *gap*, not a column: while dragging, an insertion point — a
+short accent bar — is drawn between the two headers the column would land
+between, read from which column's midpoint the pointer has passed (measuring the
+columns rather than the gap under the pointer keeps a fast drag honest, since the
+pointer may be over no column at all between two of them). The gaps on either
+side of the dragged column itself are not offered, because dropping there would
+move nothing. A drop inserts at that gap; `moveColumn` takes a gap index in the
+order as it stands before the move and corrects it for the column being lifted
+out, so a gap to the right closes up by one.
+
+A header is both sortable and draggable, and a browser may still deliver a click
+after a drag, so a drop is told from a click by the time the drag ended
+(`columnDragEndedAt`) and never sorts as well. The image the drag carries is
+built rather than borrowed: a header is a transparent button, so the browser's
+own image is bare text, and `setDragImage` is handed an offscreen clone painted
+as a chip — the same label on a solid background, the way the column reads in the
+bar — so what is being dragged stays legible over whatever it passes. A click or
+a drag leaves DOM focus on the button, where typing would go nowhere; the header
+gives it back once the gesture is over, and the app's own focus model re-claims
+it for the command line. Dragging cannot `preventDefault` its `mousedown` — that
+would cancel the drag — so this is done on the way out rather than on the way in.
+
 ## The hide mode (`.mchide`)
 
 ### A `.mchide` file puts a directory in hide mode

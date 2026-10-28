@@ -156,6 +156,24 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   `endSelfChange` in `useDirectory` silence `markFresh` for the operation plus a
   1000ms tail. `App.vue` wraps the F5/F6 transfer on both panes and mutes the
   panes at the shell's directory from a submitted command until it settles.
+- **The columns sort, and can be dragged into another order.** A header click
+  cycles its column: ascending if it was not the sort, otherwise ascending ⇄
+  descending; the sorted header draws its direction (↓ ascending, ↑ descending)
+  to the right of its name. Folders stay in front whatever the column, the name
+  is the always-ascending tie-break (so default = the old order), and the `..`
+  row is prepended rather than sorted. `sortKey`/`sortDir`/`columnOrder` live in
+  the *pane* (`useDirectory`), and `columnOrder` is the one source the header and
+  every row's cells read, so the name column (icon, name, symlink target
+  included) can be dragged anywhere. The drag shows an **insertion point — a gap
+  between two headers**, not a highlight on a column: the gap is read from which
+  column's midpoint the pointer has passed, the two gaps beside the dragged
+  column are not offered (nothing would move), and `moveColumn` takes that gap
+  index and corrects it for the column being lifted out. The drag image is a chip
+  built by `setDragImage` from an offscreen clone, not the browser's bare-text
+  image of a transparent button, so it carries its background. A drop reorders
+  without also sorting (the drag's end is timed), and the header gives DOM focus
+  back on the way out — dragging must not `preventDefault` its `mousedown`.
+  Reasoning in [`docs/design.md`](docs/design.md).
 - **The pane's row list must contain only entries.** The status notice is a
   sibling of the `<ul>`, never an `<li>` (an extra `<li>` shifts every index). The
   notice travels (`styles/notice.css`) and is keyed by its text.

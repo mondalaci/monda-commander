@@ -8,6 +8,16 @@ export type PaneEntry = DirEntry & { isParent?: boolean }
 
 export type ScrollAlign = 'nearest' | 'start' | 'end'
 
+/**
+ * Which column the listing is ordered by. These are the headers the pane shows,
+ * and each is a question the entry's own metadata already answers — no column
+ * here asks main for anything a listing does not carry.
+ */
+export type SortKey = 'name' | 'size' | 'modified'
+
+/** Whether the chosen column runs smallest-to-largest or the other way. */
+export type SortDirection = 'asc' | 'desc'
+
 export interface PaneState {
   side: PanelSide
   path: string
@@ -30,6 +40,22 @@ export interface PaneState {
   cursor: number
   pageRows: number
   scrollAlign: ScrollAlign
+  /**
+   * The column the listing is ordered by, and the way it runs. Held per pane so
+   * each can be read in the order its own user asked for, and kept across a
+   * navigation — walking into a folder should not throw away how it was being
+   * read.
+   */
+  sortKey: SortKey
+  sortDir: SortDirection
+  /**
+   * The left-to-right order of the listing's columns, kept per pane. It is not
+   * the sort: that says *which* column orders the rows, this says where each
+   * column is shown, and dragging a header rearranges one without touching the
+   * other. The ".." row and every cell follow it, so moving a column moves what
+   * belongs to it.
+   */
+  columnOrder: SortKey[]
   /**
    * Whether the move that just happened should be shown as a quick scroll
    * rather than a jump. Only a page or an end-to-end jump asks for it — a
@@ -105,6 +131,10 @@ export interface PaneController {
   activate(): Promise<void>
   current(): PaneEntry | undefined
   sizeDirectory(): boolean
+  /** Re-order the listing by a column, cycling the direction of the one in use. */
+  sortBy(key: SortKey): void
+  /** Move a column to a gap in the header order, for a dragged header. */
+  moveColumn(from: SortKey, toIndex: number): void
   isSelected(entry: PaneEntry): boolean
   selectedCount(): number
   setSelected(path: string, value: boolean): void
@@ -142,11 +172,41 @@ function parentOf(target: string): string {
 
 const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
 
-function sortEntries(entries: DirEntry[]): DirEntry[] {
+/**
+ * The order of two entries under one column, ascending, before the direction is
+ * applied: names through the listing's own collator, sizes numerically, and
+ * times earliest first. A folder's size is whatever its row shows — blank until
+ * Space walks it — so an unsized folder reads here as zero, which is to say the
+ * column cannot tell it from an empty file.
+ */
+function compareByKey(a: DirEntry, b: DirEntry, key: SortKey): number {
+  switch (key) {
+    case 'size':
+      return a.size - b.size
+    case 'modified':
+      return a.mtimeMs - b.mtimeMs
+    default:
+      return collator.compare(a.name, b.name)
+  }
+}
+
+/**
+ * The listing's order. Folders keep their place in front — a directory is not a
+ * row among files, it is where they live — and within the two groups the chosen
+ * column decides, in the chosen direction. The name is always the tie-break,
+ * ascending: entries a column cannot tell apart (two files of one size) keep a
+ * stable, alphabetical order rather than whatever order the read returned. When
+ * the column *is* the name, that tie-break is the comparison itself.
+ */
+function sortEntries(entries: DirEntry[], key: SortKey, direction: SortDirection): DirEntry[] {
+  const flip = direction === 'desc' ? -1 : 1
   return [...entries].sort((a, b) => {
     const aDir = a.kind === 'directory'
     const bDir = b.kind === 'directory'
     if (aDir !== bDir) return aDir ? -1 : 1
+
+    const byKey = compareByKey(a, b, key)
+    if (byKey !== 0) return byKey * flip
     return collator.compare(a.name, b.name)
   })
 }
@@ -154,10 +214,17 @@ function sortEntries(entries: DirEntry[]): DirEntry[] {
 /**
  * The rows for a set of entries: sorted, with the ".." row in front when there
  * is somewhere to go. The entries handed in are already the ones the pane shows,
- * so the hide filter has been applied by the caller.
+ * so the hide filter has been applied by the caller. The ".." row is prepended
+ * rather than sorted in, so no chosen column — a size, a time — can move the way
+ * up out of first place.
  */
-function toRows(entries: DirEntry[], parent: string | null): PaneEntry[] {
-  const sorted = sortEntries(entries)
+function toRows(
+  entries: DirEntry[],
+  parent: string | null,
+  key: SortKey,
+  direction: SortDirection
+): PaneEntry[] {
+  const sorted = sortEntries(entries, key, direction)
   if (!parent) return sorted
 
   const parentRow: PaneEntry = {
@@ -371,6 +438,9 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     cursor: 0,
     pageRows: 10,
     scrollAlign: 'nearest',
+    sortKey: 'name',
+    sortDir: 'asc',
+    columnOrder: ['name', 'size', 'modified'],
     animateScroll: false,
     searchActive: false,
     searchQuery: '',
@@ -402,7 +472,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
       hideMode.value && names.size > 0
         ? state.allEntries.filter((entry) => !names.has(entry.name))
         : state.allEntries
-    return toRows(entries, state.parent)
+    return toRows(entries, state.parent, state.sortKey, state.sortDir)
   }
 
   /**
@@ -919,6 +989,44 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
   }
 
   /**
+   * Order the listing by a column, from a click on its header. A column not in
+   * use becomes the sort in ascending order; the column already in use flips —
+   * ascending to descending, descending back to ascending — so the same header
+   * walks the two directions without a third state to pass through. The rows are
+   * rebuilt in place and the cursor is kept on the entry it was on, as any other
+   * re-order of the same directory does.
+   */
+  function sortBy(key: SortKey): void {
+    const previous = current()
+    if (state.sortKey === key) {
+      state.sortDir = state.sortDir === 'asc' ? 'desc' : 'asc'
+    } else {
+      state.sortKey = key
+      state.sortDir = 'asc'
+    }
+    state.allRows = buildRows()
+    applyFilter(previous)
+  }
+
+  /**
+   * Move a column into a gap in the header order — a header dropped where the
+   * insertion point was shown. `toIndex` is a gap in the order as it stands
+   * before the move (0 before the first column, `length` after the last), so a
+   * gap to the right of the dragged column closes up by one once that column is
+   * lifted out, which is what `target` corrects for.
+   */
+  function moveColumn(from: SortKey, toIndex: number): void {
+    const order = state.columnOrder
+    const fromIndex = order.indexOf(from)
+    if (fromIndex < 0) return
+
+    const target = fromIndex < toIndex ? toIndex - 1 : toIndex
+    if (target === fromIndex) return
+    order.splice(fromIndex, 1)
+    order.splice(target, 0, from)
+  }
+
+  /**
    * Start one folder's walk, if it is not already running. The running total
    * lands in `dirSizes` as it arrives, the bar's timer raises `sizeSlow` after
    * `SIZE_BAR_DELAY_MS`, and the final answer overwrites the running one. Each
@@ -1291,6 +1399,8 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     activate,
     current,
     sizeDirectory,
+    sortBy,
+    moveColumn,
     isSelected,
     selectedCount,
     setSelected,
