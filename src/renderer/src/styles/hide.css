@@ -1,0 +1,21 @@
+/*
+ * The copy of a row the hide mode has just covered (see lib/hideAnimation.ts).
+ * It is taken while the row is still in the document — by the time the rows
+ * below have closed the gap there is nothing left to animate — and is then held
+ * where the row stood: out of the flow, so it takes no part in the closing and
+ * shifts nothing, and off the pointer, because it is a picture of a row that is
+ * already gone and a click has to fall through it. It removes itself when it has
+ * finished fading.
+ *
+ * It is a `li` like the row it copies and, being positioned, is painted over the
+ * rows sliding up underneath it — which is what lets it read as dissolving as
+ * they arrive rather than sliding past them. It is not an entry: the list's DOM
+ * order means nothing (every row's place is its index times the row height), and
+ * it is out again as soon as it has faded.
+ */
+.hide-ghost {
+  position: absolute;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+}

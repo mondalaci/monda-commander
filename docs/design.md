@@ -391,6 +391,41 @@ the marks and the cursor take, so it reads as a note about the pane rather than 
 second selection. The name, the key and both tooltips live in
 `src/shared/hide.ts` so the file and the gesture are spelled one way.
 
+### A row the mode covers leaves by collapsing where it stood
+
+Alt+. flipping the mode, or a name written into a `.mchide` and picked up by a
+refresh, changes which rows are in the listing — and a row that blinks out of a
+list reads as a glitch while one that leaves reads as a decision. So the rows the
+mode has covered are squeezed out where they stood, fading as they go, and
+everything below them closes the gap by sliding up; a row the mode has uncovered
+slides back down into the room it opens, and the rows below it slide down too.
+The work is `lib/hideAnimation.ts` and `styles/hide.css`.
+
+What makes it cheap is that a row's geometry is known without measuring:
+the listing is windowed and every row is placed at `index * ROW_HEIGHT`, so how
+far a surviving row travels is just the difference between the index it had and
+the index it now has. The animation lets the new layout stand and nudges the live
+rows with a `translateY` from their old place to the new one, so nothing is
+measured and nothing else in the pane moves. The rows that have been covered,
+though, are already out of the document by the time the new layout is there — so
+the view copies them out first. That is why the animating lives in FilePanel
+(`watch` on `state.entries`, pre-flush) and only the moving lives in the module:
+the copies have to be taken while the rows are still standing, and the moving has
+to wait a tick for the new arrangement to exist to move within. The copies are
+appended to the `<ul>` itself as `.hide-ghost` — absolutely positioned, out of the
+flow and off the pointer, painted over the rows sliding up under them — which is
+why the scroller carries `relative` it did not need before.
+
+Only a change the mode makes animates. `state.hideTick` is the signal: a count
+`useDirectory` bumps when the mode is toggled and when a refresh finds the folder's
+hidden-name set actually different, and FilePanel compares it to the tick its last
+rows were drawn for. Everything else that changes the listing — a navigation, a
+sort, a search, an ordinary refresh — leaves the tick alone, so those rows appear
+and disappear the way they always have (the refresh's own `flash-row` sweep, for
+the ones it found). The copy is a picture of the row as it stood, so it can still
+carry the mark or the cursor band the mode has just taken away; that is what the
+row looked like a moment ago, and it is gone again when the copy is.
+
 ## Marks, the right button, and the context menu
 
 ### A mark is a gold band across the row

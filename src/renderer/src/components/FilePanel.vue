@@ -4,6 +4,7 @@ import type { ComponentPublicInstance } from 'vue'
 import type { PaneController, PaneEntry, ScrollAlign, SortKey } from '@renderer/composables/useDirectory'
 import { COLUMN_TYPES } from '@renderer/composables/useDirectory'
 import { isRunnable } from '@renderer/lib/executable'
+import { playHideAnimation } from '@renderer/lib/hideAnimation'
 import {
   formatDuration,
   formatExactDate,
@@ -2612,6 +2613,57 @@ const bottomPad = computed(() => {
   return (props.controller.state.entries.length - rows[rows.length - 1]!.index - 1) * ROW_HEIGHT
 })
 
+/**
+ * The rows the pane rendered last, in order. It is the view's own memory of the
+ * listing, kept because the mode's animation needs the arrangement that was on
+ * screen a moment ago and the controller, by the time this runs, already holds
+ * only the new one.
+ */
+let rowsRendered: PaneEntry[] = []
+/** The `hideTick` these rows were rendered for, so only a mode change animates. */
+let hideTickSeen = props.controller.state.hideTick
+
+/**
+ * Show a change the hide mode made to this pane's rows as those rows leaving and
+ * arriving (see lib/hideAnimation.ts). It runs *before* the render — the default
+ * flush — on purpose: the rows the mode has just covered are still in the
+ * document here, and a copy taken now is the only chance to draw them on their
+ * way out. The animating itself waits a tick, for the new arrangement to be in
+ * the document to move the surviving rows within.
+ *
+ * Every other change to the listing — a navigation, a sort, a refresh — leaves
+ * `hideTick` alone and passes through untouched.
+ */
+watch(
+  () => props.controller.state.entries,
+  (entries) => {
+    if (props.controller.state.hideTick === hideTickSeen) {
+      rowsRendered = entries
+      return
+    }
+    hideTickSeen = props.controller.state.hideTick
+
+    const isThere = new Set(entries.map((entry) => entry.path))
+    const leaving: { el: HTMLElement; index: number }[] = []
+    for (const [index, row] of rowsRendered.entries()) {
+      if (row.isParent || isThere.has(row.path)) continue
+      const el = listEl.value?.querySelector<HTMLElement>(
+        `li[data-path="${CSS.escape(row.path)}"]:not(.hide-ghost)`
+      )
+      if (el) leaving.push({ el: el.cloneNode(true) as HTMLElement, index })
+    }
+
+    const before = rowsRendered.map((row) => row.path)
+    const after = entries.map((entry) => entry.path)
+    rowsRendered = entries
+
+    void nextTick(() => {
+      const list = listEl.value
+      if (list) playHideAnimation({ list, rowHeight: ROW_HEIGHT, before, after, leaving })
+    })
+  }
+)
+
 function onListScroll(): void {
   const element = listEl.value
   if (element) scrollTop.value = element.scrollTop
@@ -3599,7 +3651,7 @@ function onRenameBlur(): void {
            scroll-into-view all measure the whole listing as if it were there. -->
       <ul
         ref="listEl"
-        class="pane-scrollbar min-h-0 flex-1 overflow-y-auto"
+        class="pane-scrollbar relative min-h-0 flex-1 overflow-y-auto"
         :style="listSlackStyle"
         @scroll="onListScroll"
       >
@@ -3611,6 +3663,7 @@ function onRenameBlur(): void {
         <li
           v-for="row in visibleRows"
           :key="row.entry.path"
+          :data-path="row.entry.path"
           class="flex cursor-default items-center gap-1.5 px-3 text-ui"
           :style="{ height: `${ROW_HEIGHT}px` }"
           :class="rowClass(row.index)"

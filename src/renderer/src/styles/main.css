@@ -2,6 +2,7 @@
 @import '@xterm/xterm/css/xterm.css';
 @import './columns.css';
 @import './flash.css';
+@import './hide.css';
 @import './hold.css';
 @import './mark.css';
 @import './notice.css';

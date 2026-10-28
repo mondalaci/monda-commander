@@ -51,6 +51,14 @@ export interface PaneState {
    * mode is a re-filter of what is already in hand, not another read.
    */
   allEntries: DirEntry[]
+  /**
+   * A count of the times what the hide mode covers has changed for this pane —
+   * a toggle, or a `.mchide` edit a refresh picked up. It exists only to tell
+   * the *view* which row changes are the mode's and so worth showing as rows
+   * leaving and arriving (see lib/hideAnimation.ts); a listing can change for
+   * many reasons, and only this one is animated.
+   */
+  hideTick: number
   allRows: PaneEntry[]
   entries: PaneEntry[]
   itemCount: number
@@ -340,6 +348,17 @@ function firstMatchIndex(rows: PaneEntry[]): number {
 }
 
 /**
+ * Whether two hidden-name sets say the same thing. A refresh replaces the set
+ * whole, so identity says nothing about a change; the mode's coverage is what
+ * the view animates on, and only a real difference is one.
+ */
+function sameNames(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false
+  for (const name of a) if (!b.has(name)) return false
+  return true
+}
+
+/**
  * One animation cycle (see flash.css). A row whose change is a one-off sweeps
  * exactly once; a row that keeps changing has this timer re-armed by every
  * refresh, so it stays highlighted — and keeps sweeping — until a full cycle
@@ -520,6 +539,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     parent: null,
     hideNames: new Set<string>(),
     allEntries: [],
+    hideTick: 0,
     allRows: [],
     entries: [],
     itemCount: 0,
@@ -589,6 +609,9 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     state.allRows = buildRows()
     pruneSelection()
     applyFilter(previous)
+    // The rows the mode has just covered — or uncovered — are the ones the view
+    // shows leaving and arriving; every other change to the listing is quiet.
+    state.hideTick += 1
   })
 
   function clampCursorTo(value: number): number {
@@ -1086,6 +1109,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     // reads when the entry under it has gone.
     const before = state.allRows
     const beforeVisible = state.entries
+    const beforeHidden = state.hideNames
     const previous = current()
     state.error = null
     state.path = result.data.path
@@ -1095,6 +1119,11 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     const rows = buildRows()
     state.allRows = rows
     applyFilter(resolveAnchor(filteredRows(), beforeVisible, previous, focusPath))
+    // A `.mchide` edit — the menu's hide, or a write behind the app's back — is a
+    // change of what the mode covers, and so one the view shows as rows leaving;
+    // an ordinary re-list leaves the tick alone and its new and gone rows sweep
+    // as they always have.
+    if (!sameNames(beforeHidden, state.hideNames)) state.hideTick += 1
     // An entry the mode now covers carries no mark any more, exactly as one that
     // left the directory does not.
     pruneSelection()

@@ -77,6 +77,10 @@ src/renderer/src/lib/fileIcon.ts      per-entry icon: name/extension -> 24x24 sv
                                       (FILENAME_ICONS, EXTENSION_ICONS, fallback text)
 src/renderer/src/lib/gitMark.ts       git status -> per-row marks, folder roll-ups,
                                       and the palette they are drawn in
+src/renderer/src/lib/hideAnimation.ts how a change to what the hide mode covers is
+                                      shown: covered rows squeezed out where they
+                                      stood, the rest closing the gap by sliding,
+                                      uncovered rows sliding back in
 src/renderer/src/lib/swapAnimation.ts how a Ctrl+U exchange is shown: copies of
                                       both panes travelling to the other column,
                                       carrying the display's blur (styles/swap.css)
@@ -84,8 +88,8 @@ src/renderer/src/lib/paneMenu.ts      the context menu's model
 ```
 
 Styles are referenced inline below: `styles/mark.css`, `hold.css`, `notice.css`,
-`flash.css`, `osd.css`, `swap.css`, `viewer.css`, `columns.css`, all under
-`src/renderer/src/`.
+`flash.css`, `hide.css`, `osd.css`, `swap.css`, `viewer.css`, `columns.css`, all
+under `src/renderer/src/`.
 
 ## Gotchas
 
@@ -219,6 +223,18 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   on mount before the first listing. Alt+. is claimed *after* the
   expanded-terminal check. The pane title bar's icon is an eye-off (on) / a dim
   eye (off), both in the title text's color, never gold.
+- **A row the mode covers leaves by collapsing where it stood** — squeezed out
+  while everything below slides up to close the gap; an uncovered row slides back
+  down into the room it opens (`lib/hideAnimation.ts`, `styles/hide.css`). Only a
+  real change to the mode's coverage animates: `state.hideTick` is what marks one
+  (a toggle, or a `.mchide` write a refresh picked up), so a navigation, a sort and
+  an ordinary refresh leave their rows alone. The view does the animating, not the
+  controller: it keeps the rows it rendered last, copies the covered ones out of
+  the DOM *before* the render (there is nothing left to copy afterwards), and
+  rides the fixed `index * ROW_HEIGHT` geometry — the surviving rows are nudged
+  with a `translateY` in the pane's already-new layout, so nothing is measured and
+  nothing else moves. The copies are appended to the `<ul>` as `.hide-ghost` (which
+  is why it is `relative`), out of the flow and off the pointer.
 
 ### Git status
 
