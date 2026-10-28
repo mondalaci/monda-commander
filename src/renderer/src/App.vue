@@ -1204,6 +1204,60 @@ function handlePaneKey(event: KeyboardEvent): void {
   // Enter/Escape are the input's to commit or cancel.
   if (pane.state.renaming !== null) return
 
+  // The column editor is a mode of the pane, and while it is on its own keys
+  // drive it — the mode is explicit, so they are claimed even over a typed
+  // command line. The arrows move between the columns, Enter opens the one in
+  // focus, Insert adds a column after it and Delete drops it, and Alt+Left/Right
+  // re-order it (the keyboard's half of dragging the grip). Escape is left to its
+  // usual place below, which already leaves the mode. A search box keeps its
+  // keys, since its input is the thing with the caret.
+  if (pane.state.columnEdit && !searching) {
+    const panel = activeSide.value === 'left' ? leftPanel : rightPanel
+
+    if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+      if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+        consume(event)
+        pane.moveFocusedColumn(event.key === 'ArrowLeft' ? -1 : 1)
+        return
+      }
+    }
+
+    if (!event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+      switch (event.key) {
+        case 'ArrowLeft':
+          consume(event)
+          pane.focusColumn(-1)
+          return
+        case 'ArrowRight':
+          consume(event)
+          pane.focusColumn(1)
+          return
+        case 'Home':
+          consume(event)
+          pane.focusColumnEdge('start')
+          return
+        case 'End':
+          consume(event)
+          pane.focusColumnEdge('end')
+          return
+        case 'Enter':
+          consume(event)
+          panel.value?.openColumnPicker()
+          return
+        case 'Insert':
+          consume(event)
+          panel.value?.addColumnAtFocus()
+          return
+        case 'Delete':
+          consume(event)
+          pane.removeFocusedColumn()
+          return
+        default:
+          break
+      }
+    }
+  }
+
   if (event.key === 'Tab') {
     consume(event)
     setActive(activeSide.value === 'left' ? 'right' : 'left')
@@ -1280,6 +1334,12 @@ function handlePaneKey(event: KeyboardEvent): void {
     }
     if (terminalExpanded.value) {
       collapseTerminal()
+      return
+    }
+    // The column editor is a mode of the pane, drawn over nothing else, so
+    // Escape leaves it before the background work and the notice below.
+    if (pane.state.columnEdit) {
+      pane.toggleColumnEdit()
       return
     }
     // A folder walk is the only thing still working in the background, and
@@ -1651,6 +1711,25 @@ function onKeydown(event: KeyboardEvent): void {
   if (isHideToggle) {
     consume(event)
     void toggleHideMode()
+    return
+  }
+
+  // Alt+C builds the pane's columns: the header swaps its labels for type
+  // pickers and draws the add and remove controls, so the pane's layout is
+  // composed from the interface rather than only rearranged by dragging. The
+  // panes' own gesture for the panes' own chrome — and, claimed down here, a
+  // real terminal keeps its Alt+C (readline's capitalize-word), exactly as it
+  // keeps Alt+S and Alt+. above.
+  const isColumnEditToggle =
+    event.altKey &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.shiftKey &&
+    event.code === 'KeyC'
+
+  if (isColumnEditToggle) {
+    consume(event)
+    activePane.value.toggleColumnEdit()
     return
   }
 

@@ -9,11 +9,28 @@ export type PaneEntry = DirEntry & { isParent?: boolean }
 export type ScrollAlign = 'nearest' | 'start' | 'end'
 
 /**
- * Which column the listing is ordered by. These are the headers the pane shows,
- * and each is a question the entry's own metadata already answers — no column
- * here asks main for anything a listing does not carry.
+ * Which column the listing is ordered by, and which kinds of column a pane can
+ * show. The two are one set on purpose: every column is drawn from the entry's
+ * own metadata (`DirEntry`), and any one of them can be the column the listing
+ * is ordered by. A column that is not the sort still shows, and a column that is
+ * the sort still shows its own value — sorting and showing are the same list of
+ * questions a listing already answers.
  */
-export type SortKey = 'name' | 'size' | 'modified'
+export type SortKey = 'name' | 'size' | 'modified' | 'mode' | 'modeNumeric'
+
+/**
+ * Every column a pane can show, in the order the column editor's pickers offer
+ * them. `columnOrder` is a subset of this, one entry per shown column. The two
+ * mode columns are the same bits drawn two ways — symbolic (`rw-r--r--`) and
+ * numeric (`644`) — so a pane can show one, the other, or both.
+ */
+export const COLUMN_TYPES: readonly SortKey[] = [
+  'name',
+  'size',
+  'modified',
+  'mode',
+  'modeNumeric'
+]
 
 /** Whether the chosen column runs smallest-to-largest or the other way. */
 export type SortDirection = 'asc' | 'desc'
@@ -56,6 +73,23 @@ export interface PaneState {
    * belongs to it.
    */
   columnOrder: SortKey[]
+  /**
+   * Whether the pane is editing its columns. While it is on, the header swaps
+   * each column's label for a picker of column types, draws a remove button per
+   * column and an add button in every gap, so the pane's own layout can be built
+   * from the interface rather than only rearranged by dragging. It is a mode of
+   * the pane (the icon beside the headers, and Alt+C), left again by the icon,
+   * the shortcut, or Escape.
+   */
+  columnEdit: boolean
+  /**
+   * Which column the keyboard is on while the editor is on: the one the arrows
+   * move between and Enter, Insert, Delete and Alt+Left/Right act on. It is kept
+   * inside the current order, and it is only ever read while `columnEdit` is on —
+   * a click on a column's capsule puts it there too, so the pointer and the keys
+   * agree on which column is "this one".
+   */
+  columnFocus: number
   /**
    * Whether the move that just happened should be shown as a quick scroll
    * rather than a jump. Only a page or an end-to-end jump asks for it — a
@@ -135,6 +169,28 @@ export interface PaneController {
   sortBy(key: SortKey): void
   /** Move a column to a gap in the header order, for a dragged header. */
   moveColumn(from: SortKey, toIndex: number): void
+  /** Toggle the pane's column edit mode — the header's icon, or Alt+C. */
+  toggleColumnEdit(): void
+  /** Swap one column's type, rebuilding the listing when it was the sorted one. */
+  setColumnType(index: number, key: SortKey): void
+  /**
+   * Insert a column of the first type not already shown, into a gap in the
+   * header. Answers the index it landed at, so the caller can open the new
+   * column's picker, or null when every type is already shown.
+   */
+  addColumn(gapIndex: number): number | null
+  /** Drop one column; the sort falls back to another when it was the sorted one. */
+  removeColumn(index: number): void
+  /** Move the column editor's keyboard focus by `delta` columns, clamped. */
+  focusColumn(delta: number): void
+  /** Put the column editor's keyboard focus on the first or last column. */
+  focusColumnEdge(edge: 'start' | 'end'): void
+  /** Put the column editor's keyboard focus on one column, for a click. */
+  setColumnFocus(index: number): void
+  /** Re-order the focused column one place left or right. */
+  moveFocusedColumn(delta: number): void
+  /** Drop the focused column — never the name column. */
+  removeFocusedColumn(): void
   isSelected(entry: PaneEntry): boolean
   selectedCount(): number
   setSelected(path: string, value: boolean): void
@@ -175,19 +231,44 @@ const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'bas
 /**
  * The order of two entries under one column, ascending, before the direction is
  * applied: names through the listing's own collator, sizes numerically, and
- * times earliest first. A folder's size is whatever its row shows — blank until
- * Space walks it — so an unsized folder reads here as zero, which is to say the
- * column cannot tell it from an empty file.
+ * times earliest first. A folder's size is not something a listing carries, so it
+ * is read from `sizes` — the totals `Space` has walked (`dirSizes`) — and falls
+ * back to the folder's own metadata size for one the user never asked about.
+ * That fallback is what keeps the column honest: the blank a folder shows until
+ * it is walked means "not asked", not zero, and a walk is what replaces it with a
+ * total the ordering then respects.
+ *
+ * The mode sorts numerically, as the row draws it: the bits read low to high, so
+ * a runnable file follows a plain one, matching the order the column shows. The
+ * two mode columns are one question — the bits — so they order alike whichever
+ * way they are drawn.
  */
-function compareByKey(a: DirEntry, b: DirEntry, key: SortKey): number {
+function compareByKey(a: DirEntry, b: DirEntry, key: SortKey, sizes: Map<string, number>): number {
   switch (key) {
     case 'size':
-      return a.size - b.size
+      return sizeFor(a, sizes) - sizeFor(b, sizes)
     case 'modified':
       return a.mtimeMs - b.mtimeMs
+    case 'mode':
+    case 'modeNumeric':
+      return a.mode - b.mode
     default:
       return collator.compare(a.name, b.name)
   }
+}
+
+/**
+ * The number a row's size column orders it by. A file's size is its own metadata;
+ * a folder's is whatever `Space` walked it to, when it has been walked, and its
+ * metadata size otherwise — the same choice the row itself makes, so the order
+ * and the column can never disagree about a folder.
+ */
+function sizeFor(entry: DirEntry, sizes: Map<string, number>): number {
+  if (entry.kind === 'directory') {
+    const walked = sizes.get(entry.path)
+    if (walked !== undefined) return walked
+  }
+  return entry.size
 }
 
 /**
@@ -198,14 +279,19 @@ function compareByKey(a: DirEntry, b: DirEntry, key: SortKey): number {
  * stable, alphabetical order rather than whatever order the read returned. When
  * the column *is* the name, that tie-break is the comparison itself.
  */
-function sortEntries(entries: DirEntry[], key: SortKey, direction: SortDirection): DirEntry[] {
+function sortEntries(
+  entries: DirEntry[],
+  key: SortKey,
+  direction: SortDirection,
+  sizes: Map<string, number>
+): DirEntry[] {
   const flip = direction === 'desc' ? -1 : 1
   return [...entries].sort((a, b) => {
     const aDir = a.kind === 'directory'
     const bDir = b.kind === 'directory'
     if (aDir !== bDir) return aDir ? -1 : 1
 
-    const byKey = compareByKey(a, b, key)
+    const byKey = compareByKey(a, b, key, sizes)
     if (byKey !== 0) return byKey * flip
     return collator.compare(a.name, b.name)
   })
@@ -216,15 +302,17 @@ function sortEntries(entries: DirEntry[], key: SortKey, direction: SortDirection
  * is somewhere to go. The entries handed in are already the ones the pane shows,
  * so the hide filter has been applied by the caller. The ".." row is prepended
  * rather than sorted in, so no chosen column — a size, a time — can move the way
- * up out of first place.
+ * up out of first place. `sizes` is the pane's walked folder totals, so a size
+ * sort can order a sized folder by what its row actually shows.
  */
 function toRows(
   entries: DirEntry[],
   parent: string | null,
   key: SortKey,
-  direction: SortDirection
+  direction: SortDirection,
+  sizes: Map<string, number>
 ): PaneEntry[] {
-  const sorted = sortEntries(entries, key, direction)
+  const sorted = sortEntries(entries, key, direction, sizes)
   if (!parent) return sorted
 
   const parentRow: PaneEntry = {
@@ -441,6 +529,8 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     sortKey: 'name',
     sortDir: 'asc',
     columnOrder: ['name', 'size', 'modified'],
+    columnEdit: false,
+    columnFocus: 0,
     animateScroll: false,
     searchActive: false,
     searchQuery: '',
@@ -472,7 +562,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
       hideMode.value && names.size > 0
         ? state.allEntries.filter((entry) => !names.has(entry.name))
         : state.allEntries
-    return toRows(entries, state.parent, state.sortKey, state.sortDir)
+    return toRows(entries, state.parent, state.sortKey, state.sortDir, state.dirSizes)
   }
 
   /**
@@ -806,6 +896,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
   const stopDirSizeProgress = window.mc.fs.onDirSizeProgress((event) => {
     if (!state.sizing.has(event.path)) return
     state.dirSizes.set(event.path, event.bytes)
+    scheduleSizeSort()
   })
 
   onScopeDispose(() => {
@@ -816,6 +907,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     unwatchCurrent()
     unwatchRepo()
     clearFresh()
+    cancelSizeSort()
     // Whatever walk is still running belongs to a pane that is gone; neither
     // its answer nor its bar timer must touch this state any more.
     sizeRun += 1
@@ -855,13 +947,72 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     state.sizeSlow.clear()
     state.sizeStale.clear()
     sizeRun += 1
+    scheduleSizeSort()
   }
 
   sizeStops.add(stopSizing)
 
+  /**
+   * A size walk changing the listing's order, live. Sorting by size is a question
+   * whose answer keeps arriving — a walk reports a running total as it goes — so
+   * the rows are re-ordered as those totals land, not only when the walk ends. It
+   * is debounced for quiescence and periodic for a long walk: each change
+   * re-schedules the run to a short wait after the last, but a burst that never
+   * quiets still fires every `SIZE_SORT_MAX_MS`, so a walk of hundreds of
+   * thousands of files updates the order while it runs instead of only at its
+   * end. The cursor is kept on the entry it was on (`applyFilter`), so the
+   * re-order moves rows around the cursor rather than off it — which is what
+   * keeps the one-pass `Space` gesture usable.
+   */
+  const SIZE_SORT_DEBOUNCE_MS = 150
+  const SIZE_SORT_MAX_MS = 600
+
+  let sizeSortTimer: number | null = null
+  /** When the current burst of size changes began, or null when none is due. */
+  let sizeSortBurst: number | null = null
+
+  function scheduleSizeSort(): void {
+    if (state.sortKey !== 'size') return
+
+    const now = performance.now()
+    if (sizeSortBurst === null) sizeSortBurst = now
+
+    // Quiet-first, but never longer than the cap since the burst began: a steady
+    // stream of reports fires it about every `SIZE_SORT_MAX_MS`, and the end of
+    // the stream fires it `SIZE_SORT_DEBOUNCE_MS` later.
+    const waited = now - sizeSortBurst
+    const wait = Math.max(0, Math.min(SIZE_SORT_DEBOUNCE_MS, SIZE_SORT_MAX_MS - waited))
+
+    if (sizeSortTimer !== null) window.clearTimeout(sizeSortTimer)
+    sizeSortTimer = window.setTimeout(() => {
+      sizeSortTimer = null
+      sizeSortBurst = null
+      sortBySizeNow()
+    }, wait)
+  }
+
+  function cancelSizeSort(): void {
+    if (sizeSortTimer !== null) {
+      window.clearTimeout(sizeSortTimer)
+      sizeSortTimer = null
+    }
+    sizeSortBurst = null
+  }
+
+  /** Re-list the rows in size order, keeping the cursor on the entry it was on. */
+  function sortBySizeNow(): void {
+    if (!state.path || state.sortKey !== 'size') return
+    const previous = current()
+    state.allRows = buildRows()
+    applyFilter(previous)
+  }
+
   async function navigateTo(dir: string, focusPath?: string): Promise<void> {
     state.loading = true
     state.error = null
+    // A pending size re-order belongs to the listing being left; the new one is
+    // built whole below, and a late sort must not touch rows it never saw.
+    cancelSizeSort()
 
     const result = await window.mc.fs.list(dir)
     state.loading = false
@@ -1024,6 +1175,129 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     if (target === fromIndex) return
     order.splice(fromIndex, 1)
     order.splice(target, 0, from)
+    clampColumnFocus()
+  }
+
+  /**
+   * Whether the pane is building its columns, so the header knows to draw its
+   * editors rather than its labels and sort arrows. Turning it on lands the
+   * keyboard on a real column, so the arrows have somewhere to start.
+   */
+  function toggleColumnEdit(): void {
+    state.columnEdit = !state.columnEdit
+    if (state.columnEdit) clampColumnFocus()
+  }
+
+  /**
+   * Keep `columnFocus` pointing at a column that is actually in the order.
+   */
+  function clampColumnFocus(): void {
+    const last = Math.max(state.columnOrder.length - 1, 0)
+    state.columnFocus = Math.min(Math.max(state.columnFocus, 0), last)
+  }
+
+  /** Move the column editor's keyboard focus by `delta` columns, clamped. */
+  function focusColumn(delta: number): void {
+    state.columnFocus += delta
+    clampColumnFocus()
+  }
+
+  /** Put the column editor's keyboard focus on the first or last column. */
+  function focusColumnEdge(edge: 'start' | 'end'): void {
+    state.columnFocus = edge === 'start' ? 0 : state.columnOrder.length - 1
+    clampColumnFocus()
+  }
+
+  /** Put the column editor's keyboard focus on one column, for a click. */
+  function setColumnFocus(index: number): void {
+    state.columnFocus = index
+    clampColumnFocus()
+  }
+
+  /**
+   * Re-order the focused column one place left or right — the keyboard's half of
+   * dragging the grip. Unlike `moveColumn`, this works in whole steps from the
+   * column's own index, so the focus follows the column and the next press moves
+   * it again from where it now is.
+   */
+  function moveFocusedColumn(delta: number): void {
+    const order = state.columnOrder
+    const from = state.columnFocus
+    const target = from + delta
+    if (from < 0 || from >= order.length) return
+    if (target < 0 || target >= order.length) return
+
+    const [moved] = order.splice(from, 1)
+    if (moved === undefined) return
+    order.splice(target, 0, moved)
+    state.columnFocus = target
+  }
+
+  /**
+   * Insert a column of the first type not already shown, into a gap in the
+   * header. The keyboard lands on the new column, so the picker that follows and
+   * the keys after it act on the column just made.
+   */
+  function addColumn(gapIndex: number): number | null {
+    const key = COLUMN_TYPES.find((type) => !state.columnOrder.includes(type))
+    // Every type is already on screen, so there is nothing left to add.
+    if (key === undefined) return null
+    const at = Math.min(Math.max(gapIndex, 0), state.columnOrder.length)
+    state.columnOrder.splice(at, 0, key)
+    state.columnFocus = at
+    return at
+  }
+
+  /**
+   * Drop one column. The name column is never dropped — a listing without the
+   * entry's own name is not a listing — and the sort falls back to the first
+   * column left when the column that went was the one ordering the rows,
+   * ascending, since the direction belonged to the column that left rather than
+   * to the place it was in. The keyboard focus gives way to the column that takes
+   * its place — or the one before it, for the column that was last.
+   */
+  function removeColumn(index: number): void {
+    const order = state.columnOrder
+    if (index < 0 || index >= order.length) return
+    if (order[index] === 'name') return
+
+    const [removed] = order.splice(index, 1)
+    if (index < state.columnFocus) state.columnFocus -= 1
+    clampColumnFocus()
+    if (removed === undefined || state.sortKey !== removed) return
+
+    const previous = current()
+    state.sortKey = order[0] ?? 'name'
+    state.sortDir = 'asc'
+    state.allRows = buildRows()
+    applyFilter(previous)
+  }
+
+  /** Drop the focused column — never the name column. */
+  function removeFocusedColumn(): void {
+    removeColumn(state.columnFocus)
+  }
+
+  /**
+   * Change what one column shows. Types are unique among the columns — the picker
+   * greys out the ones already on screen — so a type being moved off the sorted
+   * column hands the sort to it, and the listing is rebuilt the way any other
+   * change of the sort key rebuilds it.
+   */
+  function setColumnType(index: number, key: SortKey): void {
+    const order = state.columnOrder
+    if (index < 0 || index >= order.length) return
+
+    const old = order[index]
+    if (old === undefined || old === key || order.includes(key)) return
+
+    order[index] = key
+    if (state.sortKey !== old) return
+
+    const previous = current()
+    state.sortKey = key
+    state.allRows = buildRows()
+    applyFilter(previous)
   }
 
   /**
@@ -1083,6 +1357,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
           state.sizeSlow.delete(path)
           state.sizeStale.delete(path)
           sizePrior.delete(path)
+          scheduleSizeSort()
         }
       }
     })
@@ -1401,6 +1676,15 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     sizeDirectory,
     sortBy,
     moveColumn,
+    toggleColumnEdit,
+    setColumnType,
+    addColumn,
+    removeColumn,
+    focusColumn,
+    focusColumnEdge,
+    setColumnFocus,
+    moveFocusedColumn,
+    removeFocusedColumn,
     isSelected,
     selectedCount,
     setSelected,

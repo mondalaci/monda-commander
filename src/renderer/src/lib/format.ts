@@ -101,3 +101,13 @@ export function formatMode(mode: number): string {
   }
   return result
 }
+
+/**
+ * The permission bits in octal — the numeric half of `formatMode`, so a mode is
+ * either `rw-r--r--` or `644`. The file-type bits are not a permission and are
+ * left out, and the four-digit form appears on its own when a setuid, setgid or
+ * sticky bit is set (`4755`), so the number is always at least three digits.
+ */
+export function formatModeNumeric(mode: number): string {
+  return (mode & 0o7777).toString(8).padStart(3, '0')
+}

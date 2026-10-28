@@ -62,6 +62,8 @@ src/renderer/src/components/TerminalPane.vue   xterm: collapsed strip / full ter
 src/renderer/src/components/FileViewer.vue     Monaco overlay: read-only (F3) or edit (F4)
 src/renderer/src/components/PaneContextMenu.vue  a row's menu
 src/renderer/src/components/HoldRing.vue       the ring on a held right press
+src/renderer/src/components/ColumnAddButton.vue    the column editor's gap "+"
+src/renderer/src/components/ColumnDropMarker.vue  the arrow + line insertion point
 src/renderer/src/composables/useWorkspace.ts   one tab: its two panes, its shell, cwd sync
 src/renderer/src/composables/useShell.ts       createShell(id): one shell session
                                                (own process, buffer, cwd, line model)
@@ -82,7 +84,7 @@ src/renderer/src/lib/paneMenu.ts      the context menu's model
 ```
 
 Styles are referenced inline below: `styles/mark.css`, `hold.css`, `notice.css`,
-`flash.css`, `osd.css`, `swap.css`, `viewer.css`, all under
+`flash.css`, `osd.css`, `swap.css`, `viewer.css`, `columns.css`, all under
 `src/renderer/src/`.
 
 ## Gotchas
@@ -168,12 +170,38 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   between two headers**, not a highlight on a column: the gap is read from which
   column's midpoint the pointer has passed, the two gaps beside the dragged
   column are not offered (nothing would move), and `moveColumn` takes that gap
-  index and corrects it for the column being lifted out. The drag image is a chip
-  built by `setDragImage` from an offscreen clone, not the browser's bare-text
-  image of a transparent button, so it carries its background. A drop reorders
-  without also sorting (the drag's end is timed), and the header gives DOM focus
-  back on the way out — dragging must not `preventDefault` its `mousedown`.
-  Reasoning in [`docs/design.md`](docs/design.md).
+  index and corrects it for the column being lifted out. The point is a white
+  line down the header with a downward triangle as its upward elongation, the
+  triangle overshooting the header's top over the pane title
+  (`ColumnDropMarker.vue`); it is drawn once at the header's level (only the
+  header's box can hold something that overshoots it), positioned by the gap's
+  measured x. The drag image is a chip built by `setDragImage` from an offscreen
+  clone, not the browser's bare-text image of a transparent button, so it carries
+  its background. A drop reorders without also sorting (the drag's end is timed),
+  and the header gives DOM focus back on the way out — dragging must not
+  `preventDefault` its `mousedown`. Reasoning in
+  [`docs/design.md`](docs/design.md).
+- **The columns can also be built, not only rearranged.** `Alt+C` (or the icon
+  pinned to the right edge of the header, shown on hover) puts the pane's
+  `columnEdit` mode on: each header becomes one bordered, rounded capsule holding
+  a grip, a `<select>` of column types — Name, Size, Modified, Mode, Mode (num)
+  — and a remove button (hairline dividers between the three), with an add
+  button *outside* the capsule in every gap (before each column and after the
+  last). The name
+  column cannot be removed. Adding opens the new column's picker (a `showPicker`
+  on the next tick, the add being a real click). The grip is what drags a column
+  to a new place while editing — a picker and buttons cannot be the drag, or the
+  picker could not be opened — and the column's wrapper carries `data-column`, so
+  the shared gap logic is unchanged. Types are unique among the columns, so
+  pickers grey out the ones already shown and an add inserts the first unused
+  type; changing the sorted column's type hands it the sort, dropping it falls
+  back to the first column left. The picker stops its own `mousedown` so
+  `focusPanes` cannot steal focus before the native dropdown opens. The mode is
+  the keyboard's too: the pane holds a `columnFocus` (the column the keys act on,
+  moved by the arrows and set by a click), and while `columnEdit` is on App.vue
+  claims the arrows/Home/End to move it, Enter to open its picker, Insert to add
+  after it, Delete to drop it, and Alt+Left/Right to re-order it. Reasoning in
+  [`docs/design.md`](docs/design.md).
 - **The pane's row list must contain only entries.** The status notice is a
   sibling of the `<ul>`, never an `<li>` (an extra `<li>` shifts every index). The
   notice travels (`styles/notice.css`) and is keyed by its text.
@@ -315,8 +343,15 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   in the app (`stopAllSizeWalks`): the queue is dropped by bumping an epoch, main
   is told by `fs:dir-size-cancel` and gives up at its next batch, and each pane
   restores the size the row showed before the walk (or blanks it), so a partial
-  sum is never left looking like a total. `Space` only reaches this when there is
-  no clip to play, and otherwise stays the shell's own space.
+  sum is never left looking like a total. A size *sort* respects these totals and
+  keeps up with them: `sizeFor` orders a folder by its walked size when it has one
+  — what the row shows — and by its metadata size otherwise, and a sort by size is
+  re-run live as totals land, debounced (`SIZE_SORT_DEBOUNCE_MS`) and capped
+  periodically (`SIZE_SORT_MAX_MS`) so a long walk keeps re-ordering rather than
+  waiting for its end. The cursor is kept on the entry it was on across each
+  re-order (`applyFilter`), so the rows move around the cursor. `Space` only
+  reaches this when there is no clip to play, and otherwise stays the shell's own
+  space.
 
 - **`F7` makes a directory in the pane being browsed.** `fs:mkdir` resolves the
   name against that pane (absolute, or relative, as the transfer dialogs do) and

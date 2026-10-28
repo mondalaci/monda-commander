@@ -2,11 +2,13 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { ComponentPublicInstance } from 'vue'
 import type { PaneController, PaneEntry, ScrollAlign, SortKey } from '@renderer/composables/useDirectory'
+import { COLUMN_TYPES } from '@renderer/composables/useDirectory'
 import { isRunnable } from '@renderer/lib/executable'
 import {
   formatDuration,
   formatExactDate,
   formatMode,
+  formatModeNumeric,
   formatRelativeDate,
   formatSize
 } from '@renderer/lib/format'
@@ -28,6 +30,8 @@ import {
   type GitMark
 } from '@renderer/lib/gitMark'
 import FileIcon from '@renderer/components/FileIcon.vue'
+import ColumnAddButton from '@renderer/components/ColumnAddButton.vue'
+import ColumnDropMarker from '@renderer/components/ColumnDropMarker.vue'
 import HoldRing from '@renderer/components/HoldRing.vue'
 import PlaybackOsd from '@renderer/components/PlaybackOsd.vue'
 import { hideMode } from '@renderer/composables/useHideMode'
@@ -170,17 +174,53 @@ const columnOrder = computed(() => props.controller.state.columnOrder)
 const COLUMN_LABELS: Record<SortKey, string> = {
   name: 'Name',
   size: 'Size',
-  modified: 'Modified'
+  modified: 'Modified',
+  mode: 'Mode',
+  modeNumeric: 'Mode (num)'
 }
+
+/** Whether the pane is building its columns, rather than reading them. */
+const columnEdit = computed(() => props.controller.state.columnEdit)
+
+/** The column the editor's keys are on, for the click-and-keyboard highlight. */
+const columnFocus = computed(() => props.controller.state.columnFocus)
+
+/**
+ * Whether another column can be added: a type the pane does not already show is
+ * left. Types are unique, so every one is on screen exactly once at most, and
+ * the add buttons go quiet once there is nothing left to add.
+ */
+const canAddColumn = computed(() =>
+  COLUMN_TYPES.some((key) => !columnOrder.value.includes(key))
+)
 
 /**
  * How a column's header is laid out: the name takes the room left over and its
- * text leads, while the two metadata columns keep their measured widths and
- * right-align their numbers, matching the cells below them.
+ * text leads, while the metadata columns keep their measured widths and align
+ * their text, matching the cells below them.
  */
 function headerClass(key: SortKey): string {
-  if (key === 'name') return 'min-w-0 flex-1 gap-1.5 text-left'
-  return `${key === 'size' ? 'w-16' : 'w-24'} shrink-0 justify-end gap-1`
+  switch (key) {
+    case 'name':
+      return 'min-w-0 flex-1 gap-1.5 text-left'
+    case 'size':
+      return 'w-16 shrink-0 justify-end gap-1'
+    case 'modified':
+      return 'w-24 shrink-0 justify-end gap-1'
+    default:
+      return 'w-20 shrink-0 justify-end gap-1'
+  }
+}
+
+/**
+ * How a column's editor is laid out. The reader header matches the cell widths
+ * below it, but an editor has a grip, a picker and a button in it, so it is
+ * given the room its own controls need — the name column, as always, taking the
+ * slack. The rows' own cells keep their widths throughout, so the listing never
+ * moves while it is being edited.
+ */
+function editorClass(key: SortKey): string {
+  return key === 'name' ? 'min-w-0 flex-1' : 'shrink-0'
 }
 
 /**
@@ -191,6 +231,14 @@ function headerClass(key: SortKey): string {
  */
 const draggingColumn = ref<SortKey | null>(null)
 const dropIndex = ref<number | null>(null)
+
+/**
+ * Where the insertion marker is drawn, in the header's own coordinates, or null
+ * while there is nothing to point at. It is one element rather than a copy per
+ * column because it overshoots the header's top — the triangle hangs over the
+ * title above — and only the header's own box can hold something that does.
+ */
+const dropMarkerX = ref<number | null>(null)
 
 /** The header row, for measuring the columns against the pointer. */
 const headerEl = ref<HTMLElement | null>(null)
@@ -203,31 +251,54 @@ const headerEl = ref<HTMLElement | null>(null)
 let columnDragEndedAt = 0
 
 function onColumnDragStart(key: SortKey, event: DragEvent): void {
+  const target = event.currentTarget
+  if (!(target instanceof HTMLElement)) return
+  beginColumnDrag(key, event, target)
+}
+
+/**
+ * The column editor's own drag: a reader header is grabbed by its whole button,
+ * but an editor holds a picker and two buttons, so it is grabbed by a small
+ * handle instead and the whole column is what travels. The column's wrapper is
+ * the ghost, not the handle, and it is also what `onHeaderDragOver` measures, so
+ * the gap a drop lands in is read from the columns rather than from a grip.
+ */
+function onColumnEditDragStart(key: SortKey, event: DragEvent): void {
+  const handle = event.currentTarget
+  if (!(handle instanceof HTMLElement)) return
+  const column = handle.closest<HTMLElement>('[data-column]')
+  beginColumnDrag(key, event, column ?? handle)
+}
+
+/**
+ * Start a column drag: say which column it is, and hand the browser a legible
+ * image of what is moving. The image the browser would lift on its own is bare
+ * text (a header is a transparent button) or a lone grip (an editor), so a chip
+ * is built instead — the source on a solid background, the way the column reads
+ * in the bar — so what is being dragged stays legible over whatever it passes.
+ * The clone is laid out offscreen (it must be in the document to be painted) and
+ * taken away once the browser has captured it.
+ */
+function beginColumnDrag(key: SortKey, event: DragEvent, source: HTMLElement): void {
   draggingColumn.value = key
 
   const data = event.dataTransfer
-  const target = event.currentTarget
-  if (!data || !(target instanceof HTMLElement)) return
+  if (!data) return
 
   data.effectAllowed = 'move'
   // Some platforms need a payload for the drop to be allowed at all; the key is
   // the only thing it could mean.
   data.setData('text/plain', key)
 
-  // The header is a transparent button, so the image the browser would lift on
-  // its own is bare text. Build a chip instead — the same label on a solid
-  // background, the way the column reads in the bar — so what is being dragged
-  // is legible against whatever it passes over. The clone is laid out offscreen
-  // (it must be in the document to be painted) and taken away once the browser
-  // has captured it.
-  const ghost = target.cloneNode(true) as HTMLElement
+  const ghost = source.cloneNode(true) as HTMLElement
   ghost.removeAttribute('data-column')
   ghost.removeAttribute('draggable')
+  for (const nested of ghost.querySelectorAll('[draggable]')) nested.removeAttribute('draggable')
   Object.assign(ghost.style, {
     position: 'fixed',
     top: '-1000px',
     left: '-1000px',
-    height: `${target.offsetHeight}px`,
+    height: `${source.offsetHeight}px`,
     boxSizing: 'border-box',
     padding: '0 6px',
     background: 'var(--color-surface-2)',
@@ -248,6 +319,11 @@ function onColumnDragStart(key: SortKey, event: DragEvent): void {
  * than the gap under the pointer is what keeps a fast drag honest — the pointer
  * may be over no column at all between two of them, and the nearest midpoint
  * still names the gap it means.
+ *
+ * The marker's x is read here too — the boundary the gap sits on, in the header's
+ * own coordinates — and left null for the two gaps beside the dragged column
+ * itself, where a drop would move nothing, exactly as the marker used to be
+ * hidden for them.
  */
 function onHeaderDragOver(event: DragEvent): void {
   if (draggingColumn.value === null) return
@@ -264,6 +340,17 @@ function onHeaderDragOver(event: DragEvent): void {
     }
   }
   dropIndex.value = index
+
+  if (gapIsNoop(index) || columns.length === 0) {
+    dropMarkerX.value = null
+    return
+  }
+
+  const boundary =
+    index >= columns.length
+      ? columns[columns.length - 1]!.getBoundingClientRect().right
+      : columns[index]!.getBoundingClientRect().left
+  dropMarkerX.value = boundary - container.getBoundingClientRect().left
 }
 
 function onHeaderDrop(): void {
@@ -288,6 +375,7 @@ function gapIsNoop(index: number): boolean {
 function onColumnDragEnd(): void {
   draggingColumn.value = null
   dropIndex.value = null
+  dropMarkerX.value = null
   columnDragEndedAt = performance.now()
   releaseHeaderFocus()
 }
@@ -315,6 +403,109 @@ function onHeaderClick(key: SortKey): void {
   }
   onSortClick(key)
   releaseHeaderFocus()
+}
+
+/**
+ * The column editor's own controls, which replace the sortable headers while the
+ * mode is on. They are the pane's own chrome like the headers are, so they hand
+ * the keyboard back once used and leave the list itself untouched: a column is
+ * added, dropped or re-typed in place, and the rows go on showing what they did.
+ */
+function onToggleColumnEdit(): void {
+  props.controller.toggleColumnEdit()
+  releaseHeaderFocus()
+}
+
+/**
+ * Add a column and open the new column's picker, so the gesture that made the
+ * column is also the one that says what it is. The add is a real click, so the
+ * transient user activation is still there when the picker is asked to open a
+ * tick later; a platform without the picker's `showPicker` simply gets the
+ * focused control the user can open themselves.
+ */
+async function onAddColumn(gapIndex: number): Promise<void> {
+  const index = props.controller.addColumn(gapIndex)
+  if (index === null) return
+
+  await nextTick()
+  openPickerAt(index)
+}
+
+/**
+ * Focus a column's type picker and ask it to open. The native list is the point
+ * of the picker, and only the browser can put it on screen; a platform without
+ * `showPicker` simply gets the focused control, which the user opens themselves.
+ */
+function openPickerAt(index: number): void {
+  const select = headerEl.value?.querySelectorAll<HTMLSelectElement>('select.column-select')[
+    index
+  ]
+  if (!select) return
+
+  select.focus()
+  try {
+    // The DOM lib does not carry `showPicker` on every TypeScript it is checked
+    // against, so it is asked for by name rather than through the type.
+    ;(select as HTMLSelectElement & { showPicker?: () => void }).showPicker?.()
+  } catch {
+    // A refused picker is not a failure: the control is focused either way.
+  }
+}
+
+/**
+ * The keyboard's own gestures, which act on the focused column. They are the
+ * pane's DOM rather than its state — the picker and the header element live here
+ * — so the app calls back into the pane for them, the way it does for the menu
+ * anchor and the preview rectangles.
+ */
+function openColumnPicker(): void {
+  openPickerAt(props.controller.state.columnFocus)
+}
+
+function addColumnAtFocus(): void {
+  void onAddColumn(props.controller.state.columnFocus + 1)
+}
+
+function onRemoveColumn(index: number): void {
+  props.controller.removeColumn(index)
+  releaseHeaderFocus()
+}
+
+/**
+ * A press anywhere on a column's capsule aims the editor's keyboard at it, so a
+ * click and the arrows agree on which column is "this one". The picker stops the
+ * press itself (its own `mousedown` handler runs this and stops propagation), for
+ * the same reason it stops the pane's handler: so the native list can open.
+ */
+function onColumnFocusMouse(index: number): void {
+  props.controller.setColumnFocus(index)
+}
+
+function onColumnTypeChange(index: number, event: Event): void {
+  const target = event.target
+  if (!(target instanceof HTMLSelectElement)) return
+  props.controller.setColumnType(index, target.value as SortKey)
+  releaseHeaderFocus()
+}
+
+/**
+ * How the mode column's own cell is laid out, matching the header above it so the
+ * columns line up whichever of them are shown. It is set in the mono font, which
+ * is what keeps the permission groups over one another.
+ */
+function cellClass(): string {
+  return 'w-20 shrink-0 text-right font-mono text-fg'
+}
+
+/**
+ * The mode column's text for a row: the permission bits, drawn symbolically or
+ * in octal depending on which of the two mode columns this is. The ".." row
+ * carries none of it — it names the folder above rather than an entry in this one
+ * — so it reads blank.
+ */
+function cellText(entry: PaneEntry, key: SortKey): string {
+  if (entry.isParent) return ''
+  return key === 'modeNumeric' ? formatModeNumeric(entry.mode) : formatMode(entry.mode)
 }
 
 /**
@@ -2207,7 +2398,9 @@ defineExpose({
   seekStage,
   toggleStagePlayback,
   togglePreviewPlayback,
-  cursorMenuAnchor
+  cursorMenuAnchor,
+  openColumnPicker,
+  addColumnAtFocus
 })
 
 // Kept out of the <ul> on purpose: the row list must contain exactly the
@@ -3179,47 +3372,167 @@ function onRenameBlur(): void {
 
       <div
         ref="headerEl"
-        class="pane-header-gutter relative flex h-6 shrink-0 items-center gap-1.5 border-b border-border-subtle bg-bg pl-3 text-ui-sm text-fg-dim"
+        class="pane-header-gutter group relative flex h-6 shrink-0 items-center gap-1.5 border-b border-border-subtle pl-3 text-ui-sm text-fg-dim transition-colors"
+        :class="columnEdit ? 'bg-surface-2' : 'bg-bg'"
         @dragover.prevent="onHeaderDragOver"
         @drop.prevent="onHeaderDrop"
       >
-        <!-- Each header is the column's own switch: clicking it orders the
-             listing by that column, and dragging it moves the column to another
-             place among the headers. The arrow sits to the right of the name and
-             only on the column in use, so the header itself says what the listing
-             is ordered by and which way it runs. -->
+        <template v-for="(col, i) in columnOrder" :key="col">
+          <!-- The gap before this column: a column of the first unused type is
+               inserted here. One of these leads every column, and one trails the
+               last (below), so every gap — first, middle and last — can take a
+               new column. -->
+          <ColumnAddButton v-if="columnEdit" :disabled="!canAddColumn" @add="onAddColumn(i)" />
+
+          <!-- The editor for one column, while the columns are being built. The
+               grip, the picker and the remove button are one *capsule* — a
+               bordered, rounded group with hairline dividers — so a column reads
+               as a single closed control rather than three pieces loose in the
+               header, and the add buttons in the gaps stay visibly apart from it.
+               The grip drags the column to another place (the picker and the
+               buttons cannot be the drag themselves, or the picker could not be
+               opened), the picker is the column's type, and the button drops the
+               column. The name column is essential: a listing without the entry's
+               own name is not a listing, so its drop button is disabled. -->
+          <div
+            v-if="columnEdit"
+            data-column
+            class="relative flex items-center"
+            :class="[editorClass(col), draggingColumn === col ? 'opacity-50' : '']"
+            @mousedown="onColumnFocusMouse(i)"
+          >
+            <div
+              class="flex items-center divide-x divide-border overflow-hidden rounded-md border border-border bg-surface transition-colors hover:border-fg-dim focus-within:border-accent-strong"
+              :class="columnFocus === i ? 'border-accent-strong ring-1 ring-accent-strong' : ''"
+            >
+              <span
+                draggable="true"
+                class="flex h-5 w-4 shrink-0 cursor-grab items-center justify-center text-fg-dim transition-colors hover:bg-hover hover:text-fg active:cursor-grabbing"
+                title="Drag to move the column"
+                aria-hidden="true"
+                @dragstart="onColumnEditDragStart(col, $event)"
+                @dragend="onColumnDragEnd"
+              >
+                <svg viewBox="0 0 24 24" class="h-3 w-3" fill="currentColor" aria-hidden="true">
+                  <circle cx="9" cy="6" r="1.5" />
+                  <circle cx="15" cy="6" r="1.5" />
+                  <circle cx="9" cy="12" r="1.5" />
+                  <circle cx="15" cy="12" r="1.5" />
+                  <circle cx="9" cy="18" r="1.5" />
+                  <circle cx="15" cy="18" r="1.5" />
+                </svg>
+              </span>
+              <select
+                class="column-select h-5 min-w-0 max-w-full cursor-pointer bg-transparent text-ui-sm text-fg outline-none transition-colors hover:bg-hover focus:bg-hover"
+                :value="col"
+                :title="`Show ${COLUMN_LABELS[col]} in this column`"
+                @mousedown.stop="onColumnFocusMouse(i)"
+                @click.stop
+                @change="onColumnTypeChange(i, $event)"
+              >
+                <option
+                  v-for="type in COLUMN_TYPES"
+                  :key="type"
+                  :value="type"
+                  :disabled="type !== col && columnOrder.includes(type)"
+                >
+                  {{ COLUMN_LABELS[type] }}
+                </option>
+              </select>
+              <button
+                type="button"
+                class="flex h-5 w-5 shrink-0 items-center justify-center text-fg-dim transition-colors hover:bg-hover hover:text-danger disabled:cursor-default disabled:opacity-25 disabled:hover:bg-transparent"
+                :disabled="col === 'name'"
+                :title="col === 'name' ? 'The name column cannot be removed' : 'Remove this column'"
+                :aria-label="col === 'name' ? 'The name column cannot be removed' : 'Remove this column'"
+                @click.stop="onRemoveColumn(i)"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  class="h-3 w-3"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  aria-hidden="true"
+                >
+                  <path d="M6 6l12 12M18 6 6 18" />
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <!-- Each header is the column's own switch: clicking it orders the
+               listing by that column, and dragging it moves the column to another
+               place among the headers. The arrow sits to the right of the name and
+               only on the column in use, so the header itself says what the listing
+               is ordered by and which way it runs. -->
+          <button
+            v-else
+            type="button"
+            draggable="true"
+            data-column
+            class="relative flex cursor-pointer select-none items-center transition-colors hover:text-fg"
+            :class="[
+              headerClass(col),
+              sortKey === col ? 'text-fg-bright' : '',
+              draggingColumn === col ? 'opacity-50' : ''
+            ]"
+            :title="`Sort by ${COLUMN_LABELS[col]} — drag to move the column`"
+            @click="onHeaderClick(col)"
+            @dragstart="onColumnDragStart(col, $event)"
+            @dragend="onColumnDragEnd"
+          >
+            <span :class="col === 'name' ? 'min-w-0 truncate' : ''">{{ COLUMN_LABELS[col] }}</span>
+            <span v-if="sortArrow(col)" class="shrink-0">{{ sortArrow(col) }}</span>
+          </button>
+
+        </template>
+
+        <!-- The trailing gap: a column put after the last one. Between it and
+             the leading controls, every gap — first, middle and last — can take
+             a new column. -->
+        <ColumnAddButton
+          v-if="columnEdit"
+          :disabled="!canAddColumn"
+          @add="onAddColumn(columnOrder.length)"
+        />
+
+        <!-- The edit-mode switch, pinned to the right edge of the header rather
+             than sitting in the columns' row: in the flow it would reserve its own
+             width past the last column, pushing the columns out of line with the
+             rows below and leaving dead space at the right. Out of the flow it
+             lives in the gutter the rows already keep for the scrollbar, so the
+             columns line up and the header's right edge is where the listing's is.
+             It stays out of the way until the pointer is on the header (or the
+             mode is already on). -->
         <button
-          v-for="(col, i) in columnOrder"
-          :key="col"
           type="button"
-          draggable="true"
-          data-column
-          class="relative flex cursor-pointer select-none items-center transition-colors hover:text-fg"
-          :class="[
-            headerClass(col),
-            sortKey === col ? 'text-fg-bright' : '',
-            draggingColumn === col ? 'opacity-50' : ''
-          ]"
-          :title="`Sort by ${COLUMN_LABELS[col]} — drag to move the column`"
-          @click="onHeaderClick(col)"
-          @dragstart="onColumnDragStart(col, $event)"
-          @dragend="onColumnDragEnd"
+          class="absolute top-1/2 right-0 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-fg-dim opacity-0 transition-opacity hover:bg-hover hover:text-fg focus-visible:opacity-100 group-hover:opacity-100"
+          :class="columnEdit ? 'text-accent-strong opacity-100' : ''"
+          :title="columnEdit ? 'Done editing columns' : 'Edit columns (Alt+C)'"
+          aria-label="Edit columns"
+          @click.stop="onToggleColumnEdit"
         >
-          <!-- Where the dragged column would land: a gap, drawn between two
-               headers, never a highlight on a column — a column is not the thing
-               being dropped onto, a place between columns is what is being
-               chosen. -->
-          <span
-            v-if="dropIndex === i && !gapIsNoop(i)"
-            class="pointer-events-none absolute inset-y-0 -left-[3px] w-0.5 rounded-full bg-accent-strong"
-          />
-          <span :class="col === 'name' ? 'min-w-0 truncate' : ''">{{ COLUMN_LABELS[col] }}</span>
-          <span v-if="sortArrow(col)" class="shrink-0">{{ sortArrow(col) }}</span>
-          <span
-            v-if="i === columnOrder.length - 1 && dropIndex === columnOrder.length && !gapIsNoop(columnOrder.length)"
-            class="pointer-events-none absolute inset-y-0 -right-[3px] w-0.5 rounded-full bg-accent-strong"
-          />
+          <svg
+            viewBox="0 0 24 24"
+            class="h-3.5 w-3.5"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M12 20h9" />
+            <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+          </svg>
         </button>
+
+        <!-- The gap the drag would drop into, drawn once at the header's own
+             level — it is the only box that can hold a marker overshooting the
+             header's top over the title above. -->
+        <ColumnDropMarker v-if="dropMarkerX !== null" :x="dropMarkerX" />
       </div>
 
       <!-- The bar opens the room it needs instead of appearing inside it: the
@@ -3371,11 +3684,17 @@ function onRenameBlur(): void {
               {{ sizeText(row.entry) }}
             </span>
             <span
-              v-else
+              v-else-if="col === 'modified'"
               class="w-24 shrink-0 text-right tabular-nums text-fg"
               :title="row.entry.isParent ? undefined : formatExactDate(row.entry.mtimeMs)"
             >
               {{ row.entry.isParent ? '' : formatRelativeDate(row.entry.mtimeMs) }}
+            </span>
+
+            <!-- The mode column, the one header left that is not the name, size or
+                 date. The ".." row carries none of it and stays blank. -->
+            <span v-else :class="cellClass()">
+              {{ cellText(row.entry, col) }}
             </span>
           </template>
         </li>

@@ -230,9 +230,14 @@ The columns can also be dragged into another order. `columnOrder` in the pane is
 the single source both the header and the rows' cells read, so a dropped header
 can never put a column in one and not the other; the name column carries the
 row's icon, its name and its symlink target, so all of it travels together. The
-gesture chooses a *gap*, not a column: while dragging, an insertion point — a
-short accent bar — is drawn between the two headers the column would land
-between, read from which column's midpoint the pointer has passed (measuring the
+gesture chooses a *gap*, not a column: while dragging, an insertion point is
+drawn between the two headers the column would land between — a white line down
+the header to its bottom edge, and, as the line's own elongation upward, a
+downward triangle that overshoots the header's top and hangs over the pane title
+above. The triangle is what makes the marker unmistakable as a place to drop; it
+is one element at the header's own level rather than a copy per column, because
+only the header's box can hold something that overshoots its top — read from which
+column's midpoint the pointer has passed (measuring the
 columns rather than the gap under the pointer keeps a fast drag honest, since the
 pointer may be over no column at all between two of them). The gaps on either
 side of the dragged column itself are not offered, because dropping there would
@@ -251,6 +256,79 @@ a drag leaves DOM focus on the button, where typing would go nowhere; the header
 gives it back once the gesture is over, and the app's own focus model re-claims
 it for the command line. Dragging cannot `preventDefault` its `mousedown` — that
 would cancel the drag — so this is done on the way out rather than on the way in.
+
+### The columns can also be built, not only rearranged
+
+Dragging moves the columns a pane starts with; it cannot add one, drop one, or
+change what one shows. That is what the column editor is for, and it is a mode of
+the *pane* (`columnEdit` in `useDirectory`) rather than of the app, because the
+columns it edits are the pane's own: the icon that opens it is pinned to the right
+edge of the header and appears on hover, and `Alt+C` toggles the active pane's
+mode from the keyboard. `Escape` leaves it, ahead of the background work it would
+otherwise take back, because it is the visible state the key just made.
+
+The icon is pinned rather than left in the columns' row on purpose. A pane's
+header keeps the gutter the rows keep for the scrollbar (`pane-header-gutter`), so
+a control in the flow past the last column would reserve its own width *inside*
+that row and push the columns out of line with the rows below — a header that no
+longer meets its own cells, and dead space at the right. Absolutely positioned, it
+lives in the gutter instead: the columns line up, and the ordinary header is
+nothing but the columns whether or not the icon is showing.
+
+While the mode is on, each column becomes one *capsule*: the grip, the picker of
+the column's type — the `<select>` carries the label the header drew as static
+text, so a column is read and changed in the same place — and the remove button,
+closed inside a single bordered, rounded control with hairline dividers between the
+three. Grouping them is what makes a column read as one thing: left loose, they
+were three controls plus the add buttons, with nothing to say which belonged to
+which. The add button stays *outside* the capsule, in every gap, before each column
+and after the last, so adding is visibly a move on the gap rather than on the
+column. The grip is the drag: a reader header is one whole button and can be
+grabbed anywhere, but an editor holds a picker and buttons, and a drag started on
+the picker would make the picker unopenable. The grip makes the editor's drag a
+gesture of its own, and the *column's wrapper* is what carries `data-column`, so
+the gap a drop lands in is still read from the columns — the shared
+`onHeaderDragOver` / `moveColumn` need nothing changed for the mode, and a column
+can be re-ordered while it is being built. The name column is the one column that
+is never dropped (its remove button is disabled): a listing without the entry's
+own name is not a listing.
+
+Both the rest of the gestures come from one model: a column *is* its type, and the
+types are unique among the columns, so the picker greys out a type another column
+already shows, and an add inserts the first type not already on screen and opens
+its picker (`showPicker` on the next tick — the add is a real click, so the user
+activation is still there). That uniqueness is also why `columnOrder` can go on
+being a plain list of `SortKey`s: with no duplicates there is exactly one answer
+per column, and the keyed `v-for` works unchanged. Adding a column does not touch
+the sort; changing a column's type hands it the sort when the column was the
+sorted one, and dropping that column falls the sort back to the first one left,
+ascending — the direction belonged to the column that left, not to the place it
+held.
+
+The editor's controls are the header's chrome, so they hand the keyboard back the
+way the headers do (`releaseHeaderFocus`). The picker stops its own `mousedown`
+from reaching the pane, though: the pane's handler runs `focusPanes`, whose
+command-line focus would steal the event before the native dropdown could open,
+and the whole point of the picker is the list it puts on screen. An editor is
+sized by its own controls (`editorClass`) rather than to the cells below it, since
+a grip, a picker and a button need room a `w-16` cell does not have — the rows'
+cells keep their widths throughout, so the listing itself never moves while the
+columns are being edited.
+
+The mode is the keyboard's as much as the mouse's, and that is what the pane's
+`columnFocus` is for: it is the column the keys act on, drawn as a highlighted
+capsule so the keys and the eye agree. Commands and navigation share the keys the
+listing already uses — arrows to move, Home/End to the ends — which is why they
+are claimed in App.vue's pane handler only while `columnEdit` is on: with the mode
+off the arrows still seek the clip and move the cursor. `Enter` opens the focused
+column's picker (the pane's own `openColumnPicker`, since only it holds the
+`<select>` and the user activation to call `showPicker`), `Insert` adds a column
+after the focused one and opens it, `Delete` drops the focused one (never the
+name), and Alt+Left/Right re-order it in whole steps from its own index, so the
+focus follows the column and the next press moves it again from where it now is.
+A click on a capsule puts the same focus there, so the pointer is just another way
+of saying which column is "this one"; a search box, whose input owns the caret,
+keeps its keys.
 
 ## The hide mode (`.mchide`)
 
@@ -573,6 +651,25 @@ started for the folder the pane just left cannot land in the new listing's rows,
 exactly as marks and the filter do not cross directories. `refresh` leaves the
 map alone — a write in the pane's own directory says nothing about the contents
 of a folder below it.
+
+A walked total is what the size column *sorts* by as well. `sizeFor` in
+`useDirectory` reads `state.dirSizes` for a folder and falls back to the entry's
+own metadata size for one that was never asked about, so a size sort orders a
+folder by the number its row actually shows. The fallback is the point of the
+whole thing: the blank is "not asked", not zero, and ordering an unasked folder as
+an empty file would be a claim the column never made — so an unsized folder keeps
+the place its metadata earns, and a walk is what moves it.
+
+And the order keeps up with the walk while it runs. A size sort is re-run as the
+running totals land, not only when the walk ends, because watching a folder's
+total climb while the listing holds its old place is the one thing a live total
+makes look wrong. It is debounced for quiescence and capped periodically
+(`SIZE_SORT_DEBOUNCE_MS` / `SIZE_SORT_MAX_MS`): a burst of reports re-schedules the
+run to a short wait after the last, but a stream that never quiets still fires
+about every `SIZE_SORT_MAX_MS`, so a walk of hundreds of thousands of files
+re-orders as it goes rather than once at its end. Each re-order keeps the cursor on
+the entry it was on (`applyFilter`), so the rows move around the cursor instead of
+under it, and the one-pass `Space` gesture survives the reordering it causes.
 
 The work is shaped for the fs thread pool, not for fan-out. A walk keeps a batch
 of `SIZE_STAT_BATCH` (12) `lstat`s in flight per directory, so a folder's stats

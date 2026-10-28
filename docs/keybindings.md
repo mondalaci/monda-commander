@@ -73,6 +73,21 @@ the other column, and nothing in a pane stops for it: a display among them goes
 on playing as it changes column, and the columns keep the sizes they had, so the
 divider does not move,
 
+`Alt+C` builds the active pane's columns: each column's label becomes a picker of
+the column types — Name, Size, Modified, Mode, Mode (num) — beside a grip
+and a remove button, and an add button sits in every gap, before each column and
+after the last (the first type not already shown is what an add inserts, and its
+picker opens at once). The grip drags the column to another place, so a column can
+be re-ordered while it is being built; the name column is the one that cannot be
+removed. The pane's own edit icon is pinned to the right edge of the header,
+appearing on hover and toggling the same mode. The whole mode is the keyboard's
+too: the arrows move between the columns (a highlight marks the one the keys act
+on, and a click puts the same highlight on a column), `Home`/`End` jump to the
+first and last, `Enter` opens the focused column's picker, `Insert` adds a column
+after it, `Delete` drops it, and `Alt+Left`/`Alt+Right` re-order it. A type a
+column already shows is greyed out in every other picker, since a column is shown
+once; `Alt+C`, the icon, or `Escape` leaves the mode,
+
 `Alt+S` starts an incremental search, `Alt+Enter` pastes the cursor entry's name
 onto the command line followed by a space and `Alt+A` the directory holding it,
 closed with a separator — the folder rather than the entry's own path, since the
@@ -121,8 +136,9 @@ room to be seen in, so they are all handed to whatever is running in it.
 Midnight commander is what makes that matter, since the gesture and the program
 want the same key: `Alt+S` (Search), `Alt+A` (PutCurrentPath), `Alt+Enter`
 (PutCurrentSelected), `Ctrl+R` (Reread) and `Alt+.` (ShowHidden) are pane
-gestures of ours *and* of mc's, and a plain shell's readline has `Ctrl+R` and
-`Alt+.` of its own. Above that line is only the app's own chrome — the overlays,
+gestures of ours *and* of mc's, and a plain shell's readline has `Ctrl+R`,
+`Alt+.` and `Alt+C` (capitalize-word) of its own. Above that line is only the
+app's own chrome — the overlays,
 `Ctrl+O`, the tab keys, and the `Escape` of a display that covers the whole
 window.
 

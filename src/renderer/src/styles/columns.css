@@ -1,0 +1,26 @@
+/* The column editor's type picker.
+
+   A native `<select>` is what the pane uses: it is keyboard- and screen-reader-
+   friendly for free, and `appearance: none` lets it sit borderless inside the
+   column's capsule — the border and rounding are the capsule's, so the picker is
+   one segment of a control rather than a control of its own. The chevron is drawn
+   here because `appearance: none` takes the platform's arrow away with the rest of
+   its chrome; the SVG is inlined as a data URL, which the renderer CSP allows for
+   images. `color-scheme: dark` is what keeps the open list on the pane's dark
+   surface rather than a light system menu. */
+.column-select {
+  color-scheme: dark;
+  appearance: none;
+  -webkit-appearance: none;
+  padding-left: 6px;
+  padding-right: 14px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238a8a8a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 2px center;
+  background-size: 10px 10px;
+}
+
+.column-select option {
+  background-color: var(--color-surface-2);
+  color: var(--color-fg);
+}
