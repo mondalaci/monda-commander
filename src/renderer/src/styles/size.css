@@ -1,0 +1,34 @@
+/*
+ * The size column while a folder walk is running.
+ *
+ * The bar is the whole of it: an indeterminate slide along the bottom edge of
+ * the 64px size cell, shown only once the walk has been running for about a
+ * third of a second (see `SIZE_BAR_DELAY_MS`), so a folder of a few files shows
+ * nothing at all. It is a clipped pseudo-element, so it never widens the cell and
+ * never shows beside it: the number keeps its place and the date column does not
+ * move, the same promise the git dot makes.
+ */
+.size-cell-bar {
+  overflow: hidden;
+}
+
+.size-cell-bar::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  width: 40%;
+  border-radius: 1px;
+  background-color: var(--color-accent-strong);
+  animation: size-bar-slide 1.1s ease-in-out infinite;
+}
+
+@keyframes size-bar-slide {
+  from {
+    transform: translateX(-110%);
+  }
+  to {
+    transform: translateX(260%);
+  }
+}

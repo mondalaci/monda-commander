@@ -4,6 +4,8 @@ import type {
   CopyOutcome,
   DeleteOutcome,
   DirListing,
+  DirSize,
+  DirSizeProgress,
   FileContent,
   FsChangeEvent,
   GitChangeEvent,
@@ -21,6 +23,13 @@ const api: McApi = {
   fs: {
     home: () => ipcRenderer.invoke('fs:home'),
     list: (dir: string): Promise<Result<DirListing>> => ipcRenderer.invoke('fs:list', dir),
+    dirSize: (target: string): Promise<Result<DirSize>> =>
+      ipcRenderer.invoke('fs:dir-size', target),
+    onDirSizeProgress: (handler: (event: DirSizeProgress) => void) => {
+      const listener = (_event: IpcRendererEvent, payload: DirSizeProgress) => handler(payload)
+      ipcRenderer.on('fs:dir-size-progress', listener)
+      return () => ipcRenderer.off('fs:dir-size-progress', listener)
+    },
     read: (target: string): Promise<Result<FileContent>> => ipcRenderer.invoke('fs:read', target),
     readImage: (target: string): Promise<Result<ImagePreview>> =>
       ipcRenderer.invoke('fs:read-image', target),

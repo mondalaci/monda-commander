@@ -13,6 +13,7 @@ import type {
   DeleteOutcome,
   DirEntry,
   DirListing,
+  DirSize,
   EntryKind,
   FileContent,
   ImagePreview,
@@ -168,6 +169,79 @@ export async function listDirectory(input: string): Promise<DirListing> {
     entries,
     hiddenNames: names ? [...names] : []
   }
+}
+
+/**
+ * How often a walk may report its running total. A tree can hold hundreds of
+ * thousands of files, so a message per entry would cost more than the walking;
+ * ten a second is enough for a row to visibly count up and cheap enough that the
+ * walk itself stays the work.
+ */
+const SIZE_PROGRESS_MS = 100
+
+/**
+ * The total size of everything under a directory, in bytes. The walk does not
+ * follow symlinks — a link back up its own tree would make it endless, and the
+ * answer is about what the folder itself holds — so a link is counted as the
+ * link it is, exactly as `du` counts one. An unreadable entry is skipped rather
+ * than failing the whole answer, so a tree with one protected subdirectory still
+ * reports the rest of itself.
+ *
+ * Folders are discovered through `Dirent.isDirectory`, which is the entry's
+ * own kind and never a link's target, so nothing is descended through a link.
+ *
+ * `onProgress` is called with the running total, throttled to `SIZE_PROGRESS_MS`,
+ * so a row can say how much has been found while the rest is still being walked.
+ */
+async function directorySize(
+  input: string,
+  onProgress?: (bytes: number) => void
+): Promise<DirSize> {
+  const root = path.resolve(input)
+  let bytes = 0
+  let lastReport = 0
+  const pending: string[] = [root]
+
+  const report = (): void => {
+    if (onProgress === undefined) return
+    const now = Date.now()
+    if (lastReport !== 0 && now - lastReport < SIZE_PROGRESS_MS) return
+    lastReport = now
+    onProgress(bytes)
+  }
+
+  while (pending.length > 0) {
+    const dir = pending.pop() as string
+
+    let dirents
+    try {
+      dirents = await fs.readdir(dir, { withFileTypes: true })
+    } catch (error) {
+      // Only the folder the user asked about can fail the answer: a
+      // subdirectory the walk cannot open is simply not part of what it can
+      // count, exactly as an unreadable file contributes nothing.
+      if (dir === root) throw error
+      continue
+    }
+
+    for (const dirent of dirents) {
+      const full = path.join(dir, dirent.name)
+      if (dirent.isDirectory()) {
+        pending.push(full)
+        continue
+      }
+      try {
+        bytes += (await fs.lstat(full)).size
+      } catch {
+        // Vanished, or not ours to read: it contributes nothing.
+      }
+      // The first entry reports at once, so a row says something is happening
+      // even when the walk is spread over many directories.
+      report()
+    }
+  }
+
+  return { bytes }
 }
 
 /**
@@ -441,6 +515,35 @@ export function registerFsHandlers(): void {
   ipcMain.handle('fs:list', async (_event, dir: string): Promise<Result<DirListing>> => {
     try {
       return { ok: true, data: await listDirectory(dir) }
+    } catch (error) {
+      return { ok: false, error: toFsError(error) }
+    }
+  })
+
+  ipcMain.handle('fs:dir-size', async (event, target: string): Promise<Result<DirSize>> => {
+    if (typeof target !== 'string' || target.length === 0) {
+      return { ok: false, error: { code: 'EINVAL', message: 'No directory to size' } }
+    }
+    try {
+      // `stat` rather than `lstat` so a link to a folder is a folder here too,
+      // exactly as the listing shows it: the walk below is what must not follow
+      // the links *inside*.
+      if (!(await fs.stat(target)).isDirectory()) {
+        return {
+          ok: false,
+          error: {
+            code: 'ENOTDIR',
+            message: `"${path.basename(target)}" is not a directory`
+          }
+        }
+      }
+
+      const resolved = path.resolve(target)
+      const data = await directorySize(resolved, (bytes) => {
+        if (event.sender.isDestroyed()) return
+        event.sender.send('fs:dir-size-progress', { path: resolved, bytes })
+      })
+      return { ok: true, data }
     } catch (error) {
       return { ok: false, error: toFsError(error) }
     }

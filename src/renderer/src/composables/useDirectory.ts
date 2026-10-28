@@ -43,6 +43,24 @@ export interface PaneState {
   loading: boolean
   error: string | null
   /**
+   * What a folder's contents add up to, by path, for the folders the user asked
+   * about with Space. Only a folder the gesture was made on is here: walking a
+   * tree is a question worth asking, not one to ask about every row, so the
+   * listing never sizes anything on its own.
+   */
+  dirSizes: Map<string, number>
+  /** Folders whose walk is still running, so Space can ask again for no one. */
+  sizing: Set<string>
+  /**
+   * Folders whose walk has been running long enough to be worth a bar — about
+   * a third of a second. A folder of a few files is walked faster than the eye
+   * can catch, and a bar that flicked in and out for it would say only that
+   * something happened, not that anything was still happening; below the delay
+   * the walk is simply too quick to be worth mentioning. Kept apart from
+   * `sizing`, which is the walk itself and starts at once.
+   */
+  sizeSlow: Set<string>
+  /**
    * Path of the entry currently being renamed in place, or null. The row list
    * keys off this to swap the name cell for an input; it is null whenever the
    * pane is not editing.
@@ -78,6 +96,7 @@ export interface PaneController {
   moveTo(index: number): void
   activate(): Promise<void>
   current(): PaneEntry | undefined
+  sizeDirectory(): boolean
   isSelected(entry: PaneEntry): boolean
   selectedCount(): number
   setSelected(path: string, value: boolean): void
@@ -182,6 +201,14 @@ const FLASH_MAX = 150
 const QUIET_TAIL_MS = 1000
 
 /**
+ * How long a walk must run before its row shows a bar. A folder of a few files
+ * is walked in a millisecond or two, and a bar for it would flick in and out
+ * faster than it could be read; waiting 300ms means the bar only ever appears
+ * over a walk that is really taking a while.
+ */
+const SIZE_BAR_DELAY_MS = 300
+
+/**
  * Which entries a re-list found new or altered, by path. "Altered" is a changed
  * size, mtime or kind, which is exactly what the row's metadata columns show, so
  * a rewritten file is highlighted for the same reason a fresh one is.
@@ -278,7 +305,10 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     error: null,
     renaming: null,
     fresh: new Set<string>(),
-    git: null
+    git: null,
+    dirSizes: new Map<string, number>(),
+    sizing: new Set<string>(),
+    sizeSlow: new Set<string>()
   })
 
   function current(): PaneEntry | undefined {
@@ -623,13 +653,34 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     if (event.path === state.path) void refresh()
   })
 
+  /**
+   * A walk's running total. Only a folder this pane is sizing is taken: another
+   * pane may be walking a folder of its own, and a report for one this pane has
+   * left behind must not appear in rows it is no longer showing.
+   */
+  const stopDirSizeProgress = window.mc.fs.onDirSizeProgress((event) => {
+    if (!state.sizing.has(event.path)) return
+    state.dirSizes.set(event.path, event.bytes)
+  })
+
   onScopeDispose(() => {
     stopWatching()
     stopGitWatching()
+    stopDirSizeProgress()
     unwatchCurrent()
     unwatchRepo()
     clearFresh()
+    // Whatever walk is still running belongs to a pane that is gone; neither
+    // its answer nor its bar timer must touch this state any more.
+    sizeRun += 1
   })
+
+  /**
+   * Bumped whenever the pane enters another directory, so a size walk started
+   * for the one it left cannot land in the new listing's rows. Sizes belong to
+   * the listing they were asked from, exactly as marks and the filter do.
+   */
+  let sizeRun = 0
 
   async function navigateTo(dir: string, focusPath?: string): Promise<void> {
     state.loading = true
@@ -662,6 +713,10 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     state.searchQuery = ''
     state.selected.clear()
     state.renaming = null
+    sizeRun += 1
+    state.dirSizes.clear()
+    state.sizing.clear()
+    state.sizeSlow.clear()
     clearFresh()
     watchCurrent()
     void loadGit()
@@ -752,6 +807,53 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     state.scrollAlign = 'nearest'
     state.animateScroll = true
     state.cursor = clampCursorTo(index)
+  }
+
+  /**
+   * Space on a folder: walk its contents for their total size, in the
+   * background, and step to the next row so a column of folders can be asked
+   * about in one pass. The answer lands in the row's own size column, exactly
+   * where a file's size is; nothing waits for it, since a tree can take a
+   * moment and the gesture asks the question rather than waiting for it.
+   *
+   * A bar appears under the number only once the walk has been running for
+   * `SIZE_BAR_DELAY_MS`: a small folder is walked in a millisecond or two and a
+   * bar that blinked for it would say nothing useful.
+   *
+   * Answers false for anything Space is not this: a file, the ".." row, an empty
+   * pane. The caller then lets the key go on to the clip's play/pause and to the
+   * shell's own space, so nothing a Space did before is taken away.
+   */
+  function sizeDirectory(): boolean {
+    const entry = current()
+    if (!entry || entry.isParent || entry.kind !== 'directory') return false
+
+    if (!state.sizing.has(entry.path)) {
+      const run = sizeRun
+      state.sizing.add(entry.path)
+      const slowTimer = window.setTimeout(() => {
+        if (run !== sizeRun) return
+        state.sizeSlow.add(entry.path)
+      }, SIZE_BAR_DELAY_MS)
+
+      void window.mc.fs.dirSize(entry.path).then((result) => {
+        if (run !== sizeRun) return
+        // The walk is over before anything else, so a late progress report can
+        // no longer revise the final total and a fresh ask is not refused, and
+        // the bar's own timer must not raise a bar for a walk that has ended.
+        window.clearTimeout(slowTimer)
+        state.sizing.delete(entry.path)
+        state.sizeSlow.delete(entry.path)
+        if (result.ok) {
+          state.dirSizes.set(entry.path, result.data.bytes)
+        } else {
+          state.error = `${result.error.code}: ${result.error.message}`
+        }
+      })
+    }
+
+    moveCursor(1)
+    return true
   }
 
   /**
@@ -1026,6 +1128,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     moveTo,
     activate,
     current,
+    sizeDirectory,
     isSelected,
     selectedCount,
     setSelected,

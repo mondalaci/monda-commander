@@ -1252,9 +1252,12 @@ function handlePaneKey(event: KeyboardEvent): void {
 
   // Space is the clip's play/pause while the command line is empty — the
   // display's clip, or the footer preview under the cursor. With nothing to
-  // play it stays a space for the shell, so a command can still start with one.
+  // play it asks about the folder under the cursor instead: its contents are
+  // walked and the row's size column says how much is in there, and the cursor
+  // steps on so a column of folders can be sized in one pass. With neither,
+  // it stays a space for the shell, so a command can still start with one.
   if (event.key === ' ' && !event.repeat && !searching && !hasInput) {
-    if (togglePlayback()) {
+    if (togglePlayback() || pane.sizeDirectory()) {
       consume(event)
       return
     }

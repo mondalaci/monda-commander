@@ -2,6 +2,8 @@ import type {
   CopyOutcome,
   DeleteOutcome,
   DirListing,
+  DirSize,
+  DirSizeProgress,
   FileContent,
   FsChangeEvent,
   GitChangeEvent,
@@ -24,6 +26,19 @@ export interface McFsApi {
    * content come back as an error rather than a lossy decode.
    */
   read(target: string): Promise<Result<FileContent>>
+  /**
+   * The total size of everything under a directory, in bytes. The walk does not
+   * follow symlinks — a link back up its own tree would make it endless — and an
+   * unreadable entry is skipped rather than failing the whole answer, so a folder
+   * holding one protected subdirectory still reports the rest.
+   */
+  dirSize(target: string): Promise<Result<DirSize>>
+  /**
+   * The running total of a walk still in progress, so the row can show the size
+   * as subdirectories are traversed. `path` is the folder the walk was asked
+   * about; a pane ignores reports for folders it is not sizing.
+   */
+  onDirSizeProgress(handler: (event: DirSizeProgress) => void): () => void
   /**
    * Read a regular image file for a pane's status-bar preview, as a `data:`
    * URL. Only decodable formats and files within the preview ceiling come back;

@@ -468,6 +468,56 @@ every pane showing that directory is muted around the operation (`beginSelfChang
 so the folder it just made does not sweep as though a program had written it —
 the same reason `mkdir foo` at the prompt is muted.
 
+### `Space` on a folder walks it, and the row says how much is in there
+
+A listing can answer a file's size from its own metadata and cannot answer a
+folder's at all: what a folder holds is the whole tree under it, which is a walk
+rather than a stat. So the size column stays blank for a folder until the user
+asks — `Space` on the row — and `fs:dir-size` answers with the total in bytes
+(`directorySize` in `main/ipc/fs.ts`). The walk is deliberately *not* a `du`
+clone: it never follows a symlink, because a link back up its own tree would make
+it endless and because the question is about the folder itself, so a link is
+counted as the link it is, exactly as `du` counts one. An entry it cannot read is
+skipped rather than failing the answer, so a folder with one protected
+subdirectory still reports the rest.
+
+The answer is kept by path in the pane (`state.dirSizes`), not written back into
+the entry: a `DirEntry` is the listing's own metadata and a walk is a separate
+question with a separate lifetime. It is asked in the background and the cursor
+steps to the next row immediately — the gesture is "size this one and move on",
+so holding `Space` walks a column of folders while the rows fill in behind the
+cursor. The row does not sit at `…` until the end: main sends the running total
+back as `fs:dir-size-progress`, throttled to one report per hundred milliseconds
+so a tree of hundreds of thousands of files costs messages in the tens rather
+than one per file, and the pane writes each report into the same map the final
+answer lands in. So the number counts up while subdirectories are being
+traversed, and `…` is only what a walk shows before its first file is counted.
+Report carries the folder's path, and the pane takes only those for folders it is
+still sizing — that is what keeps another pane's walk, or one for a folder this
+pane has already left, out of its rows. A size belongs to the listing it was
+asked from: `navigateTo` clears the map and bumps a run counter, so a walk
+started for the folder the pane just left cannot land in the new listing's rows,
+exactly as marks and the filter do not cross directories. `refresh` leaves the
+map alone — a write in the pane's own directory says nothing about the contents
+of a folder below it.
+
+A long walk says it is still going with a bar, because a walk is indeterminate:
+the total is precisely what is not known yet. It is a 2px bar sliding along the
+bottom edge of the size cell (`styles/size.css`), clipped to the cell, so it
+never widens the cell and no part of it ever shows beside it — the number keeps
+its place and the date column does not move, the same promise the git dot makes.
+The bar is not shown from the first moment: it appears only once a walk has run
+for about a third of a second (`SIZE_BAR_DELAY_MS`), because a folder of a few
+files is walked faster than the eye catches and a bar that blinked for it would
+say nothing useful. So the rule is: a quick walk shows only its answer, and only a
+walk long enough to wonder about earns the bar. The bar's own `sizeSlow` set is
+separate from `sizing` — the walk itself — so the delay is a display matter and
+not a second guess at when the walk started.
+
+`Space` reaches this only after the clip call has declined: a display or a footer
+preview under the cursor keeps `Space` as play/pause, and a file or the `..` row
+leaves it to the shell, so no key that already meant something lost it.
+
 ## Git status
 
 ### Git is asked, not reimplemented

@@ -2771,7 +2771,8 @@ function rowClass(index: number): string {
 
   // `fresh` holds the paths a refresh just found new or changed; membership is
   // all the row needs to run its highlight (see styles/flash.css).
-  return entry && props.controller.state.fresh.has(entry.path) ? `${base} flash-row` : base
+  const flash = entry && props.controller.state.fresh.has(entry.path) ? ' flash-row' : ''
+  return `${base}${flash}`
 }
 
 /**
@@ -2799,6 +2800,37 @@ function nameClass(index: number): string {
 function symlinkTargetClass(index: number): string {
   const entry = props.controller.state.entries[index]
   return entry?.kind === 'symlink' ? 'text-danger' : 'text-fg-dim'
+}
+
+/**
+ * Whether a folder row's walk has been running long enough to show its bar.
+ * Short walks are deliberately silent: a bar that blinked for a folder of a few
+ * files would say nothing useful.
+ */
+function rowBar(entry: PaneEntry): boolean {
+  return entry.kind === 'directory' && props.controller.state.sizeSlow.has(entry.path)
+}
+
+/**
+ * The size column's text. A file's size is its own metadata; a folder's is not
+ * something a listing knows, so a folder's column stays blank until Space walks
+ * it — and then it holds the running total, in the same column and the same
+ * units as a file's, with an ellipsis only until the walk counts its first byte.
+ */
+function sizeText(entry: PaneEntry): string {
+  if (entry.isParent) return ''
+  if (entry.kind === 'directory') {
+    const bytes = props.controller.state.dirSizes.get(entry.path)
+    if (bytes !== undefined) return formatSize(bytes)
+    return props.controller.state.sizing.has(entry.path) ? '…' : ''
+  }
+  return formatSize(entry.size)
+}
+
+/** The footer's own size, where an unsized folder still reads as a folder. */
+function footerSizeText(entry: PaneEntry): string {
+  const text = sizeText(entry)
+  return text === '' && entry.kind === 'directory' ? 'dir' : text
 }
 
 /**
@@ -3095,8 +3127,11 @@ function onRenameBlur(): void {
             </span>
           </span>
 
-          <span class="w-16 shrink-0 text-right tabular-nums text-fg">
-            {{ row.entry.kind === 'directory' ? '' : formatSize(row.entry.size) }}
+          <span
+            class="relative flex w-16 shrink-0 items-center justify-end tabular-nums text-fg"
+            :class="rowBar(row.entry) ? 'size-cell-bar' : ''"
+          >
+            {{ sizeText(row.entry) }}
           </span>
           <span
             class="w-24 shrink-0 text-right tabular-nums text-fg"
@@ -3229,7 +3264,7 @@ function onRenameBlur(): void {
           <template v-if="entry && !entry.isParent">
             <span class="hidden tabular-nums lg:inline">{{ formatMode(entry.mode) }}</span>
             <span class="tabular-nums">
-              {{ entry.kind === 'directory' ? 'dir' : formatSize(entry.size) }}
+              {{ footerSizeText(entry) }}
             </span>
             <span class="hidden tabular-nums lg:inline" :title="formatExactDate(entry.mtimeMs)">{{
               formatRelativeDate(entry.mtimeMs)

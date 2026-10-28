@@ -33,8 +33,9 @@ for when it is wanted are in [`docs/verifying.md`](docs/verifying.md).
 ```
 src/main/index.ts        window lifecycle, single-instance lock
 src/main/windowState.ts  remembered window size/position/maximized flag
-src/main/ipc/fs.ts       IPC: fs:home, fs:list, fs:read, fs:write, fs:read-image,
-                         fs:image-size, fs:open, fs:reveal, fs:hide-add, fs:mkdir
+src/main/ipc/fs.ts       IPC: fs:home, fs:list, fs:dir-size, fs:read, fs:write,
+                         fs:read-image, fs:image-size, fs:open, fs:reveal,
+                         fs:hide-add, fs:mkdir
 src/main/imageSize.ts    header-only image dimensions (PNG/JPEG+EXIF/GIF/BMP/ICO/WebP/SVG)
 src/main/videoCodec.ts   header-only codec sniff for ISOBMFF (mp4/m4v/mov)
 src/main/media.ts        mc-media scheme: ranged video stream + live ffmpeg transcode
@@ -256,6 +257,31 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   is the green rule less a `.desktop`; `runInShell` types the quoted path and
   submits it, so it echoes and reaches history. The terminal is shown for as long
   as it runs; the run ends on `shell.idle`. A busy shell refuses a second command.
+- **`Space` on a folder adds up what it holds.** A listing knows a file's size
+  but not a folder's, so the row's size column is blank until the gesture asks:
+  `fs:dir-size` walks the tree in main and the pane keeps the answer by path
+  (`state.dirSizes`). The walk does not follow symlinks (a link back up its own
+  tree would be endless; a link counts as the link it is, as `du` counts it), and
+  an unreadable entry is skipped rather than failing the whole answer. The walk
+  is started, not awaited: the cursor steps to the next row at once, so holding
+  `Space` sizes a column of folders, and the row counts up live as subdirectories
+  are traversed — `fs:dir-size-progress` carries the running total, throttled in
+  main to one report per 100ms and matched by the folder's path, and `…` is shown
+  only until a walk has accounted for its first byte. A size belongs to the
+  listing it was asked from — navigating away clears the map and bumps a run
+  counter, so a walk for the folder left behind cannot land in the new rows, and
+  progress for it is ignored for the same reason. A walk that is still going
+  shows a 2px bar sliding along the size cell's bottom edge (`styles/size.css`),
+  clipped to the cell so it never widens it or shows beside it — the columns
+  never shift while a walk runs, the same rule the git dot follows. The bar is
+  not shown from the first moment: it appears only after a walk has run for about
+  a third of a second (`SIZE_BAR_DELAY_MS`, `state.sizeSlow`), because a folder of
+  a few files is walked faster than the eye catches and a bar that blinked for it
+  would say nothing useful. `sizeSlow` is kept apart from `sizing` — the walk
+  itself — so the delay is a display matter and not a second guess at when the
+  walk began. `Space` only reaches this when there is no clip to play, and
+  otherwise stays the shell's own space.
+
 - **`F7` makes a directory in the pane being browsed.** `fs:mkdir` resolves the
   name against that pane (absolute, or relative, as the transfer dialogs do) and
   is deliberately *not* recursive, so an existing name is an `EEXIST` the pane

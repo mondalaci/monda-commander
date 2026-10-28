@@ -15,8 +15,11 @@ while the command line is empty; with anything typed there — or in an open sea
 box — the arrows are the line's own keys again and the Ctrl steps belong to the
 shell, whose `Ctrl+H` is backspace, `Ctrl+L` clear-screen and `Ctrl+J`
 accept-line; `Space` pauses or resumes the clip being watched there — the
-display's, or the footer preview if none is up — and stays the shell's own space
-when there is no clip to toggle),
+display's, or the footer preview if none is up — and with no clip it walks the
+folder under the cursor, counting the total up in the row's size column as
+subdirectories are traversed, and steps to the next row so a column of folders can
+be sized in one pass; with neither a clip nor a folder it stays the shell's own
+space),
 
 `Enter` descends, or runs a file the user can run in the workspace's own shell —
 the green name is a promise, and the shell is where it is kept, shown for as long

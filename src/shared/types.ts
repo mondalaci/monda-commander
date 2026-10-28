@@ -20,6 +20,27 @@ export interface DirEntry {
   mode: number
 }
 
+/**
+ * The total size of a folder's contents, in bytes — the answer to "how much is
+ * in there", which a listing cannot give without walking the whole tree. Symlinks
+ * are counted as the links they are rather than followed, so a link back up its
+ * own tree cannot make the walk endless.
+ */
+export interface DirSize {
+  bytes: number
+}
+
+/**
+ * A running total from a folder walk, sent while it is still going so the row
+ * can fill in as the tree is traversed rather than only when it ends. `path` is
+ * the folder the walk was asked about, which is what lets a pane match the
+ * report to the row that asked for it.
+ */
+export interface DirSizeProgress {
+  path: string
+  bytes: number
+}
+
 export interface DirListing {
   path: string
   parent: string | null
