@@ -1,6 +1,14 @@
 /* The column editor's type picker.
-
-   A native `<select>` is what the pane uses: it is keyboard- and screen-reader-
+ *
+ * Scoped to `select` on purpose, and it must stay that way. xterm puts the class
+ * `column-select` on `.xterm` itself while Alt is held (its own "column
+ * selection" mode: `shouldColumnSelect`), so a bare `.column-select` rule also
+ * lands on the terminal — giving it this padding, shrinking the grid's content
+ * box and shifting every line right by about one cell, for as long as Alt is
+ * down (e.g. through an Alt+Tab). The picker is the `<select>`; the terminal is
+ * not.
+ *
+ * A native `<select>` is what the pane uses: it is keyboard- and screen-reader-
    friendly for free, and `appearance: none` lets it sit borderless inside the
    column's capsule — the border and rounding are the capsule's, so the picker is
    one segment of a control rather than a control of its own. The chevron is drawn
@@ -8,7 +16,7 @@
    its chrome; the SVG is inlined as a data URL, which the renderer CSP allows for
    images. `color-scheme: dark` is what keeps the open list on the pane's dark
    surface rather than a light system menu. */
-.column-select {
+select.column-select {
   color-scheme: dark;
   appearance: none;
   -webkit-appearance: none;
@@ -20,7 +28,7 @@
   background-size: 10px 10px;
 }
 
-.column-select option {
+select.column-select option {
   background-color: var(--color-surface-2);
   color: var(--color-fg);
 }
