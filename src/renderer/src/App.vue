@@ -1774,10 +1774,12 @@ onBeforeUnmount(() => {
       <WorkspaceTabs
         :tabs="workspaces"
         :active-index="activeIndex"
+        :terminal-expanded="terminalExpanded"
         @select="selectWorkspace"
         @close="closeWorkspace"
         @create="addWorkspace"
         @reorder="moveWorkspace"
+        @toggle-terminal="toggleTerminal"
       />
     </TitleBar>
 
@@ -1894,7 +1896,6 @@ onBeforeUnmount(() => {
         :expanded="terminalExpanded"
         :cwd="activePanePath"
         @focused-change="setTerminalFocused"
-        @collapse="collapseTerminal"
       />
 
       <FileViewer

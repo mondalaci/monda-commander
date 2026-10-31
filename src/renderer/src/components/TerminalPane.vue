@@ -28,7 +28,6 @@ const props = defineProps<{ expanded: boolean; cwd: string; shell: Shell }>()
 
 const emit = defineEmits<{
   (event: 'focused-change', value: boolean): void
-  (event: 'collapse'): void
 }>()
 
 const root = ref<HTMLElement | null>(null)
@@ -391,38 +390,11 @@ defineExpose({ focusTerminal, lineHasContent })
 <template>
   <section
     ref="root"
-    class="flex min-h-0 flex-col overflow-hidden border-t border-border bg-surface-2 transition-[flex-grow,flex-basis] duration-150 ease-out"
+    class="flex min-h-0 flex-col overflow-hidden bg-surface-2 transition-[flex-grow,flex-basis] duration-150 ease-out"
     :class="expanded ? 'grow basis-0' : 'grow-0 shrink-0 basis-7'"
     @focusin="emit('focused-change', true)"
     @focusout="onFocusOut"
   >
-    <div
-      v-if="expanded"
-      class="flex h-8 shrink-0 items-center justify-between border-b border-border-subtle bg-surface px-3"
-    >
-      <span class="text-ui-sm font-medium tracking-wider text-fg-dim uppercase">
-        Terminal
-      </span>
-      <button
-        type="button"
-        class="rounded p-0.5 text-fg-dim transition-colors hover:bg-hover hover:text-fg"
-        title="Collapse to the command line (Ctrl+O)"
-        @click="emit('collapse')"
-      >
-        <svg
-          viewBox="0 0 24 24"
-          class="h-3.5 w-3.5"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          aria-hidden="true"
-        >
-          <path d="M6 6l12 12M18 6L6 18" />
-        </svg>
-      </button>
-    </div>
-
     <div
       ref="host"
       class="min-h-0 overflow-hidden px-3 my-1"

@@ -9,13 +9,19 @@ import { ref } from 'vue'
  * Ctrl+PageDown mirror the buttons here, and Shift+Ctrl+PageUp/PageDown or a
  * drag reorders the tabs.
  */
-defineProps<{ tabs: { id: string; label: string }[]; activeIndex: number }>()
+defineProps<{
+  tabs: { id: string; label: string }[]
+  activeIndex: number
+  /** Whether the active workspace's terminal is expanded, for the tab's toggle. */
+  terminalExpanded: boolean
+}>()
 
 const emit = defineEmits<{
   (event: 'select', index: number): void
   (event: 'close', index: number): void
   (event: 'create'): void
   (event: 'reorder', from: number, to: number): void
+  (event: 'toggle-terminal'): void
 }>()
 
 /**
@@ -92,6 +98,36 @@ function onDrop(event: DragEvent): void {
           @click="emit('select', index)"
         >
           {{ tab.label }}
+        </button>
+
+        <!-- The terminal toggle lives here, not in a panel header: the tab is
+             the workspace's own chrome, so expanding its shell costs no row of
+             the terminal itself. `chevron-up` grows the terminal (it opens
+             upward from the bottom), `chevron-down` collapses it. -->
+        <button
+          v-if="index === activeIndex"
+          type="button"
+          class="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded hover:bg-hover"
+          :title="
+            terminalExpanded
+              ? 'Collapse to the command line (Ctrl+O)'
+              : 'Expand the terminal (Ctrl+O)'
+          "
+          @click.stop="emit('toggle-terminal')"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            class="h-2.5 w-2.5"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path v-if="terminalExpanded" d="M6 9l6 6 6-6" />
+            <path v-else d="M6 15l6-6 6 6" />
+          </svg>
         </button>
 
         <button
