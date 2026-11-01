@@ -1,4 +1,5 @@
 import { ref } from 'vue'
+import { isArchivePath } from '@shared/archive'
 import { imageMimeFor } from '@shared/image'
 import {
   codecNeedsTranscode,
@@ -83,6 +84,11 @@ export function probeVideoCodec(target: PreviewTarget | null): void {
  */
 export function previewKindFor(entry: PaneEntry): PreviewKind | null {
   if (imageMimeFor(entry.name)) return 'image'
+
+  // A video inside an archive is not streamable: the ranged stream serves a real
+  // file on disk, and an entry is not one. An image still previews, since it
+  // travels as a data URL main can extract — so only the video answer is given up.
+  if (isArchivePath(entry.path)) return null
 
   if (videoMimeFor(entry.name) !== null) {
     // A container Chromium demuxes, which is still only playable while the

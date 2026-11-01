@@ -66,6 +66,12 @@ export interface McFsApi {
    */
   canTranscode(): Promise<boolean>
   /**
+   * Whether main can read archives at all, so a pane knows to offer entering a
+   * `.zip` rather than handing it to the system. False without 7z on the
+   * machine, which is also the answer while the probe is still running.
+   */
+  canArchive(): Promise<boolean>
+  /**
    * The video codec inside a container Chromium demuxes (`mp4`, `m4v`, `mov`),
    * read from the file's header without decoding anything. Null when the file
    * is not such a container or its header does not say — nothing known against

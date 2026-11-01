@@ -1,20 +1,39 @@
 /*
  * The pane's notice — a refused F3/F4 on a binary file, a failed copy, a
- * directory that would not list — descends into place rather than appearing, and
- * ascends back out rather than vanishing, so Escape reads as putting it away.
- * The room it needs is the layout's the moment it is in the DOM, so the listing
- * below is pushed down by that, not by this animation: what moves here is the
- * message's own box, inside a window of exactly its height, so it travels in and
- * out from behind the path bar instead of over it. (The window is `overflow:
- * hidden` around the animated element, which is why the element and not the
- * wrapper carries the animation: a moving window would take the clip with it.)
+ * directory that would not list, an entry inside an archive that has to be
+ * extracted — descends into place rather than appearing, and ascends back out
+ * rather than vanishing, so Escape reads as putting it away.
+ *
+ * The window it lives in is a `0fr → 1fr` grid row, so its *height* animates and
+ * the listing below is pushed down by the same motion the message arrives with,
+ * instead of being shoved down the instant the notice mounts and then waiting for
+ * the text. The window still clips (`overflow: hidden` on the inner), and the
+ * message's own box travels inside it, so the text comes down from behind the path
+ * bar rather than over it, and the two moves — room opening, message descending —
+ * read as one gesture. The inner carries `min-height: 0` because a grid item's
+ * automatic minimum would refuse to shrink past its content and the row could
+ * never close.
  *
  * Fast on purpose: a notice is news, and a slow one would be a wait before the
  * keys work again. The message is keyed by its text, so a new one is a new
- * element — it ascends and the next descends, out-in (`Transition` in
- * FilePanel) — while a repeat of the same message is the same notice still
- * standing and does not re-announce itself.
+ * element — it ascends and the next descends, out-in (`Transition` in FilePanel) —
+ * while a repeat of the same message is the same notice still standing and does
+ * not re-announce itself.
  */
+.notice-window {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 140ms ease-out;
+}
+
+.notice-window-open {
+  grid-template-rows: 1fr;
+}
+
+.notice-window > div {
+  min-height: 0;
+}
+
 .notice-enter-active {
   animation: notice-drop 140ms ease-out both;
 }

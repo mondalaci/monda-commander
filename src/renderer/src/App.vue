@@ -21,7 +21,9 @@ import {
   type StageRequest
 } from '@renderer/lib/preview'
 import type { PaneMenuChoice, PaneMenuItem, PaneMenuRequest } from '@renderer/lib/paneMenu'
+import { isArchivePath, splitArchivePath } from '@shared/archive'
 import { HIDE_MARKER } from '@shared/hide'
+import { loadArchiveSupport } from '@renderer/lib/archive'
 import { playSwapAnimation } from '@renderer/lib/swapAnimation'
 import type { FileContent, FsError, PanelSide } from '@shared/types'
 
@@ -88,6 +90,33 @@ const inactivePane = computed(() => activeWorkspace.value.inactivePane.value)
 const activePanePath = computed(() => activeWorkspace.value.activePanePath.value)
 const terminalExpanded = computed(() => activeWorkspace.value.terminalExpanded.value)
 const terminalFocused = computed(() => activeWorkspace.value.terminalFocused.value)
+
+/**
+ * Whether the active pane is inside an archive. A shell cannot follow a pane
+ * there, so the terminal is disabled while this is true (see TerminalPane): the
+ * refusal is shown rather than leaving the shell silently out of sync with the
+ * pane it is supposed to mirror.
+ */
+const archiveMode = computed(() => isArchivePath(activePanePath.value))
+
+/** The directory holding a real path; both separators, as `parentOf` is. */
+function parentOfPath(target: string): string {
+  const slash = Math.max(target.lastIndexOf('/'), target.lastIndexOf('\\'))
+  if (slash > 0) return target.slice(0, slash)
+  return slash === 0 ? '/' : target
+}
+
+/**
+ * Where the shell is started when the terminal first mounts. Inside an archive
+ * the pane's location is not a path a shell can be spawned in, so the archive's
+ * own directory is used — the closest real place, and the one the sync anchors
+ * the shell to anyway.
+ */
+const terminalCwd = computed(() => {
+  const inside = splitArchivePath(activePanePath.value)
+  return inside ? parentOfPath(inside.archive) : activePanePath.value
+})
+
 const shell = computed(() => activeWorkspace.value.shell)
 const shellInput = computed(() => shell.value.inputLine.value)
 
@@ -526,12 +555,21 @@ function setTerminalFocused(value: boolean): void {
  * the shell. Expanded, it is a real terminal and owns the keyboard outright.
  */
 function focusPanes(): void {
-  if (terminalExpanded.value) {
+  // A disabled terminal takes no keyboard, and an expanded one has left the panes
+  // no room: both leave the focus on the panes' own host.
+  if (terminalExpanded.value || archiveMode.value) {
     panelHost.value?.focus()
     return
   }
   terminalRef.value?.focusTerminal()
 }
+
+// Entering an archive disables the terminal, so the command line can no longer be
+// the focus target: hand the keyboard to the panes at once. Leaving restores it,
+// since the command line is where typing goes whenever the terminal is collapsed.
+watch(archiveMode, () => {
+  void nextTick(() => focusPanes())
+})
 
 /**
  * Whether the element holding focus belongs to nothing the app cares about: the
@@ -638,12 +676,16 @@ function closeDirectory(dir: string): string {
  * from), so the entry's path only differs from it by the name.
  */
 function pasteEntryName(): void {
+  // The terminal is disabled inside an archive, so there is no command line to
+  // paste onto.
+  if (archiveMode.value) return
   const entry = activePane.value.current()
   if (!entry || entry.isParent) return
   shell.value.sendInput(`${shellQuote(entry.name)} `)
 }
 
 function pasteEntryPath(): void {
+  if (archiveMode.value) return
   const entry = activePane.value.current()
   if (!entry || entry.isParent) return
   shell.value.sendInput(shellQuote(closeDirectory(activePane.value.state.path)))
@@ -1195,9 +1237,12 @@ function handlePaneKey(event: KeyboardEvent): void {
   const searching = pane.state.searchActive
   // The model only sees what was typed, so a line readline drew itself — a
   // history entry recalled with Up or Ctrl+P, a completion — is asked of the
-  // terminal, which knows where its prompt ends.
+  // terminal, which knows where its prompt ends. Inside an archive the terminal
+  // is disabled, so nothing on the command line is live and the keys are the
+  // panes' again.
   const hasInput =
-    shellInput.value.length > 0 || (terminalRef.value?.lineHasContent() ?? false)
+    !archiveMode.value &&
+    (shellInput.value.length > 0 || (terminalRef.value?.lineHasContent() ?? false))
 
   // An in-place rename hands the keyboard to its input, exactly like search:
   // printable characters, Backspace and the arrow keys edit the text, and
@@ -1758,6 +1803,8 @@ onMounted(async () => {
   // What a file is previewable as depends on whether main can transcode what
   // Chromium cannot play, so the answer is asked for before any cursor lands.
   void loadTranscodeSupport()
+  // Whether Enter on a `.zip` enters it or opens it with the system.
+  void loadArchiveSupport()
 })
 
 onBeforeUnmount(() => {
@@ -1894,7 +1941,8 @@ onBeforeUnmount(() => {
         :key="activeWorkspace.id"
         :shell="activeWorkspace.shell"
         :expanded="terminalExpanded"
-        :cwd="activePanePath"
+        :cwd="terminalCwd"
+        :disabled="archiveMode"
         @focused-change="setTerminalFocused"
       />
 

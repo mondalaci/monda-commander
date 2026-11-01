@@ -28,7 +28,13 @@ own space),
 the green name is a promise, and the shell is where it is kept, shown for as long
 as the program runs — or opens anything else with the system default app, except
 an image or a video, which it displays in the other pane instead (one there is
-nothing in the app to decode is opened like any other file) — and a double-click
+nothing in the app to decode is opened like any other file), and except an archive
+(a `.zip`, a `.tar.gz`, a `.7z`, …), which it *descends into* as if it were a
+directory — the pane title marks it with a chip carrying the archive's name, so
+being inside `foo.zip` reads apart from being inside a folder merely named so, and
+`..` at the archive's root leaves it for the folder holding it. Entering archives
+needs 7z on the machine; without it an archive file is opened like any other — and
+a double-click
 on a row is the same thing with the mouse (`activate` → `activateRow`),
 `Ctrl+Enter` opens that same media as a full-screen display over the whole window
 (a triple-click on the file's name is the mouse's half of the gesture; pressed
@@ -127,8 +133,10 @@ box), so the `..` row is the way up.
 
 The bottom strip is the active workspace's shell itself: the same xterm,
 collapsed to a single visible line, so the prompt, font and echo are the shell's
-own rather than a look-alike widget. `Ctrl+O` expands it into the full terminal,
-which then owns the keyboard outright — and *outright* is the word: what
+own rather than a look-alike widget. While the active pane is inside an archive the
+strip is **disabled** — the prompt stays visible under a light scrim, a centred note
+says it is unavailable, and it takes no input — since a shell cannot be inside an
+archive; the panes keep the keyboard instead. `Ctrl+O` expands it into the full terminal, which then owns the keyboard outright — and *outright* is the word: what
 `onKeydown` claims below that check is gestures for a *pane* (its listing, the
 row under its cursor, the mode it is in), which an expanded terminal has left no
 room to be seen in, so they are all handed to whatever is running in it.

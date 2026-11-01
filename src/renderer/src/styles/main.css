@@ -59,6 +59,9 @@
   --color-marked: #625018;
   --color-hover: #2a2d2e;
   --color-folder: #519aba;
+  /* The archive hue: the same gold `lib/fileIcon.ts` draws an archive's icon in,
+     so a name and its icon agree about what the entry is. */
+  --color-archive: #e2b93d;
   --color-runnable: #98c379;
   --color-danger: #f14c4c;
 

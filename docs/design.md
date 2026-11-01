@@ -191,16 +191,23 @@ jumps; `FilePanel` renders that notice as a sibling of the `<ul>`.
 That notice *travels* (`styles/notice.css`): it descends into place, and ascends
 back out when Escape puts it away — the gesture reads as taking the message away
 rather than as the message vanishing. It moves inside a window of its own height,
-an `overflow: hidden` box that is always there, and the animated element is the
-message rather than that window: a moving window would carry the clip with it. The
-room the notice takes is the layout's the moment it is in the DOM, so the listing
-is pushed down by the mount and not by the animation, and the message comes down
-from behind the path bar instead of over it; the room is released when the ascent
-is over, which needs no reveal — `onListResize` moves the view only for the
-footer's own height, and a listing that regained room is left alone. The travel is
-the *message's* alone: animating the room instead would drag the rows down under a
-cursor sitting behind the animation, the same reason the footer strip snaps
-smaller. The message is keyed by its text, so a new one replaces the old through
+an `overflow: hidden` box, and **the window's height is animated with it**: the
+window is a `0fr → 1fr` grid row, so the listing below is pushed down by the same
+motion the message arrives with rather than being shoved down the instant the notice
+mounts and then waiting for the text to catch up. The message's own box travels
+inside that window too, so the text comes down from behind the path bar instead of
+over it, and room opening and message descending read as one gesture. (The inner
+carries `min-height: 0`, without which a grid item's automatic minimum refuses to
+shrink past its content and the row could never close.)
+
+The travel being the *message's* alone was the earlier choice, and the reason it was
+taken — the room animating would move the rows under a cursor sitting behind the
+motion — is answered by animating the room instead of ignoring it: the rows below
+translate as one block, cursor row included, so nothing about their order or the
+cursor's place in it changes; a row is moved, not re-sorted, and the push-down reads
+as the notice making room rather than the list jumping. `onListResize` still only
+reveals the cursor for a footer change, so the notice's own resize does not scroll
+the view. The message is keyed by its text, so a new one replaces the old through
 the animation (out-in: the old ascends, the next descends) while a repeat of an
 identical one is the same notice still standing and does not re-announce itself.
 
@@ -1467,3 +1474,99 @@ It lives in `src/renderer/index.html`. Dev-only allowances (`ws://localhost:*`,
 `'unsafe-inline'` styles) are required for Vite HMR, and `img-src data:` /
 `media-src mc-media:` are what let a footer show a preview the renderer has no URL
 of its own for.
+
+## Archives
+
+### A place inside an archive is one path string, joined by NUL
+
+A pane's whole identity is one absolute path, and it feeds the listing, the watcher,
+git, the size walk, the marks, the cursor anchor, the transfers, the viewer and the
+shell sync. Entering an archive therefore cannot be a second kind of value threaded
+through all of them without a refactor that would touch everything to say nothing.
+Instead a location is still one string, `<archive>\0<inner>`: NUL cannot occur in a
+POSIX path *or* in an archive entry name (names are NUL-terminated), so the
+separator is unambiguous, and `<inner>` empty is the archive's root. Every
+path-keyed thing keeps working by string equality — marks, the cursor's
+`resolveAnchor`, the size-walk map, the watcher's `event.path === state.path` — and
+the branching is confined to main's `fs:*` handlers plus a handful of renderer
+spots. The NUL form is internal: nothing is ever handed to a syscall or shown;
+`archiveDisplay` is what the title draws. (`src/shared/archive.ts` holds the model
+and the enterable-extension list; `src/main/archive.ts` is the pure reader.)
+
+The alternative — a slash syntax like `foo.zip/inner` — was turned down because a
+real folder can contain a file literally named `foo.zip`, so the string would be
+genuinely ambiguous. Nesting falls out of the NUL model for free (`a.zip\0b.zip\0x`),
+though v1 stops at one level.
+
+### 7z is asked, not reimplemented — and the tar inside a `.tar.gz` is followed
+
+Reading archives shells out to `7z` (`src/main/archive.ts`), probed once and
+remembered exactly as git and ffmpeg are (`MC_7Z` names a binary off the `PATH`),
+and answered with nothing drawn when it is absent: `fs:can-archive` is false and
+Enter on a `.zip` opens it with the system, as it did before. A library was not used
+because the reach is the point — one dependency opens zip, 7z, tar, the tar
+compressions, rar, cab, iso, deb, rpm and more — and a bundled JS library covers a
+handful of those at best.
+
+A `.tar.gz` lists as a *single* member (`t.tar`), so listing one is a second 7z on
+the tar inside it, chained through a pipe (`run7zPipe`, `x -so` into `l -slt -si
+-ttar`) so neither the tar nor the wrapper is ever written to disk; the wrapper is
+recognized by 7z's own `Type` (gzip/bzip2/xz/zstd/…) plus a single `.tar` member, so
+a zip that merely *holds* a `.tar` is not mistaken for one. Reading an entry out of
+such an archive is the same chain ending in `x -so -si -ttar`. A name is handed to
+7z in both spellings (`name` and `./name`) because a tar rooted at `.` stores
+`./name` while a zip stores `name`, and 7z treats a name it cannot find as a warning
+rather than a failure — the normalized form alone would silently read nothing from a
+`./`-rooted tar.
+
+Directories are *synthesized* from the entry paths as well as read from explicit
+records, because zip often stores no record for an intermediate directory; the
+parsed listing is cached by the archive's mtime, so moving between folders of one
+archive does not re-run 7z.
+
+### An archive is a directory you walk into, and the title says which it was
+
+`Enter` on an enterable archive descends into it (`joinArchivePath(entry.path, '')`),
+and `..` at its root leaves to the folder that holds it, cursor on the archive. A
+*directory* merely named `foo.zip` is never an archive: `activate` only descends for
+an entry whose `kind` is `file`, and the listing already draws a folder-icon for a
+directory and the gold archive-icon for a file.
+
+The title is where the two could be confused, so the archive's own name is drawn
+**in the archive hue** — the same gold `lib/fileIcon.ts` draws an archive's icon in
+— with the full path in its tooltip, and the segments are joined with `/` and no
+space between them, so the title stays one path:
+`/home/laci/Downloads/3DPrinter/3DP_Material_profile_igus-filament.zip/docs/readme.txt`,
+the archive file's name in gold. A folder named `foo.zip` keeps the plain title
+colour. `archiveDisplay` is the one place that split is read.
+
+### What an archive cannot yet do is said, not attempted
+
+Read-only first: entering, viewing (F3), image previews (footer and display, through
+`fs:read-image`), and folder sizes (`Space`, summed from the listing rather than
+walked) all work; a few things are deliberately suspended or refused with the pane's
+notice. Writes — save (F4), delete, rename, mkdir, copy in or out — are refused in
+main (`ENOTSUP`) and guarded in the pane, because editing an archive is a whole-
+archive rewrite and a phase of its own. A video inside an archive is not previewable
+(the ranged `mc-media` stream serves a real file, not an entry) — `previewKindFor`
+gives up the video answer while an image still previews. Git is not asked (nothing
+inside an archive is in a work tree), no watcher is opened (there is no inotify for
+it), the panel↔shell `cd` sync and the Alt+A/Alt+Enter path pastes are handled
+specially, and a file inside an archive is not run or opened — reading it is a read
+of its bytes, but starting or opening it needs it extracted first.
+
+The terminal is the one thing made *visibly* unavailable rather than merely left
+alone. A shell cannot be *inside* an archive, and a shell that silently sits in the
+archive's parent while the pane shows the archive's contents reads as out of sync —
+so while the active pane is inside an archive the terminal is **disabled**: the strip
+keeps the shell's own prompt — its cwd path — under a light scrim, dimmed enough to
+read as not in use but not so much that the path is lost, with the note saying so
+centred over it as before, while input is refused at the source (`disableStdin` on the
+xterm, so a keystroke produces nothing rather than being swallowed somewhere visible),
+focus is handed to the panes, and the path pastes are skipped. `archiveMode` in `App.vue` is the
+one signal; `TerminalPane`'s `disabled` prop acts on it. The shell itself is left
+running — it is the workspace's, and killing it for a navigation would lose the
+session — and is still anchored to the directory holding the archive
+(`useWorkspace.shellTargetFor`) so it re-syncs to something real when the pane
+leaves, which is what the pane's path changing re-runs.
+

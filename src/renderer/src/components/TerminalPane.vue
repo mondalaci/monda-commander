@@ -24,7 +24,11 @@ function themeColor(name: string, fallback: string): string {
 // `shell` is the workspace's session. The view does not own it — it detaches on
 // unmount and lets the workspace decide when the process dies — so switching
 // workspaces simply renders a different session.
-const props = defineProps<{ expanded: boolean; cwd: string; shell: Shell }>()
+//
+// `disabled` is "the active pane is inside an archive": a shell cannot be there,
+// so the terminal is shown inert — input refused, an overlay saying why — rather
+// than left silently out of sync with the pane.
+const props = defineProps<{ expanded: boolean; cwd: string; shell: Shell; disabled: boolean }>()
 
 const emit = defineEmits<{
   (event: 'focused-change', value: boolean): void
@@ -113,9 +117,11 @@ function capturePrompt(): void {
 /**
  * Whether the command line holds anything at all, read from the terminal so
  * text readline produced on its own is seen as well as what was typed. False
- * until a prompt has been read, so before that the model's word stands.
+ * until a prompt has been read, so before that the model's word stands. A
+ * disabled terminal holds nothing the keys could act on, so it is always empty.
  */
 function lineHasContent(): boolean {
+  if (props.disabled) return false
   if (!term || !promptKnown) return false
   const buffer = term.buffer.active
   const row = buffer.baseY + buffer.cursorY
@@ -209,6 +215,9 @@ function scheduleRefit(): void {
 }
 
 function focusTerminal(): void {
+  // A disabled terminal does not take the keyboard: the shell cannot be typed
+  // into while the pane is inside an archive, and the panes keep it instead.
+  if (props.disabled) return
   void nextTick(() => term?.focus())
 }
 
@@ -272,6 +281,9 @@ function startTerminal(): void {
   fitAddon = new FitAddon()
   term.loadAddon(fitAddon)
   term.open(host.value)
+  // A terminal that mounts disabled (a workspace already inside an archive)
+  // refuses input from the start.
+  term.options.disableStdin = props.disabled
   refit()
 
   term.onData((data) => {
@@ -347,6 +359,16 @@ watch(
   { flush: 'post' }
 )
 
+// The pane entered (or left) an archive: refuse or restore input, and give the
+// keyboard up to the panes when the shell can no longer take it.
+watch(
+  () => props.disabled,
+  (disabled) => {
+    if (term) term.options.disableStdin = disabled
+    if (disabled) term?.blur()
+  }
+)
+
 onMounted(() => {
   observer = new ResizeObserver(scheduleRefit)
   if (root.value) observer.observe(root.value)
@@ -390,7 +412,7 @@ defineExpose({ focusTerminal, lineHasContent })
 <template>
   <section
     ref="root"
-    class="flex min-h-0 flex-col overflow-hidden bg-surface-2 transition-[flex-grow,flex-basis] duration-150 ease-out"
+    class="relative flex min-h-0 flex-col overflow-hidden bg-surface-2 transition-[flex-grow,flex-basis] duration-150 ease-out"
     :class="expanded ? 'grow basis-0' : 'grow-0 shrink-0 basis-7'"
     @focusin="emit('focused-change', true)"
     @focusout="onFocusOut"
@@ -400,5 +422,30 @@ defineExpose({ focusTerminal, lineHasContent })
       class="min-h-0 overflow-hidden px-3 my-1"
       :class="expanded ? 'flex-1' : 'flex-none'"
     ></div>
+
+    <!-- The pane is inside an archive and a shell cannot follow it there. The
+         strip keeps showing the shell's own prompt — its cwd path — under a light
+         scrim, so where the shell is remains visible while the terminal clearly
+         is not in use, and the note saying so is centred as it was. Input is
+         refused at the source (`disableStdin`), so the refusal is real. -->
+    <div
+      v-if="disabled"
+      class="absolute inset-0 z-10 flex items-center justify-center gap-2 bg-surface-2/55 px-3 text-ui-sm text-fg"
+    >
+      <svg
+        viewBox="0 0 24 24"
+        class="h-3.5 w-3.5 shrink-0"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        <rect x="4" y="11" width="16" height="10" rx="2" />
+        <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+      </svg>
+      <span class="truncate">Unavailable inside an archive</span>
+    </div>
   </section>
 </template>

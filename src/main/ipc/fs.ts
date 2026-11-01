@@ -3,9 +3,16 @@ import type { FileHandle } from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { ipcMain, nativeImage, shell } from 'electron'
+import { isArchivePath, splitArchivePath } from '@shared/archive'
 import { HIDE_MARKER } from '@shared/hide'
 import { imageMimeFor } from '@shared/image'
 import { readImageSize } from '../imageSize'
+import {
+  archiveDirSize,
+  canArchive,
+  listArchive,
+  readArchiveEntry
+} from '../archive'
 import type {
   CopyFailure,
   CopyOutcome,
@@ -543,6 +550,67 @@ async function readImageSizeForPreview(input: string): Promise<PixelSize | null>
 }
 
 /**
+ * Read one entry of an archive for the viewer, mirroring `readFileForViewer`:
+ * the same binary test and the same ceiling, so a file an archive holds reads
+ * exactly like the same file on disk. The entry's bytes are pulled through 7z
+ * rather than a file handle, which is why it is a second reader and not a branch
+ * inside the first.
+ */
+async function readEntryForViewer(
+  archive: string,
+  inner: string,
+  location: string
+): Promise<FileContent> {
+  const bytes = await readArchiveEntry(archive, inner, MAX_VIEW_BYTES)
+  if (looksBinary(bytes)) {
+    throw Object.assign(new Error(`"${inner}" looks binary`), { code: 'EBINARY' })
+  }
+  return {
+    path: location,
+    text: bytes.toString('utf8'),
+    truncated: bytes.length >= MAX_VIEW_BYTES
+  }
+}
+
+/**
+ * Read an image entry of an archive for a pane's preview, mirroring
+ * `readImageForPreview`: a small image travels as it is, a large one is decoded
+ * and shrunk, and the extension is the same map the renderer asked by. There is
+ * no header-size probe for an archive entry (it would mean streaming the whole
+ * entry just to read a prefix), so the box reserves nothing and fills when the
+ * read lands.
+ */
+async function readEntryImageForPreview(
+  archive: string,
+  inner: string
+): Promise<ImagePreview> {
+  const name = inner.slice(inner.lastIndexOf('/') + 1)
+  const mime = imageMimeFor(name)
+  if (!mime) {
+    throw Object.assign(new Error(`"${name}" is not a supported image`), { code: 'EINVAL' })
+  }
+
+  const bytes = await readArchiveEntry(archive, inner, LARGE_RAW_PREVIEW_BYTES)
+  if (bytes.length <= RAW_PREVIEW_BYTES) {
+    return { dataUrl: `data:${mime};base64,${bytes.toString('base64')}` }
+  }
+
+  const image = nativeImage.createFromBuffer(bytes)
+  if (image.isEmpty()) {
+    throw Object.assign(new Error(`"${name}" is too large to preview`), { code: 'E2BIG' })
+  }
+  const { width, height } = image.getSize()
+  const longest = Math.max(width, height)
+  if (longest <= PREVIEW_MAX_DIM) return { dataUrl: image.toDataURL() }
+  const scale = PREVIEW_MAX_DIM / longest
+  return {
+    dataUrl: image
+      .resize({ width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)) })
+      .toDataURL()
+  }
+}
+
+/**
  * One folder walk's cancellation flag. The walks of a window are kept together
  * by the webContents that asked, because Escape's "stop that" is the window's,
  * and a cancel must reach every walk it started.
@@ -558,15 +626,35 @@ export function registerFsHandlers(): void {
 
   ipcMain.handle('fs:list', async (_event, dir: string): Promise<Result<DirListing>> => {
     try {
+      if (isArchivePath(dir)) {
+        const { archive, inner } = splitArchivePath(dir) as { archive: string; inner: string }
+        return { ok: true, data: await listArchive(archive, inner) }
+      }
       return { ok: true, data: await listDirectory(dir) }
     } catch (error) {
       return { ok: false, error: toFsError(error) }
     }
   })
 
+  // Whether a pane can enter archives at all. Asked once by the renderer; false
+  // is why Enter on a `.zip` opens it with the system instead.
+  ipcMain.handle('fs:can-archive', () => canArchive())
+
   ipcMain.handle('fs:dir-size', async (event, target: string): Promise<Result<DirSize>> => {
     if (typeof target !== 'string' || target.length === 0) {
       return { ok: false, error: { code: 'EINVAL', message: 'No directory to size' } }
+    }
+
+    // A folder inside an archive is sized from the listing that is already in
+    // hand — every entry's stored size is known — so there is no walk and no
+    // cancellation to track.
+    if (isArchivePath(target)) {
+      try {
+        const { archive, inner } = splitArchivePath(target) as { archive: string; inner: string }
+        return { ok: true, data: { bytes: await archiveDirSize(archive, inner) } }
+      } catch (error) {
+        return { ok: false, error: toFsError(error) }
+      }
     }
 
     const sender = event.sender
@@ -626,6 +714,9 @@ export function registerFsHandlers(): void {
   })
 
   ipcMain.handle('fs:open', async (_event, target: string) => {
+    // An entry inside an archive has no path the system could open; the message
+    // is non-empty, which is how a failure travels back to the pane's notice.
+    if (isArchivePath(target)) return 'Extract this entry to open it'
     return shell.openPath(target)
   })
 
@@ -634,6 +725,10 @@ export function registerFsHandlers(): void {
       return { ok: false, error: { code: 'EINVAL', message: 'No file to read' } }
     }
     try {
+      if (isArchivePath(target)) {
+        const { archive, inner } = splitArchivePath(target) as { archive: string; inner: string }
+        return { ok: true, data: await readEntryForViewer(archive, inner, target) }
+      }
       return { ok: true, data: await readFileForViewer(target) }
     } catch (error) {
       return { ok: false, error: toFsError(error) }
@@ -645,6 +740,10 @@ export function registerFsHandlers(): void {
       return { ok: false, error: { code: 'EINVAL', message: 'No image to read' } }
     }
     try {
+      if (isArchivePath(target)) {
+        const { archive, inner } = splitArchivePath(target) as { archive: string; inner: string }
+        return { ok: true, data: await readEntryImageForPreview(archive, inner) }
+      }
       return { ok: true, data: await readImageForPreview(target) }
     } catch (error) {
       return { ok: false, error: toFsError(error) }
@@ -653,6 +752,9 @@ export function registerFsHandlers(): void {
 
   ipcMain.handle('fs:image-size', async (_event, target: string): Promise<PixelSize | null> => {
     if (typeof target !== 'string' || target.length === 0) return null
+    // No shape is reserved for an entry inside an archive: measuring it would
+    // mean streaming the whole entry for a prefix. The preview still arrives.
+    if (isArchivePath(target)) return null
     try {
       return await readImageSizeForPreview(target)
     } catch {
@@ -666,6 +768,14 @@ export function registerFsHandlers(): void {
     async (_event, target: string, text: string): Promise<Result<string>> => {
       if (typeof target !== 'string' || target.length === 0) {
         return { ok: false, error: { code: 'EINVAL', message: 'No file to write' } }
+      }
+      // Writing an entry back into an archive is the next phase; until then the
+      // save is refused with a message rather than a path 7z would never see.
+      if (isArchivePath(target)) {
+        return {
+          ok: false,
+          error: { code: 'ENOTSUP', message: 'Saving inside an archive is not supported yet' }
+        }
       }
       if (typeof text !== 'string') {
         return { ok: false, error: { code: 'EINVAL', message: 'Refusing to write non-text content' } }
@@ -701,6 +811,13 @@ export function registerFsHandlers(): void {
   )
 
   ipcMain.handle('fs:reveal', (_event, target: string) => {
+    // There is nothing to point at inside an archive; the archive file itself is
+    // the closest real item to show.
+    if (isArchivePath(target)) {
+      const { archive } = splitArchivePath(target) as { archive: string }
+      shell.showItemInFolder(archive)
+      return
+    }
     shell.showItemInFolder(target)
   })
 
@@ -710,6 +827,13 @@ export function registerFsHandlers(): void {
       try {
         if (typeof source !== 'string' || typeof target !== 'string') {
           return { ok: false, error: { code: 'EINVAL', message: 'Invalid rename arguments' } }
+        }
+
+        if (isArchivePath(source) || isArchivePath(target)) {
+          return {
+            ok: false,
+            error: { code: 'ENOTSUP', message: 'Renaming inside an archive is not supported yet' }
+          }
         }
 
         const from = path.resolve(source)
@@ -765,6 +889,13 @@ export function registerFsHandlers(): void {
         return { ok: false, error: { code: 'EINVAL', message: 'Invalid directory name' } }
       }
 
+      if (isArchivePath(dir)) {
+        return {
+          ok: false,
+          error: { code: 'ENOTSUP', message: 'Making a folder inside an archive is not supported yet' }
+        }
+      }
+
       // A relative name belongs to the pane the gesture was made in, not to the
       // process working directory — typing `sub` must mean `<pane>/sub`.
       const base =
@@ -801,6 +932,13 @@ export function registerFsHandlers(): void {
       }
       if (!Array.isArray(sources)) {
         return { ok: false, error: { code: 'EINVAL', message: 'Invalid copy arguments' } }
+      }
+
+      if (sources.some((source) => isArchivePath(source)) || isArchivePath(destination)) {
+        return {
+          ok: false,
+          error: { code: 'ENOTSUP', message: 'Copying into or out of an archive is not supported yet' }
+        }
       }
 
       // A relative destination belongs to the pane being copied from, not to
@@ -929,6 +1067,13 @@ export function registerFsHandlers(): void {
       }
       if (!Array.isArray(sources)) {
         return { ok: false, error: { code: 'EINVAL', message: 'Invalid move arguments' } }
+      }
+
+      if (sources.some((source) => isArchivePath(source)) || isArchivePath(destination)) {
+        return {
+          ok: false,
+          error: { code: 'ENOTSUP', message: 'Moving into or out of an archive is not supported yet' }
+        }
       }
 
       // A relative destination belongs to the pane being moved from, exactly as
@@ -1070,6 +1215,13 @@ export function registerFsHandlers(): void {
       const deleted: string[] = []
       const failed: DeleteFailure[] = []
 
+      if (targets.some((target) => typeof target === 'string' && isArchivePath(target))) {
+        return {
+          ok: false,
+          error: { code: 'ENOTSUP', message: 'Deleting inside an archive is not supported yet' }
+        }
+      }
+
       for (const target of targets) {
         if (typeof target !== 'string' || target.length === 0) continue
         const resolved = path.resolve(target)
@@ -1099,6 +1251,13 @@ export function registerFsHandlers(): void {
     async (_event, dir: string, name: string): Promise<Result<string>> => {
       if (typeof dir !== 'string' || dir.length === 0 || typeof name !== 'string') {
         return { ok: false, error: { code: 'EINVAL', message: 'No entry to hide' } }
+      }
+
+      if (isArchivePath(dir)) {
+        return {
+          ok: false,
+          error: { code: 'ENOTSUP', message: 'A hide list inside an archive is not supported yet' }
+        }
       }
 
       // The file lists one name per line, so a name that is empty or spans lines

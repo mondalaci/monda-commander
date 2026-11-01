@@ -53,6 +53,12 @@ src/shared/api.ts        McApi interface (the preload contract)
 src/shared/image.ts      extension -> previewable image MIME map
 src/shared/video.ts      video MIME map, ffmpeg-only extensions, decodable codecs, scheme name
 src/shared/hide.ts       the `.mchide` name, the toggle key, the two tooltips
+src/shared/archive.ts    the archive location model: the NUL-joined
+                         `<archive>\0<inner>` string, its split/normalize/display
+                         helpers, and the enterable-extension list
+src/main/archive.ts      the 7z-backed archive reader (pure: no Electron):
+                         listing with synthesized dirs, entry reads, folder sums,
+                         and the tar-inside-a-wrapper chain
 src/renderer/src/App.vue global keyboard model, workspace stack, layout, focus
 src/renderer/src/components/TitleBar.vue       frameless title bar + window controls;
                                                hosts the workspace tab strip
@@ -71,6 +77,8 @@ src/renderer/src/composables/useDirectory.ts   per-pane navigation state + actio
 src/renderer/src/composables/useHideMode.ts    the hide mode's on/off state
 src/renderer/src/lib/format.ts        size/date/permission formatting
 src/renderer/src/lib/executable.ts    runnable/green rule and `shouldExecute`
+src/renderer/src/lib/archive.ts       the archive-support ref (`fs:can-archive`),
+                                      asked once so Enter knows what a `.zip` means
 src/renderer/src/lib/preview.ts       preview target, PlaybackClock, stage requests
 src/renderer/src/lib/monaco.ts        lazy monaco import + worker wiring + language
 src/renderer/src/lib/fileIcon.ts      per-entry icon: name/extension -> 24x24 svg
@@ -374,6 +382,33 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   is deliberately *not* recursive, so an existing name is an `EEXIST` the pane
   reports rather than a silent success; the new folder does not sweep, because
   every pane showing the directory is told the change is the app's own.
+
+### Archives
+
+- **A place inside an archive is one path string, `<archive>\0<inner>`.** NUL cannot
+  occur in a POSIX path or an archive entry name, so a location stays a single
+  string and everything path-keyed (marks, the cursor anchor, the watcher's match,
+  the size map) keeps working by equality. Never hand the NUL form to a syscall or
+  the user — `archiveDisplay` is the readable split. `src/shared/archive.ts` owns the
+  model; `src/main/archive.ts` is the reader; `ipc/fs.ts` branches on
+  `isArchivePath`.
+- **Entering is asked of 7z, probed once** (`fs:can-archive`, `MC_7Z`). False with
+  no 7z means Enter on a `.zip` opens it with the system, as before. A `.tar.gz` is
+  a wrapper: the tar inside it is listed/read through a pipe (`run7zPipe`), never
+  written to disk. A name is passed to 7z in both spellings (`name`, `./name`) so a
+  `.`-rooted tar reads too.
+- **An archive is entered only from a `file` entry** whose name is in the enterable
+  list, so a *directory* named `foo.zip` is just a directory. The pane title draws
+  the archive's own name **in the archive hue** (the gold its icon uses; no icon,
+  no underline; `archiveDisplay`), which is what tells "inside `foo.zip`" from
+  "inside a folder named `foo.zip`".
+- **Read-only for now.** Writes (save/delete/rename/mkdir/copy in or out) are
+  refused in main (`ENOTSUP`) and guarded in the pane; a video inside an archive is
+  not previewable (the `mc-media` stream serves a real file); git is not asked, no
+  watcher is opened; the terminal is **disabled** while the pane is inside an archive
+  (`archiveMode` → `TerminalPane`'s `disabled`: the prompt is kept under a light scrim
+  with a centred note, `disableStdin`, focus to the panes), and the path pastes are
+  skipped.
 
 ### The preview footer
 

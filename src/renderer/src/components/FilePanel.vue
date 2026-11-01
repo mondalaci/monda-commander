@@ -36,6 +36,7 @@ import ColumnDropMarker from '@renderer/components/ColumnDropMarker.vue'
 import HoldRing from '@renderer/components/HoldRing.vue'
 import PlaybackOsd from '@renderer/components/PlaybackOsd.vue'
 import { hideMode } from '@renderer/composables/useHideMode'
+import { archiveDisplay } from '@shared/archive'
 import { HIDE_MODE_OFF_TOOLTIP, HIDE_MODE_TOOLTIP } from '@shared/hide'
 import { MEDIA_SCHEME } from '@shared/video'
 import type { PixelSize } from '@shared/types'
@@ -525,6 +526,15 @@ function cellText(entry: PaneEntry, key: SortKey): string {
  * the renderer can show — an image, or a video.
  */
 const previewTarget = computed(() => previewTargetFor(entry.value))
+
+/**
+ * The pane title as an archive location, or null when the pane is on a real
+ * directory. The chip this drives is what tells the two apart: a folder named
+ * `foo.zip` shows the plain path and nothing else, while being *inside* the
+ * archive `foo.zip` shows the archive's name in a chip before the entry path.
+ * The full archive path is carried for the chip's own tooltip.
+ */
+const archiveTitle = computed(() => archiveDisplay(props.controller.state.path))
 
 /**
  * Where the preview for the row in hand has got to. `probing` is "the shape is
@@ -2420,11 +2430,13 @@ defineExpose({
 const notice = computed(() => {
   const state = props.controller.state
   if (state.error) return { text: state.error, error: true }
-  if (state.itemCount > 0) return null
-  return {
-    text: state.searchQuery ? `No matches for "${state.searchQuery}"` : 'Empty folder',
-    error: false
+  // An empty folder says nothing worth a notice: a lone `..` is already the whole
+  // answer, on disk and inside an archive alike. Only a search that came up empty
+  // is worth saying, because the query is what emptied the listing.
+  if (state.itemCount === 0 && state.searchQuery) {
+    return { text: `No matches for "${state.searchQuery}"`, error: false }
   }
+  return null
 })
 
 /**
@@ -3342,8 +3354,29 @@ function onRenameBlur(): void {
         class="flex h-7 shrink-0 items-center gap-2 border-b border-border-subtle px-3"
         :class="active ? 'bg-accent text-fg-bright' : 'bg-surface text-fg-dim'"
       >
-        <span class="min-w-0 flex-1 truncate font-mono text-ui-sm">
-          {{ controller.state.path || '—' }}
+        <span class="flex min-w-0 flex-1 items-center text-ui-sm">
+          <!-- An archive the pane is inside: the archive's own name is drawn in
+               the archive hue, so it reads as set apart from the entry path after
+               it. A folder merely *named* `foo.zip` keeps the plain title colour,
+               which is how the two are told apart in the title. The segments
+               carry no space between them, so the title stays one path. -->
+          <template v-if="archiveTitle">
+            <span v-if="archiveTitle.dir" class="min-w-0 truncate">{{
+              archiveTitle.dir
+            }}/</span>
+            <!-- The archive's own name, in the archive hue — the gold its own
+                 icon is drawn in — so a name and its icon agree about what the
+                 entry is, without competing with the green of a runnable file or
+                 the gold of a mark. -->
+            <span class="shrink-0 text-archive" :title="archiveTitle.full">{{
+              archiveTitle.name
+            }}</span>
+            <template v-if="archiveTitle.inner">
+              <span class="shrink-0">/</span>
+              <span class="min-w-0 truncate">{{ archiveTitle.inner }}</span>
+            </template>
+          </template>
+          <span v-else class="min-w-0 flex-1 truncate">{{ controller.state.path || '—' }}</span>
         </span>
         <span
           v-if="controller.state.loading"
@@ -3640,20 +3673,24 @@ function onRenameBlur(): void {
         </div>
       </Transition>
 
-      <!-- The window is always there and only clips: the message inside it is
-           what travels (see styles/notice.css). Keyed on its text so a new
-           notice replaces the old one through the animation. -->
-      <div class="shrink-0 overflow-hidden">
-        <Transition name="notice" mode="out-in">
-          <p
-            v-if="notice"
-            :key="notice.text"
-            class="px-3 py-2 text-ui"
-            :class="notice.error ? 'text-danger' : 'text-fg-dim'"
-          >
-            {{ notice.text }}
-          </p>
-        </Transition>
+      <!-- The window clips, and its own height is what changes: the row slides
+           from `0fr` to `1fr` so the listing below is pushed down by the same
+           motion the message descends with, rather than being shoved down by the
+           mount (see styles/notice.css). Keyed on its text so a new notice
+           replaces the old one through the animation. -->
+      <div class="notice-window shrink-0" :class="{ 'notice-window-open': notice }">
+        <div class="overflow-hidden">
+          <Transition name="notice" mode="out-in">
+            <p
+              v-if="notice"
+              :key="notice.text"
+              class="px-3 py-2 text-ui"
+              :class="notice.error ? 'text-danger' : 'text-fg-dim'"
+            >
+              {{ notice.text }}
+            </p>
+          </Transition>
+        </div>
       </div>
 
       <!-- Only the rows the viewport covers are in the document (see

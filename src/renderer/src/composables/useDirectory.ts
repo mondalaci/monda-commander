@@ -1,4 +1,11 @@
 import { markRaw, onScopeDispose, reactive, watch } from 'vue'
+import {
+  isArchivePath,
+  isEnterableArchiveName,
+  joinArchivePath,
+  splitArchivePath
+} from '@shared/archive'
+import { archiveSupported } from '@renderer/lib/archive'
 import { hideMode } from '@renderer/composables/useHideMode'
 import { buildGitView, type GitView } from '@renderer/lib/gitMark'
 import { shouldExecute } from '@renderer/lib/executable'
@@ -575,6 +582,22 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     return state.entries[state.cursor]
   }
 
+  /** Whether the pane is showing a place inside an archive rather than a directory. */
+  function inArchive(): boolean {
+    return isArchivePath(state.path)
+  }
+
+  /**
+   * Refuse a change the archive backend does not make yet with the pane's own
+   * notice, rather than letting a gesture reach main with a path it cannot
+   * resolve. Returns whether it refused.
+   */
+  function refuseInArchive(): boolean {
+    if (!inArchive()) return false
+    state.error = 'Not supported inside an archive yet'
+    return true
+  }
+
   /**
    * The rows for the directory in hand, with the hide mode applied: the entries
    * whose names the folder's `.mchide` file lists are left out while the mode is
@@ -706,6 +729,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
    * first so the row stays in the list, and the ".." row is never renamed.
    */
   function beginRename(): void {
+    if (refuseInArchive()) return
     const entry = current()
     if (!entry || entry.isParent) return
     if (state.searchActive) closeSearch()
@@ -723,6 +747,10 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
    * while leaving the directory untouched.
    */
   async function commitRename(name: string): Promise<void> {
+    if (refuseInArchive()) {
+      state.renaming = null
+      return
+    }
     const source = state.renaming
     state.renaming = null
     if (!source) return
@@ -835,7 +863,9 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
   function watchCurrent(): void {
     if (state.path === watchedPath) return
     unwatchCurrent()
-    if (!state.path) return
+    // An archive has no inotify watcher: nothing is watched while the pane is
+    // inside one, and a re-list happens on demand (or on the next navigation).
+    if (!state.path || inArchive()) return
     watchedPath = state.path
     void window.mc.fs.watch(state.path)
   }
@@ -862,6 +892,17 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
   let gitRoot: string | null = null
 
   async function loadGit(): Promise<void> {
+    // Git has nothing to say about what an archive holds, and the location is not
+    // a directory git could be asked about — so inside an archive the pane shows
+    // no marks and holds no work-tree watcher, which is the same nothing a
+    // folder outside a repository draws.
+    if (inArchive()) {
+      gitRoot = null
+      state.git = null
+      unwatchRepo()
+      return
+    }
+
     const mine = ++gitSeq
     const result = await window.mc.git.status(state.path)
     if (mine !== gitSeq) return
@@ -1139,6 +1180,14 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
 
   async function goUp(): Promise<void> {
     if (!state.parent) return
+    // Leaving an archive's root: the parent is the real directory that holds the
+    // archive, and the row to land on is the archive file itself — which is not
+    // the archive *location* the pane was at, so the cursor is aimed by hand.
+    if (inArchive() && !isArchivePath(state.parent)) {
+      const { archive } = splitArchivePath(state.path) as { archive: string }
+      await navigateTo(state.parent, archive)
+      return
+    }
     // Park the cursor on the directory we came from.
     await navigateTo(state.parent, state.path)
   }
@@ -1548,6 +1597,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
    * directory so the caller can refresh a pane showing it, or null on failure.
    */
   async function copyEntries(destination: string): Promise<string | null> {
+    if (refuseInArchive()) return null
     const targets = selectionTargets()
     if (targets.length === 0 || !destination) return null
 
@@ -1590,6 +1640,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
    * showing it, or null on failure.
    */
   async function moveEntries(destination: string): Promise<string | null> {
+    if (refuseInArchive()) return null
     const targets = selectionTargets()
     if (targets.length === 0 || !destination) return null
 
@@ -1643,6 +1694,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
    * directory untouched.
    */
   async function createDirectory(name: string): Promise<string | null> {
+    if (refuseInArchive()) return null
     const wanted = name.trim()
     if (!wanted || !state.path) return null
 
@@ -1662,6 +1714,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
   }
 
   async function deleteEntries(): Promise<void> {
+    if (refuseInArchive()) return
     const targets = deletionTargets()
     if (targets.length === 0) return
 
@@ -1702,6 +1755,23 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
 
     if (entry.kind === 'directory') {
       await navigateTo(entry.path)
+      return
+    }
+
+    // An archive is a directory you can walk into: Enter descends into it the
+    // same way it descends into a folder, and its title says which it was. Only
+    // when the backend is there and the pane is not already inside one — a nested
+    // archive is an ordinary file for now.
+    if (!inArchive() && archiveSupported.value && isEnterableArchiveName(entry.name)) {
+      await navigateTo(joinArchivePath(entry.path, ''))
+      return
+    }
+
+    // A file inside an archive has no real path to run or hand to the system.
+    // Reading it (F3) is a read of its bytes and works; starting or opening it
+    // needs it extracted first, which is the next phase.
+    if (inArchive()) {
+      state.error = 'Extract this entry to open it'
       return
     }
 

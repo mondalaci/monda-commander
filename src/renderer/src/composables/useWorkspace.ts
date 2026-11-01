@@ -10,6 +10,7 @@ import {
 } from 'vue'
 import { useDirectory, type PaneController, type PaneEntry } from '@renderer/composables/useDirectory'
 import { createShell, type Shell } from '@renderer/composables/useShell'
+import { isArchivePath, splitArchivePath } from '@shared/archive'
 import type { PanelSide } from '@shared/types'
 
 /**
@@ -113,6 +114,25 @@ export function createWorkspace(id: string, label: string): Workspace {
     let pendingPush: string | null = null
     let pendingTimer: number | null = null
 
+    /** The directory holding a real path; both separators, as `parentOf` is. */
+    function parentDir(target: string): string {
+      const slash = Math.max(target.lastIndexOf('/'), target.lastIndexOf('\\'))
+      if (slash > 0) return target.slice(0, slash)
+      return slash === 0 ? '/' : target
+    }
+
+    /**
+     * Where the shell belongs for the pane's location. A shell cannot be *inside*
+     * an archive — an archive is not a directory it can hold — so a pane inside one
+     * anchors the shell to the real directory that holds the archive: the closest
+     * place the terminal can be to what the pane is showing, where `ls` lists the
+     * archive and Tab completes it. Everywhere else this is the path itself.
+     */
+    function shellTargetFor(location: string): string {
+      const inside = splitArchivePath(location)
+      return inside ? parentDir(inside.archive) : location
+    }
+
     function clearPendingPush(): void {
       pendingPush = null
       if (pendingTimer === null) return
@@ -127,7 +147,7 @@ export function createWorkspace(id: string, label: string): Workspace {
       if (!shell.started.value || !shell.idle.value) return
       if (shell.inputLine.value.length > 0) return
 
-      const target = activePanePath.value
+      const target = shellTargetFor(activePanePath.value)
       if (!target || target === shell.cwd.value || target === pendingPush) return
 
       pendingPush = target
@@ -146,6 +166,11 @@ export function createWorkspace(id: string, label: string): Workspace {
         if (next === pendingPush) clearPendingPush()
         return
       }
+
+      // While the pane is inside an archive the shell is anchored to the archive's
+      // folder and must not drive the panel: a `cd` at the prompt would otherwise
+      // pull the pane back out of the archive, undoing the gesture it was left for.
+      if (isArchivePath(activePanePath.value)) return
 
       if (next === activePanePath.value) return
       void activePane.value.navigateTo(next)
