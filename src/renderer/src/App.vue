@@ -11,7 +11,7 @@ import TitleBar from '@renderer/components/TitleBar.vue'
 import FileViewer from '@renderer/components/FileViewer.vue'
 import PaneContextMenu from '@renderer/components/PaneContextMenu.vue'
 import { loadHideMode, hideMode, toggleHideMode } from '@renderer/composables/useHideMode'
-import { addQuickCd, isQuickCd, loadQuickCd, removeQuickCd } from '@renderer/composables/useQuickCd'
+import { addQuickCd, isQuickCd, loadQuickCd, quickCdDirs, removeQuickCd, reorderQuickCd } from '@renderer/composables/useQuickCd'
 import { createWorkspace, type Workspace } from '@renderer/composables/useWorkspace'
 import { stopAllSizeWalks, type PaneController, type PaneEntry } from '@renderer/composables/useDirectory'
 import {
@@ -1186,15 +1186,36 @@ const paneMenuItems = computed<PaneMenuItem[]>(() => {
   const pane = paneOf(menu.side)
 
   // While the pane is showing the quick cd list, a row is a bookmark rather than
-  // a file: the one thing the menu can do with it is take it off the list.
+  // a file: the list is the user's order, so the menu can re-order it, and the one
+  // other thing it can do is take the row off it. A move that would go off an end
+  // is left out rather than offered as a press that does nothing.
   if (pane.state.quickCd) {
-    return [
-      {
+    const items: PaneMenuItem[] = []
+    const at = quickCdDirs.value.indexOf(entry.path)
+    const last = quickCdDirs.value.length - 1
+    if (at > 0) {
+      items.push({
         kind: 'action',
-        label: 'Remove from quick cd',
-        run: () => void changeQuickCd(pane, () => removeQuickCd(entry.path))
-      }
-    ]
+        label: 'Move up',
+        hint: 'Alt+Up',
+        run: () => void changeQuickCd(pane, () => reorderQuickCd(entry.path, -1))
+      })
+    }
+    if (at >= 0 && at < last) {
+      items.push({
+        kind: 'action',
+        label: 'Move down',
+        hint: 'Alt+Down',
+        run: () => void changeQuickCd(pane, () => reorderQuickCd(entry.path, 1))
+      })
+    }
+    if (items.length > 0) items.push({ kind: 'separator' })
+    items.push({
+      kind: 'action',
+      label: 'Remove from quick cd',
+      run: () => void changeQuickCd(pane, () => removeQuickCd(entry.path))
+    })
+    return items
   }
 
   const folder = entry.kind === 'directory'
@@ -1339,6 +1360,26 @@ function handlePaneKey(event: KeyboardEvent): void {
     if (event.key === 'Tab') {
       consume(event)
       setActive(activeSide.value === 'left' ? 'right' : 'left')
+      return
+    }
+
+    // Alt+Up / Alt+Down re-order the bookmark under the cursor. The list is the
+    // user's, so this is how its order is changed; claimed before the plain
+    // arrows below, which move the cursor through the list.
+    if (
+      event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.shiftKey &&
+      (event.key === 'ArrowUp' || event.key === 'ArrowDown')
+    ) {
+      consume(event)
+      const row = pane.current()
+      if (row) {
+        void changeQuickCd(pane, () =>
+          reorderQuickCd(row.path, event.key === 'ArrowUp' ? -1 : 1)
+        )
+      }
       return
     }
 

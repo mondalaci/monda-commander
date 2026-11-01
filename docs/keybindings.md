@@ -101,8 +101,10 @@ move through what the filter leaves and `Enter` goes to it (the pane leaves the
 list and loads that directory); `Left`/`Right` edit the query. The row menu is how
 the list is built: on a folder row it offers `Add to quick cd` (and `Add this
 folder to quick cd` on any other row, naming the pane's own folder), while on a row
-*of the list* it offers `Remove from quick cd`. The list is one for the whole app
-and is remembered between launches; an empty one says so in the pane's notice.
+*of the list* it offers `Move up`/`Move down` (`Alt+Up`/`Alt+Down`) and `Remove
+from quick cd`. The list keeps the order you put it in — it is never sorted, so
+those moves are how a folder is placed — and is one for the whole app, remembered
+between launches; an empty one says so in the pane's notice.
 `Escape` (or `Alt+C` again) gives the listing back exactly as it was, and `Tab`
 still switches panes,
 

@@ -89,3 +89,23 @@ export async function removeQuickCd(dir: string): Promise<boolean> {
     quickCdDirs.value
   )
 }
+
+/**
+ * Move a directory one place up (`delta` -1) or down (`+1`) in the list, swapping
+ * it with its neighbour. The order is the user's, so this is the way it is
+ * changed — an add still appends, and the list is never sorted on its own. A move
+ * off either end changes nothing.
+ */
+export async function reorderQuickCd(dir: string, delta: number): Promise<boolean> {
+  const list = quickCdDirs.value
+  const from = list.indexOf(dir)
+  if (from < 0 || delta === 0) return true
+  const to = from + delta
+  if (to < 0 || to >= list.length) return true
+
+  const next = [...list]
+  const moved = next[from]!
+  next[from] = next[to]!
+  next[to] = moved
+  return persist(next, list)
+}

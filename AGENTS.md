@@ -273,7 +273,9 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   query.
 - **The row menu edits the list.** On a folder row it offers `Add to quick cd` (or
   the pane's own folder from any other row); on a row *of the list* it offers
-  `Remove from quick cd`. `setSelected`/`isSelected` are no-ops in the mode, so a
+  `Move up`/`Move down` (`Alt+Up`/`Alt+Down`) and `Remove from quick cd`. The order
+  is the user's and is never sorted — an add appends, and `reorderQuickCd` swaps a
+  row with its neighbour. `setSelected`/`isSelected` are no-ops in the mode, so a
   right-press on a bookmark opens the menu and never paints a mark. An empty list
   is said in the pane's notice, and a write that fails is put back and said there
   too (`changeQuickCd`), so the rows never show an entry the next launch will not

@@ -359,19 +359,21 @@ landing under a list that is no longer the one being shown.
 A bookmark is built as an ordinary `PaneEntry` of kind `directory` — its name is
 the path with the home directory shown as `~` (`quickCdLabel`), since the path is
 what tells two folders of one name apart — so the row machinery needs nothing new
-for it. What a bookmark does not have is
-size, date or mode, so the pane shows only the name column in this mode and hides
-the header with the other columns. The incremental search the listing already
-carries is opened with the mode — entering sets `searchActive`, and the same
-`applyFilter` runs over the bookmarks — so the list is typed into the moment it
-appears: the arrows and the page/end keys move what the filter leaves, Left/Right
-and the printable keys edit the query, and the rest are the gestures a list of
-places can answer — Enter to go, Escape to leave, Tab and the menu. The menu is how
-the list is edited — on a folder row it offers `Add to quick cd` (or the pane's own
-folder from any other row), and on a row *of the list* it offers
-`Remove from quick cd` — and an empty list is not a blank pane: the notice says so,
-because where the folders to put there come from is not something the pane
-otherwise makes visible.
+for it. What a bookmark does not have is size, date or mode, so the pane shows only
+the name column in this mode and hides the header with the other columns. The
+incremental search the listing already carries is opened with the mode — entering
+sets `searchActive`, and the same `applyFilter` runs over the bookmarks — so the
+list is typed into the moment it appears: the arrows and the page/end keys move
+what the filter leaves, Left/Right and the printable keys edit the query, and the
+rest are the gestures a list of places can answer — Enter to go, Escape to leave,
+Tab, Alt+Up/Alt+Down to move the row, and the menu.
+
+The order is the user's and is never sorted: an add appends, and `reorderQuickCd`
+swaps a row with its neighbour. The menu is how the list is edited — on a folder
+row it offers `Add to quick cd` (or the pane's own folder from any other row), and
+on a row *of the list* it offers `Move up`/`Move down` and `Remove from quick cd`
+— and an empty list is not a blank pane: the notice says so, because where the
+folders to put there come from is not something the pane otherwise makes visible.
 
 ## The hide mode (`.mchide`)
 
