@@ -7,6 +7,7 @@ import {
 } from '@shared/archive'
 import { archiveSupported } from '@renderer/lib/archive'
 import { hideMode } from '@renderer/composables/useHideMode'
+import { quickCdDirs, homeDir, quickCdLabel } from '@renderer/composables/useQuickCd'
 import { buildGitView, type GitView } from '@renderer/lib/gitMark'
 import { shouldExecute } from '@renderer/lib/executable'
 import type { DirEntry, PanelSide } from '@shared/types'
@@ -81,6 +82,16 @@ export interface PaneState {
   sortKey: SortKey
   sortDir: SortDirection
   /**
+   * Whether the pane is showing the quick cd directories instead of its own
+   * directory. While it is on, `allRows`/`entries`/`cursor` describe the
+   * bookmarks rather than the listing, so every cursor move, page jump, scroll
+   * and row lookup works on the list unchanged; the pane's own directory is kept
+   * aside (`browseListing`) and given back when the mode is left. It is a mode of
+   * the pane (Alt+C), not a place: the path, the watcher and the shell sync all
+   * go on referring to the directory behind it.
+   */
+  quickCd: boolean
+  /**
    * The left-to-right order of the listing's columns, kept per pane. It is not
    * the sort: that says *which* column orders the rows, this says where each
    * column is shown, and dragging a header rearranges one without touching the
@@ -93,7 +104,7 @@ export interface PaneState {
    * each column's label for a picker of column types, draws a remove button per
    * column and an add button in every gap, so the pane's own layout can be built
    * from the interface rather than only rearranged by dragging. It is a mode of
-   * the pane (the icon beside the headers, and Alt+C), left again by the icon,
+   * the pane (the icon beside the headers, and Alt+E), left again by the icon,
    * the shortcut, or Escape.
    */
   columnEdit: boolean
@@ -184,8 +195,14 @@ export interface PaneController {
   sortBy(key: SortKey): void
   /** Move a column to a gap in the header order, for a dragged header. */
   moveColumn(from: SortKey, toIndex: number): void
-  /** Toggle the pane's column edit mode — the header's icon, or Alt+C. */
+  /** Toggle the pane's column edit mode — the header's icon, or Alt+E. */
   toggleColumnEdit(): void
+  /**
+   * Switch the pane between its own directory and the quick cd list (Alt+C).
+   * Entering replaces the rows with the bookmarks; leaving restores the listing
+   * the pane was showing, untouched.
+   */
+  toggleQuickCd(): void
   /** Swap one column's type, rebuilding the listing when it was the sorted one. */
   setColumnType(index: number, key: SortKey): void
   /**
@@ -560,6 +577,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     scrollAlign: 'nearest',
     sortKey: 'name',
     sortDir: 'asc',
+    quickCd: false,
     columnOrder: ['name', 'size', 'modified'],
     columnEdit: false,
     columnFocus: 0,
@@ -633,6 +651,9 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
    * too, keeping the cursor on the entry it was on wherever that entry survives.
    */
   watch(hideMode, () => {
+    // The rows on screen are the quick cd list; the hide mode is about a
+    // directory listing, which is not the one being shown.
+    if (state.quickCd) return
     const previous = current()
     state.allRows = buildRows()
     pruneSelection()
@@ -697,6 +718,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
   }
 
   function openSearch(): void {
+    if (state.quickCd) return
     if (state.searchActive) return
     state.searchActive = true
     state.searchQuery = ''
@@ -729,6 +751,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
    * first so the row stays in the list, and the ".." row is never renamed.
    */
   function beginRename(): void {
+    if (state.quickCd) return
     if (refuseInArchive()) return
     const entry = current()
     if (!entry || entry.isParent) return
@@ -1041,6 +1064,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
   let sizeSortBurst: number | null = null
 
   function scheduleSizeSort(): void {
+    if (state.quickCd) return
     if (state.sortKey !== 'size') return
 
     const now = performance.now()
@@ -1070,6 +1094,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
 
   /** Re-list the rows in size order, keeping the cursor on the entry it was on. */
   function sortBySizeNow(): void {
+    if (state.quickCd) return
     if (!state.path || state.sortKey !== 'size') return
     const previous = current()
     state.allRows = buildRows()
@@ -1077,6 +1102,11 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
   }
 
   async function navigateTo(dir: string, focusPath?: string): Promise<void> {
+    // A navigation is about a real directory: the quick cd list gives the pane
+    // back before the listing is replaced — the shell's own `cd` at the prompt
+    // goes through here too, so a shell that moves must not leave the mode on
+    // over a listing it is not showing.
+    if (state.quickCd) toggleQuickCd()
     state.loading = true
     state.error = null
     // A pending size re-order belongs to the listing being left; the new one is
@@ -1142,6 +1172,9 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
    * far as the row closest before it (`resolveAnchor`), never to the top.
    */
   async function refresh(focusPath?: string): Promise<void> {
+    // A watcher event or Ctrl+R is about the directory behind the quick cd list;
+    // re-listing it would replace the bookmarks on screen with its entries.
+    if (state.quickCd) return
     if (!state.path || state.loading) return
 
     const result = await window.mc.fs.list(state.path)
@@ -1267,9 +1300,123 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
    * keyboard on a real column, so the arrows have somewhere to start.
    */
   function toggleColumnEdit(): void {
+    // The columns the editor builds are the directory listing's; the quick cd
+    // list has only a name column and no header, so there is nothing to build
+    // while it is up.
+    if (state.quickCd) return
     state.columnEdit = !state.columnEdit
     if (state.columnEdit) clampColumnFocus()
   }
+
+  /**
+   * The quick cd list, as the pane's rows: ordinary `PaneEntry`s of kind
+   * `directory`, so every existing cursor move, page jump, scroll and row lookup
+   * works on the list unchanged. The name is the directory's own path — a
+   * bookmark has no basename worth showing alone, and the full path is what tells
+   * two folders of one name apart — and the metadata a bookmark does not carry is
+   * left zero, which the view never draws because it shows only the name column
+   * in this mode.
+   */
+  function quickCdRows(): PaneEntry[] {
+    return quickCdDirs.value.map((dir) => ({
+      name: quickCdLabel(dir),
+      path: dir,
+      kind: 'directory' as const,
+      isSymlink: false,
+      symlinkTarget: null,
+      size: 0,
+      mtimeMs: 0,
+      mode: 0
+    }))
+  }
+
+  /**
+   * The listing the pane was showing when the quick cd list took its place, so
+   * leaving the mode gives it back exactly as it was. It is held here and not in
+   * `state` because it is the *previous* listing, never something the view draws:
+   * while the mode is on the rows on screen are the bookmarks. The pane's path,
+   * watcher, marks, sort and column order are deliberately not stashed — the mode
+   * does not touch them, and restoring the rows is the whole of the swap.
+   */
+  let browseListing: {
+    allRows: PaneEntry[]
+    entries: PaneEntry[]
+    itemCount: number
+    cursor: number
+    parent: string | null
+    searchActive: boolean
+    searchQuery: string
+  } | null = null
+
+  /**
+   * Rebuild the pane's rows from the current quick cd list. `focusPath` keeps the
+   * cursor on the same bookmark across a re-list (an add or a remove), and one
+   * that is no longer listed leaves the cursor where it was, clamped into range.
+   */
+  function showQuickCdRows(focusPath?: string): void {
+    const previous =
+      focusPath === undefined ? current() : state.allRows.find((row) => row.path === focusPath)
+    state.allRows = quickCdRows()
+    state.parent = null
+    // An active filter is re-applied here as well as on a keystroke: the list is
+    // an app-wide thing, so a folder added or removed elsewhere must land *in* the
+    // rows being shown rather than above the filter that is hiding it.
+    applyFilter(previous)
+  }
+
+  /**
+   * Alt+C: replace the pane's rows with the quick cd directories, or give the
+   * listing back. The pane's directory is untouched throughout — the watcher, the
+   * title's path and the shell sync all go on referring to it — so leaving the
+   * mode is a restore rather than a re-read, and the mode can be entered inside an
+   * archive as it can anywhere else.
+   */
+  function toggleQuickCd(): void {
+    if (state.quickCd) {
+      state.quickCd = false
+      const held = browseListing
+      browseListing = null
+      if (held) {
+        state.allRows = held.allRows
+        state.entries = held.entries
+        state.itemCount = held.itemCount
+        state.cursor = held.cursor
+        state.parent = held.parent
+        state.searchActive = held.searchActive
+        state.searchQuery = held.searchQuery
+        state.scrollAlign = 'nearest'
+        state.animateScroll = false
+      }
+      return
+    }
+
+    browseListing = {
+      allRows: state.allRows,
+      entries: state.entries,
+      itemCount: state.itemCount,
+      cursor: state.cursor,
+      parent: state.parent,
+      searchActive: state.searchActive,
+      searchQuery: state.searchQuery
+    }
+    state.quickCd = true
+    // The list is meant to be typed into: the incremental search is opened with
+    // it, so the folders can be filtered from the moment the mode comes on. The
+    // listing's own filter, if it had one, is held with the rest of it and given
+    // back on the way out.
+    state.searchActive = true
+    state.searchQuery = ''
+    showQuickCdRows()
+  }
+
+  // The list is the app's, not the pane's: adding or removing a folder while a
+  // pane is showing it must be seen there at once, and the cursor stays on the
+  // bookmark it was on wherever that survives. The home directory is watched with
+  // it, since the `~` a label is shown with depends on it.
+  watch([quickCdDirs, homeDir], () => {
+    if (!state.quickCd) return
+    showQuickCdRows(current()?.path)
+  })
 
   /**
    * Keep `columnFocus` pointing at a column that is actually in the order.
@@ -1467,6 +1614,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
    * before is taken away.
    */
   function sizeDirectory(): boolean {
+    if (state.quickCd) return false
     const entry = current()
     if (!entry) return false
 
@@ -1490,6 +1638,9 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
    * ".." row is never selectable.
    */
   function isSelected(entry: PaneEntry): boolean {
+    // Marks are the directory listing's; a bookmark row shows none, so the list
+    // can never display a mark that a transfer would then act on.
+    if (state.quickCd) return false
     return !entry.isParent && state.selected.has(entry.path)
   }
 
@@ -1526,6 +1677,9 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
   }
 
   function setSelected(path: string, value: boolean): void {
+    // A right-press on a quick cd row is the menu, never a mark: the list is not
+    // a selection of things to transfer.
+    if (state.quickCd) return
     if (value) state.selected.add(path)
     else state.selected.delete(path)
   }
@@ -1744,6 +1898,14 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     const entry = current()
     if (!entry) return
 
+    // A quick cd row is a directory to go to rather than one to show: Enter takes
+    // the pane there and leaves the list, exactly as descending does in a
+    // listing. `navigateTo` is what leaves the mode.
+    if (state.quickCd) {
+      await navigateTo(entry.path)
+      return
+    }
+
     // Resolve the target before dropping the filter: closeSearch keeps the
     // cursor on this entry, but activation must act on what was highlighted.
     if (state.searchActive) closeSearch()
@@ -1809,6 +1971,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     sortBy,
     moveColumn,
     toggleColumnEdit,
+    toggleQuickCd,
     setColumnType,
     addColumn,
     removeColumn,

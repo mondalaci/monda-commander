@@ -11,6 +11,7 @@ import TitleBar from '@renderer/components/TitleBar.vue'
 import FileViewer from '@renderer/components/FileViewer.vue'
 import PaneContextMenu from '@renderer/components/PaneContextMenu.vue'
 import { loadHideMode, hideMode, toggleHideMode } from '@renderer/composables/useHideMode'
+import { addQuickCd, isQuickCd, loadQuickCd, removeQuickCd } from '@renderer/composables/useQuickCd'
 import { createWorkspace, type Workspace } from '@renderer/composables/useWorkspace'
 import { stopAllSizeWalks, type PaneController, type PaneEntry } from '@renderer/composables/useDirectory'
 import {
@@ -633,6 +634,8 @@ function collapseTerminal(): void {
 
 function toggleSearch(): void {
   const pane = activePane.value
+  // The quick cd list has no filter of its own; Alt+S is the listing's gesture.
+  if (pane.state.quickCd) return
   if (pane.state.searchActive) pane.closeSearch()
   else pane.openSearch()
 }
@@ -679,6 +682,9 @@ function pasteEntryName(): void {
   // The terminal is disabled inside an archive, so there is no command line to
   // paste onto.
   if (archiveMode.value) return
+  // The quick cd rows are bookmarks, not the listing's entries; pasting one would
+  // put a directory's path where a name is meant.
+  if (activePane.value.state.quickCd) return
   const entry = activePane.value.current()
   if (!entry || entry.isParent) return
   shell.value.sendInput(`${shellQuote(entry.name)} `)
@@ -686,6 +692,7 @@ function pasteEntryName(): void {
 
 function pasteEntryPath(): void {
   if (archiveMode.value) return
+  if (activePane.value.state.quickCd) return
   const entry = activePane.value.current()
   if (!entry || entry.isParent) return
   shell.value.sendInput(shellQuote(closeDirectory(activePane.value.state.path)))
@@ -1143,6 +1150,19 @@ async function hideEntry(pane: PaneController, entry: PaneEntry): Promise<void> 
 }
 
 /**
+ * Make a quick cd change and say so when it could not be written. The pane's
+ * notice is where a failed write belongs, exactly as a failed copy or delete
+ * reports there: a list that is not remembered must not look like one that was.
+ */
+async function changeQuickCd(
+  pane: PaneController,
+  change: () => Promise<boolean>
+): Promise<void> {
+  if (await change()) return
+  pane.state.error = 'Could not save the quick cd list'
+}
+
+/**
  * What the menu offers for the row it was opened on: the operations that are not
  * already one gesture away in the listing itself. Opening the row is deliberately
  * absent — `Enter`, or a double-click on it, is the row's own gesture, and a menu
@@ -1164,6 +1184,19 @@ const paneMenuItems = computed<PaneMenuItem[]>(() => {
 
   const entry = menu.target
   const pane = paneOf(menu.side)
+
+  // While the pane is showing the quick cd list, a row is a bookmark rather than
+  // a file: the one thing the menu can do with it is take it off the list.
+  if (pane.state.quickCd) {
+    return [
+      {
+        kind: 'action',
+        label: 'Remove from quick cd',
+        run: () => void changeQuickCd(pane, () => removeQuickCd(entry.path))
+      }
+    ]
+  }
+
   const folder = entry.kind === 'directory'
   const media = !folder && previewTargetFor(entry) !== null
 
@@ -1220,6 +1253,30 @@ const paneMenuItems = computed<PaneMenuItem[]>(() => {
     })
   }
 
+  /**
+   * The quick cd list belongs in the same section as the folder's own `.mchide`
+   * list: both are what this menu remembers about a folder. The target is the row's
+   * own folder when it is a folder and the pane's directory otherwise, offered as
+   * an add, or as a remove when it is already listed. An archive location is no
+   * directory a shell could go back to, so it is left out.
+   */
+  const quickCdTarget = folder ? entry.path : pane.state.path
+  if (quickCdTarget && !isArchivePath(quickCdTarget)) {
+    if (isQuickCd(quickCdTarget)) {
+      belonging.push({
+        kind: 'action',
+        label: 'Remove from quick cd',
+        run: () => void changeQuickCd(pane, () => removeQuickCd(quickCdTarget))
+      })
+    } else {
+      belonging.push({
+        kind: 'action',
+        label: folder ? 'Add to quick cd' : 'Add this folder to quick cd',
+        run: () => void changeQuickCd(pane, () => addQuickCd(quickCdTarget))
+      })
+    }
+  }
+
   const items: PaneMenuItem[] = []
   for (const group of [reading, acting, belonging]) {
     if (group.length === 0) continue
@@ -1265,6 +1322,67 @@ function handlePaneKey(event: KeyboardEvent): void {
   // printable characters, Backspace and the arrow keys edit the text, and
   // Enter/Escape are the input's to commit or cancel.
   if (pane.state.renaming !== null) return
+
+  // The quick cd list is a mode of the pane, and the incremental search is opened
+  // with it: the rows can be filtered the moment the mode comes on. The arrows
+  // and the page/end keys move the list's cursor, Enter goes to the directory,
+  // and every other key belongs to the filter's input — which is why the
+  // listing's own gestures (marks, transfers, the viewer, Space's size walks)
+  // never reach the rows here. Escape is the way back to the listing (Alt+C
+  // toggles it too), which takes the opened filter with it.
+  if (pane.state.quickCd) {
+    if (event.key === 'Escape') {
+      consume(event)
+      pane.toggleQuickCd()
+      return
+    }
+    if (event.key === 'Tab') {
+      consume(event)
+      setActive(activeSide.value === 'left' ? 'right' : 'left')
+      return
+    }
+
+    switch (event.key) {
+      case 'ArrowLeft':
+      case 'ArrowRight':
+        // The filter's own input owns the caret: left/right edit the query.
+        return
+      case 'ArrowDown':
+        consume(event)
+        pane.moveCursor(1)
+        return
+      case 'ArrowUp':
+        consume(event)
+        pane.moveCursor(-1)
+        return
+      case 'PageDown':
+        consume(event)
+        pane.movePage(1)
+        return
+      case 'PageUp':
+        consume(event)
+        pane.movePage(-1)
+        return
+      case 'Home':
+        consume(event)
+        pane.moveTo(0)
+        return
+      case 'End':
+        consume(event)
+        pane.moveTo(pane.state.entries.length - 1)
+        return
+      case 'Enter':
+        // A typed command line keeps its Enter, exactly as it does in a listing.
+        if (hasInput) return
+        consume(event)
+        void pane.activate()
+        return
+      default:
+        // Everything else is the filter's input (printable keys, Backspace) or
+        // the shell's.
+        return
+    }
+  }
 
   // The column editor is a mode of the pane, and while it is on its own keys
   // drive it — the mode is explicit, so they are claimed even over a typed
@@ -1795,18 +1913,35 @@ function onKeydown(event: KeyboardEvent): void {
     return
   }
 
-  // Alt+C builds the pane's columns: the header swaps its labels for type
-  // pickers and draws the add and remove controls, so the pane's layout is
-  // composed from the interface rather than only rearranged by dragging. The
-  // panes' own gesture for the panes' own chrome — and, claimed down here, a
-  // real terminal keeps its Alt+C (readline's capitalize-word), exactly as it
-  // keeps Alt+S and Alt+. above.
-  const isColumnEditToggle =
+  // Alt+C replaces the pane's rows with the quick cd directories — the folders
+  // the user has bookmarked, which the row menu adds to and removes from. The
+  // panes' own gesture for the panes' own content, claimed down here so a real
+  // terminal keeps its Alt+C (readline's capitalize-word), exactly as it keeps
+  // Alt+S and Alt+. above.
+  const isQuickCdToggle =
     event.altKey &&
     !event.ctrlKey &&
     !event.metaKey &&
     !event.shiftKey &&
     event.code === 'KeyC'
+
+  if (isQuickCdToggle) {
+    consume(event)
+    activePane.value.toggleQuickCd()
+    return
+  }
+
+  // Alt+E builds the pane's columns: the header swaps its labels for type
+  // pickers and draws the add and remove controls, so the pane's layout is
+  // composed from the interface rather than only rearranged by dragging. The
+  // panes' own gesture for the panes' own chrome — and, claimed down here, a
+  // real terminal keeps its Alt+E, exactly as it keeps Alt+S and Alt+. above.
+  const isColumnEditToggle =
+    event.altKey &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.shiftKey &&
+    event.code === 'KeyE'
 
   if (isColumnEditToggle) {
     consume(event)
@@ -1841,6 +1976,8 @@ onMounted(async () => {
   void loadTranscodeSupport()
   // Whether Enter on a `.zip` enters it or opens it with the system.
   void loadArchiveSupport()
+  // The remembered quick cd list, so a pane opened on it already has the folders.
+  void loadQuickCd()
 })
 
 onBeforeUnmount(() => {

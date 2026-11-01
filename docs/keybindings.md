@@ -79,7 +79,7 @@ the other column, and nothing in a pane stops for it: a display among them goes
 on playing as it changes column, and the columns keep the sizes they had, so the
 divider does not move,
 
-`Alt+C` builds the active pane's columns: each column's label becomes a picker of
+`Alt+E` builds the active pane's columns: each column's label becomes a picker of
 the column types — Name, Size, Modified, Mode, Mode (num) — beside a grip
 and a remove button, and an add button sits in every gap, before each column and
 after the last (the first type not already shown is what an add inserts, and its
@@ -92,7 +92,19 @@ on, and a click puts the same highlight on a column), `Home`/`End` jump to the
 first and last, `Enter` opens the focused column's picker, `Insert` adds a column
 after it, `Delete` drops it, and `Alt+Left`/`Alt+Right` re-order it. A type a
 column already shows is greyed out in every other picker, since a column is shown
-once; `Alt+C`, the icon, or `Escape` leaves the mode,
+once; `Alt+E`, the icon, or `Escape` leaves the mode,
+
+`Alt+C` puts the quick cd directories in the pane in place of its listing — a list
+of bookmarked folders, one path per row, with an incremental search opened with it
+so the folders can be filtered by typing. The arrows/`PgUp`/`PgDn`/`Home`/`End`
+move through what the filter leaves and `Enter` goes to it (the pane leaves the
+list and loads that directory); `Left`/`Right` edit the query. The row menu is how
+the list is built: on a folder row it offers `Add to quick cd` (and `Add this
+folder to quick cd` on any other row, naming the pane's own folder), while on a row
+*of the list* it offers `Remove from quick cd`. The list is one for the whole app
+and is remembered between launches; an empty one says so in the pane's notice.
+`Escape` (or `Alt+C` again) gives the listing back exactly as it was, and `Tab`
+still switches panes,
 
 `Alt+S` starts an incremental search, `Alt+Enter` pastes the cursor entry's name
 onto the command line followed by a space and `Alt+A` the directory holding it,

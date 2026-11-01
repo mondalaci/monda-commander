@@ -148,6 +148,20 @@ export interface McHideApi {
   set(enabled: boolean): Promise<void>
 }
 
+export interface McQuickCdApi {
+  /**
+   * The remembered quick cd directories, one absolute path each, in the order
+   * the user put them. Empty before anything has been added.
+   */
+  get(): Promise<string[]>
+  /**
+   * Replace the remembered list whole. The renderer owns the order and the
+   * membership — adding appends, removing filters — and main only writes down
+   * what it is handed.
+   */
+  set(directories: string[]): Promise<void>
+}
+
 export interface McGitApi {
   /**
    * A repository's status, read from `git status --porcelain=v2` for the whole
@@ -177,5 +191,6 @@ export interface McApi {
   pty: McPtyApi
   win: McWindowApi
   hide: McHideApi
+  quickCd: McQuickCdApi
   git: McGitApi
 }

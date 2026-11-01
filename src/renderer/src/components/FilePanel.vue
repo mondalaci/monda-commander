@@ -183,6 +183,18 @@ function onSortClick(key: SortKey): void {
  */
 const columnOrder = computed(() => props.controller.state.columnOrder)
 
+/** Whether the pane is showing the quick cd list instead of its directory. */
+const quickCdMode = computed(() => props.controller.state.quickCd)
+
+/**
+ * The columns a row draws. The quick cd list shows only the directory's path —
+ * in the name column — because a bookmark has no size, date or mode of its own to
+ * put in the others, and the header that would label them is hidden with them.
+ */
+const displayColumns = computed<SortKey[]>(() =>
+  quickCdMode.value ? ['name'] : columnOrder.value
+)
+
 /** The heading each column is labelled with, wherever it has been dragged to. */
 const COLUMN_LABELS: Record<SortKey, string> = {
   name: 'Name',
@@ -2436,6 +2448,15 @@ const notice = computed(() => {
   if (state.itemCount === 0 && state.searchQuery) {
     return { text: `No matches for "${state.searchQuery}"`, error: false }
   }
+  // An empty quick cd list is worth saying: the pane is showing nothing at all,
+  // and where the folders to put there come from is not something the pane itself
+  // makes visible.
+  if (state.quickCd && state.itemCount === 0) {
+    return {
+      text: 'No quick cd directories yet. Shift+F10 or a long right-click on a folder adds one.',
+      error: false
+    }
+  }
   return null
 })
 
@@ -2539,7 +2560,7 @@ const gitTitle = computed(() => {
  */
 function markAt(entry: PaneEntry): GitRowMark | null {
   const view = gitView.value
-  if (!view || entry.isParent) return null
+  if (!view || entry.isParent || props.controller.state.quickCd) return null
 
   if (entry.kind === 'directory') {
     const dir = view.dirs.get(entry.path)
@@ -3360,7 +3381,10 @@ function onRenameBlur(): void {
                it. A folder merely *named* `foo.zip` keeps the plain title colour,
                which is how the two are told apart in the title. The segments
                carry no space between them, so the title stays one path. -->
-          <template v-if="archiveTitle">
+          <span v-if="quickCdMode" class="min-w-0 flex-1 truncate font-medium text-fg-bright">
+            Quick cd
+          </span>
+          <template v-else-if="archiveTitle">
             <span v-if="archiveTitle.dir" class="min-w-0 truncate">{{
               archiveTitle.dir
             }}/</span>
@@ -3390,7 +3414,7 @@ function onRenameBlur(): void {
              title's own color rather than the gold the marks take, so nothing up
              here competes with a selection further down. -->
         <span
-          v-if="gitView"
+          v-if="gitView && !quickCdMode"
           class="flex min-w-0 shrink-0 items-center gap-1 text-ui-sm"
           :title="gitTitle"
         >
@@ -3429,7 +3453,7 @@ function onRenameBlur(): void {
              gold the marks and the cursor take, so nothing here competes with a
              selection further down. -->
         <span
-          v-if="hideListed"
+          v-if="hideListed && !quickCdMode"
           class="flex shrink-0 items-center"
           :class="hideMode && active ? 'text-fg-bright' : 'text-fg-dim'"
           :title="hideMode ? HIDE_MODE_TOOLTIP : HIDE_MODE_OFF_TOOLTIP"
@@ -3467,6 +3491,7 @@ function onRenameBlur(): void {
       </div>
 
       <div
+        v-if="!quickCdMode"
         ref="headerEl"
         class="pane-header-gutter group relative flex h-6 shrink-0 items-center gap-1.5 border-b border-border-subtle pl-3 text-ui-sm text-fg-dim transition-colors"
         :class="columnEdit ? 'bg-surface-2' : 'bg-bg'"
@@ -3606,7 +3631,7 @@ function onRenameBlur(): void {
           type="button"
           class="absolute top-1/2 right-0 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-fg-dim opacity-0 transition-opacity hover:bg-hover hover:text-fg focus-visible:opacity-100 group-hover:opacity-100"
           :class="columnEdit ? 'text-accent-strong opacity-100' : ''"
-          :title="columnEdit ? 'Done editing columns' : 'Edit columns (Alt+C)'"
+          :title="columnEdit ? 'Done editing columns' : 'Edit columns (Alt+E)'"
           aria-label="Edit columns"
           @click.stop="onToggleColumnEdit"
         >
@@ -3722,7 +3747,7 @@ function onRenameBlur(): void {
           @click="onRowClick(row.index)"
           @dblclick="onRowDblclick"
         >
-          <template v-for="col in columnOrder" :key="col">
+          <template v-for="col in displayColumns" :key="col">
             <!-- The name column carries the row's icon, its name and the link
                  that name may point to, so all of it travels together when the
                  column is dragged to another place. -->
@@ -3897,7 +3922,10 @@ function onRenameBlur(): void {
             <span v-if="playLength !== null">{{ formatDuration(playLength) }}</span>
           </span>
 
-          <span class="shrink-0 tabular-nums">{{ controller.state.itemCount }} items</span>
+          <span v-if="quickCdMode" class="shrink-0 tabular-nums">
+            {{ controller.state.itemCount }} directories
+          </span>
+          <span v-else class="shrink-0 tabular-nums">{{ controller.state.itemCount }} items</span>
         </div>
 
         <div class="flex shrink-0 items-center gap-3">
@@ -3920,7 +3948,7 @@ function onRenameBlur(): void {
             }}</span>
           </span>
 
-          <template v-if="entry && !entry.isParent">
+          <template v-if="entry && !entry.isParent && !quickCdMode">
             <span class="hidden tabular-nums lg:inline">{{ formatMode(entry.mode) }}</span>
             <span class="tabular-nums">
               {{ footerSizeText(entry) }}

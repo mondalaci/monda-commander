@@ -108,6 +108,10 @@ const api: McApi = {
     get: (): Promise<boolean> => ipcRenderer.invoke('hide:get'),
     set: (enabled: boolean): Promise<void> => ipcRenderer.invoke('hide:set', enabled)
   },
+  quickCd: {
+    get: (): Promise<string[]> => ipcRenderer.invoke('quickcd:get'),
+    set: (directories: string[]): Promise<void> => ipcRenderer.invoke('quickcd:set', directories)
+  },
   git: {
     status: (dir: string): Promise<Result<GitStatus>> => ipcRenderer.invoke('git:status', dir),
     watch: (root: string): Promise<void> => ipcRenderer.invoke('git:watch', root),

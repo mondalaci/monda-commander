@@ -4,6 +4,7 @@ import { app, BrowserWindow } from 'electron'
 import { registerFsHandlers } from './ipc/fs'
 import { closeAllGitWatchers, registerGitHandlers } from './ipc/git'
 import { registerHideHandlers } from './ipc/hide'
+import { registerQuickCdHandlers } from './ipc/quickCd'
 import { killAllSessions, registerPtyHandlers } from './ipc/pty'
 import { closeAllWatchers, registerWatchHandlers } from './ipc/watch'
 import { registerWindowHandlers } from './ipc/window'
@@ -88,6 +89,7 @@ registerMediaScheme()
 registerMediaHandlers()
 registerFsHandlers()
 registerHideHandlers()
+registerQuickCdHandlers()
 registerGitHandlers()
 registerPtyHandlers()
 registerWatchHandlers()

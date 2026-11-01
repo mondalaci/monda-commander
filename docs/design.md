@@ -270,7 +270,7 @@ Dragging moves the columns a pane starts with; it cannot add one, drop one, or
 change what one shows. That is what the column editor is for, and it is a mode of
 the *pane* (`columnEdit` in `useDirectory`) rather than of the app, because the
 columns it edits are the pane's own: the icon that opens it is pinned to the right
-edge of the header and appears on hover, and `Alt+C` toggles the active pane's
+edge of the header and appears on hover, and `Alt+E` toggles the active pane's
 mode from the keyboard. `Escape` leaves it, ahead of the background work it would
 otherwise take back, because it is the visible state the key just made.
 
@@ -336,6 +336,42 @@ focus follows the column and the next press moves it again from where it now is.
 A click on a capsule puts the same focus there, so the pointer is just another way
 of saying which column is "this one"; a search box, whose input owns the caret,
 keeps its keys.
+
+## Quick cd
+
+A quick cd directory is a folder the user has bookmarked, and `Alt+C` puts the
+list of them in the pane in place of its own listing. The list is one answer for
+the whole app (`quickCdDirs` in `composables/useQuickCd`), like the hide mode:
+both panes read it, so a folder added from one pane's menu is there in the other,
+and it is remembered across launches in `userData/quick-cd.json`
+(`main/quickCd.ts`, `quickcd:get`/`quickcd:set`).
+
+It is a mode of the *pane* (`quickCd` in `useDirectory`) and it swaps the rows
+rather than the place: while it is on, `state.allRows`/`entries`/`cursor` describe
+the bookmarks, so every existing cursor move, page jump, scroll and row lookup
+works on the list unchanged, while `state.path` — the directory behind it, with
+its watcher, its title and the shell sync — is left alone. The listing the pane
+was showing is kept aside (`browseListing`), so `Escape` gives it back as it was
+rather than re-reading it, and Enter on a row simply navigates: `navigateTo` is
+what leaves the mode, which is also what keeps a `cd` typed at the prompt from
+landing under a list that is no longer the one being shown.
+
+A bookmark is built as an ordinary `PaneEntry` of kind `directory` — its name is
+the path with the home directory shown as `~` (`quickCdLabel`), since the path is
+what tells two folders of one name apart — so the row machinery needs nothing new
+for it. What a bookmark does not have is
+size, date or mode, so the pane shows only the name column in this mode and hides
+the header with the other columns. The incremental search the listing already
+carries is opened with the mode — entering sets `searchActive`, and the same
+`applyFilter` runs over the bookmarks — so the list is typed into the moment it
+appears: the arrows and the page/end keys move what the filter leaves, Left/Right
+and the printable keys edit the query, and the rest are the gestures a list of
+places can answer — Enter to go, Escape to leave, Tab and the menu. The menu is how
+the list is edited — on a folder row it offers `Add to quick cd` (or the pane's own
+folder from any other row), and on a row *of the list* it offers
+`Remove from quick cd` — and an empty list is not a blank pane: the notice says so,
+because where the folders to put there come from is not something the pane
+otherwise makes visible.
 
 ## The hide mode (`.mchide`)
 

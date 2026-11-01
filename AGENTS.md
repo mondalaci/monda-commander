@@ -47,6 +47,8 @@ src/main/ipc/pty.ts      IPC: pty:create/write/resize/kill/state; pushes pty:dat
 src/main/ipc/window.ts   IPC: window:minimize/toggle-maximize/close/is-maximized
 src/main/ipc/hide.ts     IPC: hide:get, hide:set
 src/main/hideMode.ts     hide mode persisted in userData/hide-mode.json
+src/main/ipc/quickCd.ts  IPC: quickcd:get, quickcd:set
+src/main/quickCd.ts      quick cd directories persisted in userData/quick-cd.json
 src/preload/index.ts     contextBridge -> window.mc (implements McApi)
 src/shared/types.ts      DirEntry/DirListing/Result/ImagePreview/PixelSize/Pty* types
 src/shared/api.ts        McApi interface (the preload contract)
@@ -75,6 +77,7 @@ src/renderer/src/composables/useShell.ts       createShell(id): one shell sessio
                                                (own process, buffer, cwd, line model)
 src/renderer/src/composables/useDirectory.ts   per-pane navigation state + actions
 src/renderer/src/composables/useHideMode.ts    the hide mode's on/off state
+src/renderer/src/composables/useQuickCd.ts     the app-wide quick cd directory list
 src/renderer/src/lib/format.ts        size/date/permission formatting
 src/renderer/src/lib/executable.ts    runnable/green rule and `shouldExecute`
 src/renderer/src/lib/archive.ts       the archive-support ref (`fs:can-archive`),
@@ -193,7 +196,7 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   and the header gives DOM focus back on the way out — dragging must not
   `preventDefault` its `mousedown`. Reasoning in
   [`docs/design.md`](docs/design.md).
-- **The columns can also be built, not only rearranged.** `Alt+C` (or the icon
+- **The columns can also be built, not only rearranged.** `Alt+E` (or the icon
   pinned to the right edge of the header, shown on hover) puts the pane's
   `columnEdit` mode on: each header becomes one bordered, rounded capsule holding
   a grip, a `<select>` of column types — Name, Size, Modified, Mode, Mode (num)
@@ -243,6 +246,38 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   with a `translateY` in the pane's already-new layout, so nothing is measured and
   nothing else moves. The copies are appended to the `<ul>` as `.hide-ghost` (which
   is why it is `relative`), out of the flow and off the pointer.
+
+### Quick cd
+
+- **Quick cd replaces the pane's rows, not the pane's place.** `Alt+C` is a mode of
+  the *pane* (`state.quickCd` in `useDirectory`): while it is on,
+  `allRows`/`entries`/`cursor` are the bookmarked directory paths, so every cursor
+  move, page jump, scroll and row lookup works unchanged, while `state.path` — with
+  its watcher, its title and the shell sync — is left alone. The listing the pane
+  was showing is held aside (`browseListing`) and given back on `Escape`, exactly
+  as it was.
+- **The list is one remembered state for the whole app** (`quickCdDirs` in
+  `useQuickCd`), persisted via `quickcd:get`/`quickcd:set` to
+  `userData/quick-cd.json` and read once on mount. Alt+C is claimed *after* the
+  expanded-terminal check (so a real terminal keeps its Alt+C, readline's
+  capitalize-word); the column editor moved to Alt+E.
+- **A bookmark is an ordinary `PaneEntry`** of kind `directory` whose `name` is its
+  path with the home directory shown as `~` (`quickCdLabel`), so the row machinery
+  needs nothing for it. It carries no size, date
+  or mode, so the pane draws only the name column and hides the header with the
+  rest. A navigation *leaves the mode* (`navigateTo` calls `toggleQuickCd`) — that
+  is what keeps a `cd` typed at the prompt from landing under a list that is no
+  longer the one being shown. The incremental search is opened with the mode
+  (entering sets `searchActive`, and `applyFilter` runs over the bookmarks): the
+  arrows move what the filter leaves while Left/Right and printable keys edit the
+  query.
+- **The row menu edits the list.** On a folder row it offers `Add to quick cd` (or
+  the pane's own folder from any other row); on a row *of the list* it offers
+  `Remove from quick cd`. `setSelected`/`isSelected` are no-ops in the mode, so a
+  right-press on a bookmark opens the menu and never paints a mark. An empty list
+  is said in the pane's notice, and a write that fails is put back and said there
+  too (`changeQuickCd`), so the rows never show an entry the next launch will not
+  have.
 
 ### Git status
 
