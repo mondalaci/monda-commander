@@ -692,6 +692,23 @@ function pasteEntryPath(): void {
 }
 
 /**
+ * Alt+O is midnight commander's PanelOtherCd: the *other* pane is pointed at
+ * what the cursor is on — a directory entry (the `..` row included) loads that
+ * directory, and anything else loads the directory holding it, which is the
+ * pane's own — and the cursor then steps on, so a column of folders can be
+ * walked into the other pane one key at a time. The pane being browsed is not
+ * left, and it keeps its cursor's place otherwise; only the other pane moves.
+ */
+function revealInOtherPane(): void {
+  const pane = activePane.value
+  const entry = pane.current()
+  if (!entry) return
+  const target = entry.kind === 'directory' ? entry.path : pane.state.path
+  void inactivePane.value.navigateTo(target)
+  pane.moveCursor(1)
+}
+
+/**
  * Workspace tabs. Ctrl+T opens a new terminal — a fresh pair of panes at home
  * plus a new shell — at the right of the strip and focuses it; Ctrl+W closes
  * the active one; Ctrl+PageDown / Ctrl+PageUp step to the next and previous
@@ -1639,8 +1656,9 @@ function onKeydown(event: KeyboardEvent): void {
   // terminal leaves the panes no height to be seen in, so they have no claim on
   // the key. Handing it over is not a small thing either, because the programs
   // running there want these keys: midnight commander binds Alt+S to Search,
-  // Alt+A to PutCurrentPath, Alt+Enter to PutCurrentSelected, Ctrl+R to Reread
-  // and Alt+. to ShowHidden, and a plain shell's readline binds Ctrl+R to
+  // Alt+A to PutCurrentPath, Alt+Enter to PutCurrentSelected, Alt+O to
+  // PanelOtherCd, Ctrl+R to Reread and Alt+. to ShowHidden, and a plain shell's
+  // readline binds Ctrl+R to
   // reverse-search and Alt+. to yank-last-arg. What is claimed *above* this line
   // is the app's own chrome — the overlays, Ctrl+O, the tab keys, a display over
   // the whole window — which has to work wherever the keyboard is.
@@ -1705,6 +1723,24 @@ function onKeydown(event: KeyboardEvent): void {
   if (isPastePath) {
     consume(event)
     pasteEntryPath()
+    return
+  }
+
+  // Alt+O points the *other* pane at the cursor's entry — mc's PanelOtherCd:
+  // a directory loads there, a file loads the folder holding it — and steps the
+  // cursor on. A gesture for the other pane and the row under this one's cursor,
+  // so it is the panes' own, claimed below the expanded terminal like the rest;
+  // the mc running there keeps its own Alt+O.
+  const isOtherPaneCd =
+    event.altKey &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.shiftKey &&
+    event.code === 'KeyO'
+
+  if (isOtherPaneCd) {
+    consume(event)
+    revealInOtherPane()
     return
   }
 

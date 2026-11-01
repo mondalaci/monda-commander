@@ -104,6 +104,13 @@ space or a `$` arrives as part of the one argument, and both typed into the shel
 own line
 so its echo and history see a real command line),
 
+`Alt+O` points the *other* pane at what the cursor is on — a directory entry
+loads that directory there (the `..` row loads the parent), and a file loads the
+folder holding it, which is the pane's own — and then steps the cursor on, so a
+column of folders can be walked into the other pane one key at a time. The pane
+being browsed is not left; only the other one moves. It is midnight commander's
+PanelOtherCd, and mc running in the expanded terminal keeps its own,
+
 `Alt+.` switches the hide mode off and on — a `.mchide` file in a folder lists
 entries for it to leave out, and the mode is one remembered state for the whole
 app, so the gesture is the panes' rather than the shell's: in a real terminal
@@ -143,7 +150,8 @@ room to be seen in, so they are all handed to whatever is running in it.
 
 Midnight commander is what makes that matter, since the gesture and the program
 want the same key: `Alt+S` (Search), `Alt+A` (PutCurrentPath), `Alt+Enter`
-(PutCurrentSelected), `Ctrl+R` (Reread) and `Alt+.` (ShowHidden) are pane
+(PutCurrentSelected), `Alt+O` (PanelOtherCd), `Ctrl+R` (Reread) and `Alt+.`
+(ShowHidden) are pane
 gestures of ours *and* of mc's, and a plain shell's readline has `Ctrl+R`,
 `Alt+.` and `Alt+C` (capitalize-word) of its own. Above that line is only the
 app's own chrome — the overlays,
