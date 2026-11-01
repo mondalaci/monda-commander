@@ -38,6 +38,37 @@ export function formatSize(bytes: number): string {
   return `${value.toFixed(decimals)} ${SIZE_UNITS[unit]}`
 }
 
+/**
+ * Below this, a size is the listing's ordinary text: colouring every small file
+ * would make the column noisy without saying anything, since almost everything
+ * is small. The heat is reserved for what is worth spotting at a glance.
+ */
+const SIZE_HEAT_MIN = 1024 * 1024 // 1 MiB
+
+/** At and above this a size is fully red; the ramp runs to here and clamps. */
+const SIZE_HEAT_FULL = 1024 ** 4 // 1 TiB
+
+/**
+ * The colour the size column draws a number in, read from how big it is: the
+ * plain `null` (the caller's ordinary text colour) up to `SIZE_HEAT_MIN`, then a
+ * heat ramp from amber through orange to red as the number grows toward
+ * `SIZE_HEAT_FULL`. Sizes span orders of magnitude, so the ramp is over the
+ * *logarithm*: every doubling of a big file moves it the same distance, which is
+ * what lets one scale serve a 2 MiB log and a 400 GiB disk image.
+ *
+ * It is a colour rather than a class because it is chosen per entry, from a
+ * number — the same reason `lib/gitMark.ts` keeps its palette in code.
+ */
+export function sizeColor(bytes: number): string | null {
+  if (bytes < SIZE_HEAT_MIN) return null
+
+  const t = Math.min(1, Math.log(bytes / SIZE_HEAT_MIN) / Math.log(SIZE_HEAT_FULL / SIZE_HEAT_MIN))
+  const hue = Math.round(45 * (1 - t)) // amber 45 → red 0
+  const sat = Math.round(65 + 15 * t) // brighter as it warms
+
+  return `hsl(${hue} ${sat}% 62%)`
+}
+
 const relativeFormatter = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' })
 
 const RELATIVE_DIVISIONS: { amount: number; unit: Intl.RelativeTimeFormatUnit }[] = [

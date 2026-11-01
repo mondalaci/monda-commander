@@ -11,7 +11,8 @@ import {
   formatMode,
   formatModeNumeric,
   formatRelativeDate,
-  formatSize
+  formatSize,
+  sizeColor
 } from '@renderer/lib/format'
 import {
   probeVideoCodec,
@@ -3291,19 +3292,40 @@ function rowStale(entry: PaneEntry): boolean {
 }
 
 /**
+ * The bytes the size column is showing for an entry, or `undefined` where it
+ * shows no number at all: the `..` row, or a folder whose walk has not answered.
+ * Both the text and its heat are read from this one answer.
+ */
+function sizeBytes(entry: PaneEntry): number | undefined {
+  if (entry.isParent) return undefined
+  if (entry.kind === 'directory') return props.controller.state.dirSizes.get(entry.path)
+  return entry.size
+}
+
+/**
  * The size column's text. A file's size is its own metadata; a folder's is not
  * something a listing knows, so a folder's column stays blank until Space walks
  * it — and then it holds the running total, in the same column and the same
  * units as a file's, with an ellipsis only until the walk counts its first byte.
  */
 function sizeText(entry: PaneEntry): string {
-  if (entry.isParent) return ''
-  if (entry.kind === 'directory') {
-    const bytes = props.controller.state.dirSizes.get(entry.path)
-    if (bytes !== undefined) return formatSize(bytes)
-    return props.controller.state.sizing.has(entry.path) ? '…' : ''
-  }
-  return formatSize(entry.size)
+  const bytes = sizeBytes(entry)
+  if (bytes !== undefined) return formatSize(bytes)
+  return entry.kind === 'directory' && props.controller.state.sizing.has(entry.path) ? '…' : ''
+}
+
+/**
+ * The heat a size is drawn in (lib/format.ts), or nothing to leave the row's own
+ * colour alone: a folder total whose recalculation is still queued keeps the
+ * plain dim, so an old answer is never dressed as a fresh one, and a row with no
+ * number — the `..` row, an unsized folder — has nothing to colour.
+ */
+function sizeColorStyle(entry: PaneEntry): { color: string } | undefined {
+  if (props.controller.state.sizeStale.has(entry.path)) return undefined
+  const bytes = sizeBytes(entry)
+  if (bytes === undefined) return undefined
+  const color = sizeColor(bytes)
+  return color === null ? undefined : { color }
 }
 
 /** The footer's own size, where an unsized folder still reads as a folder. */
@@ -3806,6 +3828,7 @@ function onRenameBlur(): void {
                 rowBar(row.entry) ? 'size-cell-bar' : '',
                 rowStale(row.entry) ? 'text-fg-dim' : 'text-fg'
               ]"
+              :style="sizeColorStyle(row.entry)"
             >
               {{ sizeText(row.entry) }}
             </span>
@@ -3950,7 +3973,7 @@ function onRenameBlur(): void {
 
           <template v-if="entry && !entry.isParent && !quickCdMode">
             <span class="hidden tabular-nums lg:inline">{{ formatMode(entry.mode) }}</span>
-            <span class="tabular-nums">
+            <span class="tabular-nums" :style="sizeColorStyle(entry)">
               {{ footerSizeText(entry) }}
             </span>
             <span class="hidden tabular-nums lg:inline" :title="formatExactDate(entry.mtimeMs)">{{

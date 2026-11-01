@@ -412,7 +412,11 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   waiting for its end. The cursor is kept on the entry it was on across each
   re-order (`applyFilter`), so the rows move around the cursor. `Space` only
   reaches this when there is no clip to play, and otherwise stays the shell's own
-  space.
+  space. **A size is drawn in a colour read from how big it is** (`sizeColor`,
+  `lib/format.ts`): plain `text-fg` up to 1 MiB, then a log-scale ramp from amber to
+  red as it grows toward 1 TiB, so the big files stand out on the eye's scan. A
+  stale folder total keeps the plain dim and takes no heat; the footer's cursor
+  size takes the same colour as the row.
 
 - **`F7` makes a directory in the pane being browsed.** `fs:mkdir` resolves the
   name against that pane (absolute, or relative, as the transfer dialogs do) and

@@ -799,6 +799,29 @@ preview under the cursor keeps `Space` as play/pause, and a file, an empty folde
 or a listing with no folder in it leaves it to the shell, so no key that already
 meant something lost it.
 
+### The size column reads as a heat, above a megabyte
+
+The number in the size column is drawn in a colour read from the number itself
+(`sizeColor` in `lib/format.ts`): plain `text-fg` up to a megabyte, then a ramp
+from amber through orange to red as the size grows toward a terabyte. It answers
+the question a file manager is asked most — *what is taking up the room* — with
+the eye's own scan down the column instead of a sort. The ramp is over the
+*logarithm* of the size, not the size, because files span orders of magnitude and
+every doubling of a big file should move the colour the same distance; a linear
+ramp would leave everything below a gigabyte indistinguishable and spend its whole
+range on the handful of files above it. It is a colour chosen per entry rather
+than a class, for the same reason `lib/gitMark.ts` keeps its palette in code.
+
+The floor is deliberate: a listing's ordinary rows are small files, and colouring
+all of them would make the column noisy while saying nothing, so the heat is
+reserved for what is worth spotting at a glance. A folder's column is walked, not
+known, so it takes the heat only once a total exists — and while a recalculation
+is still queued the row keeps the plain dim (`sizeStale`), so an old answer is
+never dressed as a fresh one. The footer's own size, under the cursor, is the same
+number and takes the same colour. The colour rides an inline `color` on the size
+span, so it goes on reading as itself on a marked or cursored row's band, the same
+promise the runnable green makes.
+
 ## Git status
 
 ### Git is asked, not reimplemented
