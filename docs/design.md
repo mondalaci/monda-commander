@@ -1438,6 +1438,12 @@ as python. Only interpreters with a tokenizer that fits are mapped: Monaco has n
 awk or expect, and `fish`/`csh` are close enough to the shell tokenizer only in
 name, so those stay plaintext — a script in the wrong colours reads worse than none.
 The first line costs nothing to read because the viewer is handed the text anyway.
+A **curated filename table** (`FILENAME_LANGUAGES`) fills the names Monaco declares
+no tokenizer for, because Monaco's shell claims `.sh`/`.bash` and no filename at
+all, which left every rc file a shell reads (`~/.bashrc`, `~/.profile`, `~/.zshrc`)
+grey. It holds only names whose language is certain — `.vimrc` and `.inputrc` are
+not shell and Monaco has no tokenizer for them, so they stay plaintext rather than
+borrow the shell's colours — and a name Monaco itself claims still wins.
 
 ## The terminal
 

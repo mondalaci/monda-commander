@@ -78,6 +78,74 @@ function languageForName(monaco: typeof MonacoApi, target: string): string | nul
   return null
 }
 
+/** Whether Monaco currently registers a language with this id. */
+function isLanguageRegistered(monaco: typeof MonacoApi, id: string): boolean {
+  return monaco.languages.getLanguages().some((language) => language.id === id)
+}
+
+/**
+ * Names a tokenizer genuinely fits that Monaco's own registrations miss. The
+ * shell is the one that matters most: Monaco declares `.sh` and `.bash` and no
+ * filename at all, so every rc file a shell reads by name — the file a user is
+ * most likely to open — would otherwise be left grey. Only names whose language
+ * is certain are here: `.vimrc` and `.inputrc` are not shell, and Monaco has no
+ * tokenizer for vim or readline anyway, so they stay plaintext rather than
+ * borrow a neighbour. `.gitconfig` and `.editorconfig` are absent because
+ * Monaco's own ini registration already claims them, and `.screenrc` is absent
+ * because screen's config language is not the shell's.
+ */
+const FILENAME_LANGUAGES: Record<string, string> = {
+  // Shells read these by name.
+  '.bashrc': 'shell',
+  '.bash_profile': 'shell',
+  '.bash_login': 'shell',
+  '.bash_logout': 'shell',
+  '.bash_aliases': 'shell',
+  '.bash_completion': 'shell',
+  '.profile': 'shell',
+  '.zshrc': 'shell',
+  '.zprofile': 'shell',
+  '.zshenv': 'shell',
+  '.zlogin': 'shell',
+  '.zlogout': 'shell',
+  '.kshrc': 'shell',
+  '.cshrc': 'shell',
+  '.tcshrc': 'shell',
+  '.login': 'shell',
+  '.logout': 'shell',
+  '.xinitrc': 'shell',
+  '.xsession': 'shell',
+  '.xprofile': 'shell',
+  '.envrc': 'shell',
+  // INI-shaped configs Monaco's ini registration does not name.
+  '.npmrc': 'ini',
+  '.yarnrc': 'ini',
+  '.flake8': 'ini',
+  '.pylintrc': 'ini',
+  // Extensionless prose GitHub already renders as markdown.
+  readme: 'markdown',
+  license: 'markdown',
+  copying: 'markdown',
+  changelog: 'markdown',
+  contributing: 'markdown',
+  authors: 'markdown',
+  news: 'markdown',
+  notice: 'markdown',
+  todo: 'markdown',
+  install: 'markdown'
+}
+
+/**
+ * The language a curated filename asks for, or null when it is not listed or
+ * names a language this Monaco no longer ships.
+ */
+function languageForCuratedName(monaco: typeof MonacoApi, target: string): string | null {
+  const name = (target.split(/[\\/]/).pop() ?? '').toLowerCase()
+  const id = FILENAME_LANGUAGES[name]
+  if (id === undefined) return null
+  return isLanguageRegistered(monaco, id) ? id : null
+}
+
 /**
  * How the interpreters a shebang names map onto the languages Monaco has. Only
  * names with a tokenizer that actually fits are here: an interpreter Monaco
@@ -158,8 +226,7 @@ function languageForShebang(monaco: typeof MonacoApi, text: string): string | nu
   const id = INTERPRETER_LANGUAGES[interpreter]
   if (id === undefined) return null
 
-  const registered = monaco.languages.getLanguages().some((language) => language.id === id)
-  return registered ? id : null
+  return isLanguageRegistered(monaco, id) ? id : null
 }
 
 /**
@@ -167,11 +234,12 @@ function languageForShebang(monaco: typeof MonacoApi, text: string): string | nu
  * its shebang when the name says nothing.
  *
  * An extension or a known filename is the deliberate signal — `foo.py` is
- * python however it starts — but the fallback is no signal at all, and the file
- * it leaves grey is exactly the extensionless script (`manage`, `configure`,
- * a `run` in a crate), whose first line states its language outright. Since the
- * viewer is handed the file's text anyway, that line costs nothing to read, and
- * a name another language claims keeps winning, so this can only add colour.
+ * python however it starts — whether Monaco declares it or the curated table
+ * does (`.bashrc` is shell), and a name another language claims keeps winning.
+ * The fallback is no signal at all, and the file it leaves grey is exactly the
+ * extensionless script (`manage`, `configure`, a `run` in a crate), whose first
+ * line states its language outright. Since the viewer is handed the file's text
+ * anyway, that line costs nothing to read, and this can only add colour.
  */
 export function languageFor(
   monaco: typeof MonacoApi,
@@ -180,5 +248,5 @@ export function languageFor(
 ): string {
   const named = languageForName(monaco, target)
   if (named !== null && named !== PLAINTEXT) return named
-  return languageForShebang(monaco, text) ?? PLAINTEXT
+  return languageForCuratedName(monaco, target) ?? languageForShebang(monaco, text) ?? PLAINTEXT
 }
