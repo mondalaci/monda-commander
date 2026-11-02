@@ -397,16 +397,32 @@ the editor. It *appends*, leaves a name that is already listed alone (the reques
 is "hide this", not "list this twice"), and adds a newline first when the file
 does not end in one, since otherwise the new name would join the last line and
 hide whatever that line spelled; a name that is empty or spans lines is refused,
-because it cannot be spelled in this format at all. The item is left out of the
-menu for a name the folder already lists — it is on screen only because the mode
-is off, and the title bar's dim icon is what says so — and the mode is switched
-*on* with the write, since the file only says what to leave out and the mode is
-what leaves it out: a name written into a list nothing is applying would look like
-the item had done nothing. Both panes showing the folder are told the change is the
-app's own before the listing is re-read, so the row that was asked to disappear
-does not sweep as though something had happened behind the app's back; the names
-come from the listing rather than from a read of the file, which is why the folder
-is listed again at all. The file is filtered like any other entry — naming itself
+because it cannot be spelled in this format at all. The mode is switched *on* with
+the write, since the file only says what to leave out and the mode is what leaves
+it out: a name written into a list nothing is applying would look like the item had
+done nothing.
+
+Its other half is `fs:hide-remove` — the menu's `Remove from .mchide`, offered for
+a row the folder *does* list. Such a row is on screen only while the mode is off
+(the title bar's dim icon is what says so), and that is exactly where the gesture
+is wanted: the mode is what made the item disappear, so taking the name off the
+list is how the user says it should not have. It drops only the lines that spell
+the name and rewrites the rest of the file as it was read, so a hand-written list
+keeps its blank lines, its comments and the order it was given; a name the file
+does not list leaves the file untouched rather than rewriting what is already
+right, and the file is never created, since a name taken out of a list that does
+not exist has already been taken out. The mode is left exactly as it is: it is off,
+and switching it on over a name that has just stopped being covered would hide
+every *other* covered row instead of leaving the user where they were. Nothing on
+screen changes either way — the row was visible before and after — so the gesture's
+answer is the menu itself, which offers the add again, and the title bar's eye,
+which goes with the last name of the list.
+
+Both gestures re-list the folder, with every pane showing it told the change is the
+app's own before the listing is re-read, so the row that was asked about does not
+sweep as though something had happened behind the app's back; the names come from
+the listing rather than from a read of the file, which is why the folder is listed
+again at all. The file is filtered like any other entry — naming itself
 in it hides it too — which is safe because Alt+. is always there to reveal what
 the mode is covering, and the title bar's icon still stands for the folder having
 a list. A *folder* called `.mchide` is not the file (the write is refused with
@@ -585,13 +601,14 @@ under it cannot change what they say or do.
 row's own gesture, and a menu that repeats what the pointer has just done is a
 longer way to the same place — so what the menu carries is what the listing cannot
 say with one click, which is View/Edit for a file, the full-screen mode for media,
-the transfers, Rename, Delete, the mark, and `Hide (add to .mchide)` (written up
-with the file it writes — see the hide mode above). Each item carries the key that
-does the same thing without a menu, since being where those are found is half of
-what the menu is for, and the separators are put *between* the groups that came out
-with something in them rather than written into the list: what a row can offer
-depends on what it is — a folder has no view, edit or full-screen — and a divider
-with nothing on one side of it is a line the menu has nothing to say.
+the transfers, Rename, Delete, the mark, and the two hide-list items (`Hide (add to
+.mchide)` and `Remove from .mchide`, written up with the file they write — see the
+hide mode above). Each item carries the key that does the same thing without a menu,
+since being where those are found is half of what the menu is for, and the
+separators are put *between* the groups that came out with something in them rather
+than written into the list: what a row can offer depends on what it is — a folder
+has no view, edit or full-screen — and a divider with nothing on one side of it is
+a line the menu has nothing to say.
 
 `Shift+F10` and the keyboard's own `Menu` key ask for it on the cursor row, anchored
 from the same index-against-`ROW_HEIGHT` arithmetic the windowed listing is built

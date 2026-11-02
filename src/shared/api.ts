@@ -113,6 +113,14 @@ export interface McFsApi {
    */
   hideAdd(dir: string, name: string): Promise<Result<string>>
   /**
+   * Take an entry's name out of a directory's `.mchide` file — the pane menu's
+   * way of letting a normally hidden entry stop being listed. Only the lines
+   * naming it go; the rest of the file is left as it was, a name that is not
+   * listed leaves the file alone, and the file is never created. Returns the file
+   * that was looked at, or the error that stopped it.
+   */
+  hideRemove(dir: string, name: string): Promise<Result<string>>
+  /**
    * Watch a directory for on-disk changes. Refcounted in main, so several
    * callers (both panes, or the same pane twice) may watch one directory.
    */

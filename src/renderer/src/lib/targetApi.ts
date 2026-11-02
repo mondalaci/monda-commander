@@ -131,6 +131,8 @@ function remoteFs(target: Target): McFsApi {
       toResult<MoveOutcome>(await request(id, 'fs:move', { sources, destination, baseDir })),
     remove: async (targets) => toResult<DeleteOutcome>(await request(id, 'fs:delete', { targets })),
     hideAdd: async (dir, name) => toResult<string>(await request(id, 'fs:hideAdd', { dir, name })),
+    hideRemove: async (dir, name) =>
+      toResult<string>(await request(id, 'fs:hideRemove', { dir, name })),
     watch: async (dir) => {
       await request(id, 'fs:watch', { path: dir })
     },

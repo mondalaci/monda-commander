@@ -14,7 +14,11 @@ import (
 	"syscall"
 )
 
-const relayVersion = 2
+// The protocol version, which the app's RELAY_VERSION (src/main/relay/paths.ts)
+// has to equal: a remote running anything else answers `--version` with a number
+// the app does not accept and is replaced before the connection opens. Adding an
+// operation to the protocol is what bumps it.
+const relayVersion = 3
 
 type HelloInfo struct {
 	Version      int    `json:"version"`
@@ -177,6 +181,10 @@ func handle(conn *Conn, req Request, id uint32) {
 
 	case "fs:hideAdd":
 		file, err := addHiddenName(req.Dir, req.Name)
+		respond(file, err)
+
+	case "fs:hideRemove":
+		file, err := removeHiddenName(req.Dir, req.Name)
 		respond(file, err)
 
 	case "fs:dirSize":

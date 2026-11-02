@@ -1306,6 +1306,24 @@ function requestPaneMenuAtCursor(): void {
 }
 
 /**
+ * Re-list a folder whose `.mchide` file was just written, with every pane showing
+ * it told the change is the app's own: the names come from the listing rather than
+ * from a read of the file, so the folder has to be listed again for them to be in
+ * hand, and the watcher reports the write like any other — the row the user just
+ * asked about must not sweep as though something had happened behind the app's
+ * back.
+ */
+async function relistForHideChange(pane: PaneController): Promise<void> {
+  const showing = [left.value, right.value].filter((other) => other.state.path === pane.state.path)
+  for (const other of showing) other.beginSelfChange()
+  try {
+    await pane.refresh()
+  } finally {
+    for (const other of showing) other.endSelfChange()
+  }
+}
+
+/**
  * Put the row's name in its folder's `.mchide` file — the menu's answer to "I do
  * not want to keep seeing this one". The mode is switched on with it, because the
  * file only says what to leave out and the mode is what leaves it out: writing a
@@ -1322,18 +1340,28 @@ async function hideEntry(pane: PaneController, entry: PaneEntry): Promise<void> 
 
   if (!hideMode.value) await toggleHideMode()
 
-  // The names come from the listing rather than from a read of the file, so the
-  // folder has to be listed again for the new one to be in hand. Every pane
-  // showing this folder is told the change is the app's own: the watcher reports
-  // the write like any other, and a row the user asked to hide must not sweep as
-  // though something had happened behind the app's back.
-  const showing = [left.value, right.value].filter((other) => other.state.path === pane.state.path)
-  for (const other of showing) other.beginSelfChange()
-  try {
-    await pane.refresh()
-  } finally {
-    for (const other of showing) other.endSelfChange()
+  await relistForHideChange(pane)
+}
+
+/**
+ * Take the row's name out of its folder's `.mchide` file — the menu's answer to
+ * "this one was put on the list by mistake", offered for a row that is only on
+ * screen because the mode is off.
+ *
+ * The mode is left exactly as it is. It is off, and switching it on over a name
+ * that has just stopped being covered would hide every *other* covered row
+ * instead of leaving the user where they were; what the write says is that this
+ * name is no longer one of them, which is a change they will see the next time
+ * the mode goes on. A remove that failed is the pane's notice like any other.
+ */
+async function unhideEntry(pane: PaneController, entry: PaneEntry): Promise<void> {
+  const result = await activeWorkspace.value.api.fs.hideRemove(pane.state.path, entry.name)
+  if (!result.ok) {
+    pane.state.error = `${result.error.code}: ${result.error.message}`
+    return
   }
+
+  await relistForHideChange(pane)
 }
 
 /**
@@ -1451,9 +1479,20 @@ const paneMenuItems = computed<PaneMenuItem[]>(() => {
 
   // A folder's list may already cover this name — it is on screen only because
   // the mode is off, and the pane's own title bar says so with its dim icon — in
-  // which case there is nothing to add and the item is left out rather than
-  // offered as a second write of the same line.
-  if (!pane.state.hideNames.has(entry.name)) {
+  // which case there is nothing to add, and what the menu can offer instead is to
+  // take it back out of the list: the row was hidden by mistake, or hidden long
+  // ago and is wanted back. That is the mode-off case by construction, since a
+  // covered row has no place in the listing to open a menu on while the mode is
+  // on; the check is what says so rather than leaving it to be inferred.
+  if (pane.state.hideNames.has(entry.name)) {
+    if (!hideMode.value) {
+      belonging.push({
+        kind: 'action',
+        label: `Remove from ${HIDE_MARKER}`,
+        run: () => void unhideEntry(pane, entry)
+      })
+    }
+  } else {
     belonging.push({
       kind: 'action',
       label: `Hide (add to ${HIDE_MARKER})`,

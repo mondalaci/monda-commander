@@ -35,7 +35,7 @@ src/main/index.ts        window lifecycle, single-instance lock
 src/main/windowState.ts  remembered window size/position/maximized flag
 src/main/ipc/fs.ts       IPC: fs:home, fs:list, fs:dir-size, fs:dir-size-cancel,
                          fs:read, fs:write, fs:read-image, fs:image-size, fs:open,
-                         fs:reveal, fs:hide-add, fs:mkdir
+                         fs:reveal, fs:hide-add, fs:hide-remove, fs:mkdir
 src/main/imageSize.ts    header-only image dimensions (PNG/JPEG+EXIF/GIF/BMP/ICO/WebP/SVG)
 src/main/videoCodec.ts   header-only codec sniff for ISOBMFF (mp4/m4v/mov)
 src/main/media.ts        mc-media scheme: ranged video stream + live ffmpeg transcode
@@ -228,6 +228,12 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   Read and write go through one parser each (`parseHiddenNames`, `main/ipc/fs.ts`).
   `fs:hide-add` appends (refusing empty/multiline names, adding a leading newline
   when needed), switches the mode *on*, and flags the change as the app's own.
+  `fs:hide-remove` is the menu's other half: offered for a row the folder lists,
+  which is the row that is on screen only because the mode is *off*, it drops the
+  lines naming it — the rest of the file, blank lines and comments included, is
+  rewritten as it was read — leaves a name it does not list alone, never creates
+  the file, and leaves the mode where it is. Both are refused inside an archive
+  (`ENOTSUP`).
 - **The hide mode is one remembered state for the whole app.** `toggleHideMode`
   is a module-level ref; covered marks are dropped (`pruneSelection`); it is
   persisted via `hide:get`/`hide:set` to `userData/hide-mode.json` and read once

@@ -698,6 +698,43 @@ func addHiddenName(dir, name string) (string, error) {
 	return file, nil
 }
 
+// removeHiddenName takes a name out of a directory's .mchide file. Only the
+// lines that spell it are dropped — every other line, blank ones included, is
+// rewritten exactly as it was read — and a name the file does not list leaves the
+// file alone. The file is never created.
+func removeHiddenName(dir, name string) (string, error) {
+	wanted := strings.TrimSpace(name)
+	if dir == "" || wanted == "" || strings.ContainsAny(name, "\r\n") {
+		return "", fsError("EINVAL", fmt.Sprintf("%q cannot be listed in %s", name, hideMarker))
+	}
+	resolved, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	file := filepath.Join(resolved, hideMarker)
+	existing, readErr := os.ReadFile(file)
+	if readErr != nil {
+		if errors.Is(readErr, fs.ErrNotExist) {
+			return file, nil
+		}
+		return "", readErr
+	}
+	lines := strings.Split(string(existing), "\n")
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) != wanted {
+			kept = append(kept, line)
+		}
+	}
+	if len(kept) == len(lines) {
+		return file, nil
+	}
+	if err := os.WriteFile(file, []byte(strings.Join(kept, "\n")), 0o644); err != nil {
+		return "", err
+	}
+	return file, nil
+}
+
 func directorySize(input string) (int64, error) {
 	root, err := filepath.Abs(input)
 	if err != nil {

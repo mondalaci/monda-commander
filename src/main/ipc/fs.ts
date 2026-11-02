@@ -143,6 +143,41 @@ export async function addHiddenName(dir: string, name: string): Promise<string> 
 }
 
 /**
+ * Take a name out of a directory's `.mchide` file, which is how the pane menu's
+ * `Remove from .mchide` lets a row stop being normally hidden.
+ *
+ * Only the lines that spell the name are dropped; every other line — blank ones
+ * and whatever a hand-written file holds that the format does not read — is
+ * rewritten exactly as it was read, because the request is about one name and not
+ * about tidying the file up. A name the file does not list leaves it untouched
+ * rather than rewriting what is already right, and the file is never created: a
+ * name taken out of a list that does not exist has already been taken out. The
+ * file that was looked at is returned, so a caller can name which one it was.
+ */
+export async function removeHiddenName(dir: string, name: string): Promise<string> {
+  const target = path.join(path.resolve(dir), HIDE_MARKER)
+  const wanted = name.trim()
+
+  let text: string
+  try {
+    text = await fs.readFile(target, 'utf8')
+  } catch (error) {
+    // A missing file lists nothing, so there is nothing to take out of it. Any
+    // other read failure — a folder of that name, a permission — is the honest
+    // one to report.
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return target
+    throw error
+  }
+
+  const lines = text.split('\n')
+  const kept = lines.filter((line) => line.trim() !== wanted)
+  if (kept.length === lines.length) return target
+
+  await fs.writeFile(target, kept.join('\n'))
+  return target
+}
+
+/**
  * Read a directory, together with the names its `.mchide` file lists — one per
  * line. The names are reported rather than applied: the pane owns the hide mode
  * (it can be switched off and on without touching the folder), so main's job is
@@ -1272,6 +1307,40 @@ export function registerFsHandlers(): void {
 
       try {
         return { ok: true, data: await addHiddenName(dir, name) }
+      } catch (error) {
+        return { ok: false, error: toFsError(error) }
+      }
+    }
+  )
+
+  ipcMain.handle(
+    'fs:hide-remove',
+    async (_event, dir: string, name: string): Promise<Result<string>> => {
+      if (typeof dir !== 'string' || dir.length === 0 || typeof name !== 'string') {
+        return {
+          ok: false,
+          error: { code: 'EINVAL', message: 'No entry to take out of the hide list' }
+        }
+      }
+
+      if (isArchivePath(dir)) {
+        return {
+          ok: false,
+          error: { code: 'ENOTSUP', message: 'A hide list inside an archive is not supported yet' }
+        }
+      }
+
+      // The same refusal as the write: a name that cannot be spelled in this
+      // format cannot be in it either, so there is nothing to take out.
+      if (name.trim() === '' || /[\r\n]/.test(name)) {
+        return {
+          ok: false,
+          error: { code: 'EINVAL', message: `"${name}" cannot be listed in ${HIDE_MARKER}` }
+        }
+      }
+
+      try {
+        return { ok: true, data: await removeHiddenName(dir, name) }
       } catch (error) {
         return { ok: false, error: toFsError(error) }
       }
