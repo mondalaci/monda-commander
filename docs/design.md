@@ -1445,6 +1445,23 @@ grey. It holds only names whose language is certain — `.vimrc` and `.inputrc` 
 not shell and Monaco has no tokenizer for them, so they stay plaintext rather than
 borrow the shell's colours — and a name Monaco itself claims still wins.
 
+**A curated key matches a basename in three shapes**, which is what lets one table
+hold dotfiles, extensions and compound names at once (curatedNameMatches): the
+whole name (`bashrc`), the dotted tail of a compound name (`.bashrc` claims
+`bash.bashrc` — `/etc/bash.bashrc` is both a distribution's name for the file and a
+compound one — and `.zsh` claims `run.zsh`, so a dotted key also stands in for an
+extension Monaco does not declare), and the bare head of one (`dockerfile` claims
+`Dockerfile.dev`, `containerfile` claims `Containerfile.prod`). Keys are tried
+longest first, so `foo.zsh-theme` is `.zsh-theme` and not the `.zsh` inside it. Each
+rc name is listed twice on purpose: the dot is how a home directory writes it and
+its absence how a distribution ships it (`/etc/profile`, `/etc/zsh/zshrc`), and
+which name belongs to which shell is read from GitHub's Linguist, the reference
+list for it. The shebang side follows `/usr/bin/env` past its own options and the
+`VAR=value` assignments it accepts, so `#!/usr/bin/env VAR=x python3` is python too.
+What neither table can help with is a language Monaco ships no tokenizer for at all
+— TOML, Makefile, vim — which is a limit of the grammar set, not of the guess: a
+Cargo.toml stays plaintext rather than borrow the ini tokenizer's colours.
+
 ## The terminal
 
 ### The mono font is bundled, not hoped for

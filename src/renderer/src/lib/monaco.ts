@@ -55,6 +55,11 @@ export function loadMonaco(): Promise<typeof MonacoApi> {
 
 const PLAINTEXT = 'plaintext'
 
+/** The last segment of a path, lowercased. */
+function baseName(target: string): string {
+  return (target.split(/[\\/]/).pop() ?? '').toLowerCase()
+}
+
 /**
  * Best-effort language id for a filename, matching the `filenames` and
  * `extensions` the registered languages declare, or null when nothing claims
@@ -62,7 +67,7 @@ const PLAINTEXT = 'plaintext'
  * unspecified, and a wrong id would colour the file with the wrong tokenizer.
  */
 function languageForName(monaco: typeof MonacoApi, target: string): string | null {
-  const name = (target.split(/[\\/]/).pop() ?? '').toLowerCase()
+  const name = baseName(target)
   const dot = name.lastIndexOf('.')
   const extension = dot > 0 ? name.slice(dot) : ''
 
@@ -93,35 +98,101 @@ function isLanguageRegistered(monaco: typeof MonacoApi, id: string): boolean {
  * borrow a neighbour. `.gitconfig` and `.editorconfig` are absent because
  * Monaco's own ini registration already claims them, and `.screenrc` is absent
  * because screen's config language is not the shell's.
+ *
+ * A key is matched against the basename in three shapes, which is what lets one
+ * table hold dotfiles, extensions and compound names at once (see
+ * `curatedNameMatches`):
+ *
+ *   - whole:        `bashrc`  matches `bashrc`;
+ *   - dotted tail:  `.bashrc` matches `bash.bashrc` (`/etc/bash.bashrc` is both
+ *                   a distribution's name for the file and a compound one), and
+ *                   `.zsh` matches `script.zsh`, so a dotted key reads as an
+ *                   extension Monaco does not declare;
+ *   - bare head:    `dockerfile` matches `Dockerfile.dev`.
+ *
+ * Each rc name is listed twice on purpose — the dot is how a home directory
+ * writes it, and its absence is how a distribution ships it (`/etc/profile`,
+ * `/etc/zsh/zshrc`). Which name belongs to which shell is taken from GitHub's
+ * Linguist, which is the reference list for it.
  */
 const FILENAME_LANGUAGES: Record<string, string> = {
   // Shells read these by name.
   '.bashrc': 'shell',
+  bashrc: 'shell',
   '.bash_profile': 'shell',
+  bash_profile: 'shell',
   '.bash_login': 'shell',
+  bash_login: 'shell',
   '.bash_logout': 'shell',
+  bash_logout: 'shell',
   '.bash_aliases': 'shell',
+  bash_aliases: 'shell',
   '.bash_completion': 'shell',
+  bash_completion: 'shell',
   '.profile': 'shell',
+  profile: 'shell',
   '.zshrc': 'shell',
+  zshrc: 'shell',
   '.zprofile': 'shell',
+  zprofile: 'shell',
   '.zshenv': 'shell',
+  zshenv: 'shell',
   '.zlogin': 'shell',
+  zlogin: 'shell',
   '.zlogout': 'shell',
+  zlogout: 'shell',
   '.kshrc': 'shell',
+  kshrc: 'shell',
   '.cshrc': 'shell',
+  cshrc: 'shell',
   '.tcshrc': 'shell',
+  tcshrc: 'shell',
   '.login': 'shell',
   '.logout': 'shell',
+  // `login` and `logout` are deliberately not listed bare the way Linguist lists
+  // them: the bare-head rule would then claim `/etc/login.defs`, which is not
+  // shell.
   '.xinitrc': 'shell',
+  xinitrc: 'shell',
   '.xsession': 'shell',
+  xsession: 'shell',
   '.xprofile': 'shell',
   '.envrc': 'shell',
+  '.tmux.conf': 'shell',
+  'tmux.conf': 'shell',
+  // Names that are extensions in all but spelling: Monaco's shell declares
+  // `.sh` and `.bash` and stops there.
+  '.zsh': 'shell',
+  '.ksh': 'shell',
+  '.bats': 'shell',
+  '.sh.in': 'shell',
+  '.zsh-theme': 'shell',
+  // Scripts that are shell by construction.
+  pkgbuild: 'shell',
+  gradlew: 'shell',
+  mvnw: 'shell',
   // INI-shaped configs Monaco's ini registration does not name.
   '.npmrc': 'ini',
   '.yarnrc': 'ini',
   '.flake8': 'ini',
   '.pylintrc': 'ini',
+  pylintrc: 'ini',
+  '.coveragerc': 'ini',
+  '.buckconfig': 'ini',
+  '.gitreview': 'ini',
+  '.cfg': 'ini',
+  '.cnf': 'ini',
+  hosts: 'ini',
+  // Systemd units and desktop entries are `[Section]` and `Key=Value`, which is
+  // exactly what the ini tokenizer reads.
+  '.service': 'ini',
+  '.socket': 'ini',
+  '.timer': 'ini',
+  '.mount': 'ini',
+  '.target': 'ini',
+  '.network': 'ini',
+  '.desktop': 'ini',
+  '.url': 'ini',
   // Extensionless prose GitHub already renders as markdown.
   readme: 'markdown',
   license: 'markdown',
@@ -132,18 +203,42 @@ const FILENAME_LANGUAGES: Record<string, string> = {
   news: 'markdown',
   notice: 'markdown',
   todo: 'markdown',
-  install: 'markdown'
+  install: 'markdown',
+  // Container manifests Monaco claims only as the bare name `Dockerfile` and as
+  // the `.dockerfile` extension.
+  dockerfile: 'dockerfile',
+  containerfile: 'dockerfile'
 }
 
 /**
- * The language a curated filename asks for, or null when it is not listed or
- * names a language this Monaco no longer ships.
+ * The curated table's entries longest key first, so the most specific one wins a
+ * compound name: `foo.zsh-theme` is `.zsh-theme` rather than the `.zsh` inside it.
+ */
+const CURATED_ENTRIES = Object.entries(FILENAME_LANGUAGES).sort(([a], [b]) => b.length - a.length)
+
+/**
+ * Whether a basename is claimed by a curated key, in any of the table's three
+ * shapes: the whole name, the dotted tail of a compound name (a key that begins
+ * with a dot also matches an extension's place, so `.zsh` claims `run.zsh`), or
+ * the bare head of one (`Dockerfile` claims `Dockerfile.dev`).
+ */
+function curatedNameMatches(name: string, key: string): boolean {
+  if (name === key) return true
+  return key.startsWith('.') ? name.endsWith(key) : name.startsWith(`${key}.`)
+}
+
+/**
+ * The language a curated name asks for, or null when nothing in the table
+ * claims it. A key whose language this Monaco no longer ships is skipped rather
+ * than returned, and a shorter key is still tried after it.
  */
 function languageForCuratedName(monaco: typeof MonacoApi, target: string): string | null {
-  const name = (target.split(/[\\/]/).pop() ?? '').toLowerCase()
-  const id = FILENAME_LANGUAGES[name]
-  if (id === undefined) return null
-  return isLanguageRegistered(monaco, id) ? id : null
+  const name = baseName(target)
+  for (const [key, id] of CURATED_ENTRIES) {
+    if (!curatedNameMatches(name, key)) continue
+    if (isLanguageRegistered(monaco, id)) return id
+  }
+  return null
 }
 
 /**
@@ -159,6 +254,8 @@ const INTERPRETER_LANGUAGES: Record<string, string> = {
   dash: 'shell',
   ash: 'shell',
   ksh: 'shell',
+  mksh: 'shell',
+  pdksh: 'shell',
   zsh: 'shell',
   python: 'python',
   ruby: 'ruby',
@@ -169,6 +266,8 @@ const INTERPRETER_LANGUAGES: Record<string, string> = {
   nodejs: 'javascript',
   deno: 'javascript',
   bun: 'javascript',
+  'ts-node': 'typescript',
+  tsx: 'typescript',
   tclsh: 'tcl',
   wish: 'tcl',
   rscript: 'r',
@@ -187,12 +286,16 @@ function commandName(word: string): string {
   return base.endsWith('.exe') ? base.slice(0, -4) : base
 }
 
+/** The `env` options whose value is the word after them rather than attached. */
+const ENV_VALUE_OPTIONS = new Set(['-u', '-C', '--unset', '--chdir', '--argv0'])
+
 /**
  * The interpreter a script's first line names, if it opens with a shebang —
  * `python` for `#!/usr/bin/env python3`. The `/usr/bin/env` hop is followed
- * (its own `-S` and other options skipped), since a script that does not want
- * to hard-code a path is written that way, and a version suffix is dropped
- * (`python3.11` is python, `php8` is php).
+ * (its own options skipped, the assignments it accepts as well, so
+ * `#!/usr/bin/env VAR=x python3` still reaches python), since a script that does
+ * not want to hard-code a path is written that way, and a version suffix is
+ * dropped (`python3.11` is python, `php8` is php).
  */
 function shebangInterpreter(text: string): string | null {
   // Only the first line matters, and only its head: a shebang is short, and the
@@ -206,7 +309,17 @@ function shebangInterpreter(text: string): string | null {
   let index = 0
   if (commandName(words[0] ?? '') === 'env') {
     index = 1
-    while (words[index]?.startsWith('-')) index += 1
+    let word = words[index]
+    while (word !== undefined) {
+      // `env` takes options and then `VAR=value` assignments before the program,
+      // and a shebang may use either: `#!/usr/bin/env VAR=x python3`,
+      // `#!/usr/bin/env -S deno run`. A lone option (`-i`), one carrying its
+      // value (`--unset=Foo`) and an assignment are one word; `-u VAR` is two.
+      if (ENV_VALUE_OPTIONS.has(word)) index += 2
+      else if (word.startsWith('-') || word.includes('=')) index += 1
+      else break
+      word = words[index]
+    }
   }
 
   const command = commandName(words[index] ?? '')
@@ -235,11 +348,13 @@ function languageForShebang(monaco: typeof MonacoApi, text: string): string | nu
  *
  * An extension or a known filename is the deliberate signal — `foo.py` is
  * python however it starts — whether Monaco declares it or the curated table
- * does (`.bashrc` is shell), and a name another language claims keeps winning.
- * The fallback is no signal at all, and the file it leaves grey is exactly the
- * extensionless script (`manage`, `configure`, a `run` in a crate), whose first
- * line states its language outright. Since the viewer is handed the file's text
- * anyway, that line costs nothing to read, and this can only add colour.
+ * does (`.bashrc` is shell, and `bash.bashrc` is too, since a compound name is
+ * matched at its dot boundary), and a name another language claims keeps
+ * winning. The fallback is no signal at all, and the file it leaves grey is
+ * exactly the extensionless script (`manage`, `configure`, a `run` in a crate),
+ * whose first line states its language outright. Since the viewer is handed the
+ * file's text anyway, that line costs nothing to read, and this can only add
+ * colour.
  */
 export function languageFor(
   monaco: typeof MonacoApi,

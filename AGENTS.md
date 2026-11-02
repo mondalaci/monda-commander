@@ -519,7 +519,10 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
 - **Monaco is imported lazily**, workers answered by `MonacoEnvironment.getWorker`
   via Vite `?worker` imports; `fs:read` uses `O_RDONLY | O_NONBLOCK` + a NUL test +
   an 8 MiB ceiling. The language is the **name first, the shebang second**
-  (`languageFor`); only interpreters with a fitting tokenizer are mapped.
+  (`languageFor`); only interpreters with a fitting tokenizer are mapped, a curated
+  name matches as a whole name, a dotted tail (`bash.bashrc`) or a bare head
+  (`Dockerfile.dev`), and `/usr/bin/env` is followed past its options and
+  `VAR=value` assignments.
 
 ### The terminal
 
