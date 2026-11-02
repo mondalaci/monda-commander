@@ -9,6 +9,7 @@ import { archiveSupported } from '@renderer/lib/archive'
 import { hideMode } from '@renderer/composables/useHideMode'
 import { quickCdDirs, homeDir, quickCdLabel } from '@renderer/composables/useQuickCd'
 import { buildGitView, type GitView } from '@renderer/lib/gitMark'
+import type { TargetApi } from '@renderer/lib/targetApi'
 import { shouldExecute } from '@renderer/lib/executable'
 import type { DirEntry, PanelSide } from '@shared/types'
 
@@ -127,6 +128,13 @@ export interface PaneState {
   searchQuery: string
   selected: Set<string>
   loading: boolean
+  /**
+   * The stage a remote target's relay is at while the pane waits for its first
+   * listing — "contacting", "installing", "starting", "verifying". Null for a
+   * local target, or once the first listing has come back; the pane's title shows
+   * it in place of the generic "loading…" so a slow connect is legible.
+   */
+  connectPhase: string | null
   error: string | null
   /**
    * What a folder's contents add up to, by path, for the folders the user asked
@@ -553,6 +561,12 @@ function resolveAnchor(
 
 export interface PaneOptions {
   /**
+   * The target's API: the filesystem, git and events of wherever this pane
+   * lives. Local wraps main's bridge; root and ssh wrap the relay, so a pane
+   * reads a remote directory exactly as it reads a local one.
+   */
+  api: TargetApi
+  /**
    * Run a file the user asked to run. The pane decides *when* — Enter on a file
    * it can run (`lib/executable.ts`) — and hands the entry to whoever owns the
    * shell; `false` means the shell was in no state to take it, which the pane
@@ -562,6 +576,7 @@ export interface PaneOptions {
 }
 
 export function useDirectory(side: PanelSide, options: PaneOptions): PaneController {
+  const api = options.api
   const state = reactive<PaneState>({
     side,
     path: '',
@@ -586,6 +601,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     searchQuery: '',
     selected: new Set<string>(),
     loading: false,
+    connectPhase: null,
     error: null,
     renaming: null,
     fresh: new Set<string>(),
@@ -795,7 +811,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
       return
     }
 
-    const result = await window.mc.fs.rename(source, target)
+    const result = await api.fs.rename(source, target)
     if (!result.ok) {
       state.error = `${result.error.code}: ${result.error.message}`
       return
@@ -880,7 +896,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     if (watchedPath === null) return
     const dir = watchedPath
     watchedPath = null
-    void window.mc.fs.unwatch(dir)
+    void api.fs.unwatch(dir)
   }
 
   function watchCurrent(): void {
@@ -890,7 +906,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     // inside one, and a re-list happens on demand (or on the next navigation).
     if (!state.path || inArchive()) return
     watchedPath = state.path
-    void window.mc.fs.watch(state.path)
+    void api.fs.watch(state.path)
   }
 
   /**
@@ -927,7 +943,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     }
 
     const mine = ++gitSeq
-    const result = await window.mc.git.status(state.path)
+    const result = await api.git.status(state.path)
     if (mine !== gitSeq) return
 
     if (result.ok) {
@@ -951,7 +967,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     if (watchedRepo === null) return
     const root = watchedRepo
     watchedRepo = null
-    void window.mc.git.unwatch(root)
+    void api.git.unwatch(root)
   }
 
   function watchCurrentRepo(): void {
@@ -960,8 +976,8 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
 
     const previous = watchedRepo
     watchedRepo = next
-    if (previous !== null) void window.mc.git.unwatch(previous)
-    if (next !== null) void window.mc.git.watch(next)
+    if (previous !== null) void api.git.unwatch(previous)
+    if (next !== null) void api.git.watch(next)
   }
 
   /**
@@ -972,11 +988,11 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
    * Only the status is re-read: a `.git` write is not a change to what a
    * directory holds, so there is no listing to take again.
    */
-  const stopGitWatching = window.mc.git.onChanged((event) => {
+  const stopGitWatching = api.git.onChanged((event) => {
     if (event.root === gitRoot) void loadGit()
   })
 
-  const stopWatching = window.mc.fs.onChanged((event) => {
+  const stopWatching = api.fs.onChanged((event) => {
     if (event.path === state.path) void refresh()
   })
 
@@ -985,7 +1001,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
    * pane may be walking a folder of its own, and a report for one this pane has
    * left behind must not appear in rows it is no longer showing.
    */
-  const stopDirSizeProgress = window.mc.fs.onDirSizeProgress((event) => {
+  const stopDirSizeProgress = api.fs.onDirSizeProgress((event) => {
     if (!state.sizing.has(event.path)) return
     state.dirSizes.set(event.path, event.bytes)
     scheduleSizeSort()
@@ -1113,7 +1129,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     // built whole below, and a late sort must not touch rows it never saw.
     cancelSizeSort()
 
-    const result = await window.mc.fs.list(dir)
+    const result = await api.fs.list(dir)
     state.loading = false
 
     if (!result.ok) {
@@ -1177,7 +1193,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     if (state.quickCd) return
     if (!state.path || state.loading) return
 
-    const result = await window.mc.fs.list(state.path)
+    const result = await api.fs.list(state.path)
     if (!result.ok) {
       state.error = `${result.error.code}: ${result.error.message}`
       return
@@ -1570,7 +1586,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
       }, SIZE_BAR_DELAY_MS)
 
       try {
-        const result = await window.mc.fs.dirSize(path)
+        const result = await api.fs.dirSize(path)
         if (run !== sizeRun) return
         if (result.ok) {
           state.dirSizes.set(path, result.data.bytes)
@@ -1755,7 +1771,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     const targets = selectionTargets()
     if (targets.length === 0 || !destination) return null
 
-    const result = await window.mc.fs.copy(
+    const result = await api.fs.copy(
       targets.map((target) => target.path),
       destination,
       state.path
@@ -1798,7 +1814,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     const targets = selectionTargets()
     if (targets.length === 0 || !destination) return null
 
-    const result = await window.mc.fs.move(
+    const result = await api.fs.move(
       targets.map((target) => target.path),
       destination,
       state.path
@@ -1852,7 +1868,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     const wanted = name.trim()
     if (!wanted || !state.path) return null
 
-    const result = await window.mc.fs.mkdir(state.path, wanted)
+    const result = await api.fs.mkdir(state.path, wanted)
     if (!result.ok) {
       state.error = `${result.error.code}: ${result.error.message}`
       return null
@@ -1872,7 +1888,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     const targets = deletionTargets()
     if (targets.length === 0) return
 
-    const result = await window.mc.fs.remove(targets.map((target) => target.path))
+    const result = await api.fs.remove(targets.map((target) => target.path))
     if (!result.ok) {
       state.error = `${result.error.code}: ${result.error.message}`
       return
@@ -1947,13 +1963,27 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
       return
     }
 
-    const message = await window.mc.fs.open(entry.path)
+    const message = await api.fs.open(entry.path)
     if (message) state.error = message
   }
 
   async function init(): Promise<void> {
-    const home = await window.mc.fs.home()
-    await navigateTo(home)
+    // A remote pane's first listing waits on the relay coming up; mark the pane
+    // busy now (the `home` call happens before `navigateTo` sets it) and listen for
+    // the connect's stages, so the wait is a label and not an empty list.
+    state.loading = true
+    const isRemote = api.target.kind !== 'local'
+    if (isRemote) state.connectPhase = 'Connecting…'
+    const stopProgress = api.onProgress((phase) => {
+      state.connectPhase = phase
+    })
+    try {
+      const home = await api.fs.home()
+      await navigateTo(home)
+    } finally {
+      stopProgress()
+      state.connectPhase = null
+    }
   }
 
   return {

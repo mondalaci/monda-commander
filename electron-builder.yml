@@ -7,6 +7,9 @@ files:
   - out/**
   - package.json
   - resources/icon.png
+extraResources:
+  - from: resources/monda-relay
+    to: monda-relay
 asarUnpack:
   - node_modules/node-pty/**
 npmRebuild: true

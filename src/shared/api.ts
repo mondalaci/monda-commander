@@ -1,3 +1,4 @@
+import type { Target } from './target'
 import type {
   CopyOutcome,
   DeleteOutcome,
@@ -193,4 +194,70 @@ export interface McApi {
   hide: McHideApi
   quickCd: McQuickCdApi
   git: McGitApi
+  targets: McTargetsApi
+  remote: McRemoteApi
+}
+
+/**
+ * The targets a workspace can run on. Local and root are always present; ssh
+ * targets are the ones the user saved. `add` takes what the picker's dialog
+ * collects and returns the stored target, id included.
+ */
+export interface McTargetsApi {
+  /**
+   * The local user's name, read synchronously so the app can open its first
+   * workspace on localhost before the async target list has arrived. The rest of
+   * the list — local, root and saved remotes — is loaded by `list`.
+   */
+  readonly localUser: string
+  list(): Promise<Target[]>
+  add(input: { user: string; host: string; port?: number; relayPath?: string }): Promise<Target>
+  remove(id: string): Promise<void>
+  /**
+   * Live stages of an in-flight `add`: contacting the host, installing the relay,
+   * starting it, verifying it. Sent while the promise is pending so the dialog can
+   * tell a slow ssh handshake from a download from a hang.
+   */
+  onProgress(handler: (phase: string) => void): () => void
+}
+
+/** The raw answer from a relay, before a target API turns it into a domain value. */
+export interface McRemoteResult {
+  ok: boolean
+  data?: unknown
+  error?: { code: string; message: string }
+  blob?: Uint8Array
+}
+
+/**
+ * An event a relay pushed: a directory changed, git changed, a pty produced
+ * output or ended. `targetId` says which connection it belongs to, so a pane or
+ * a shell filters for its own.
+ */
+export interface McRemoteEvent {
+  targetId: string
+  type?: string
+  path?: string
+  id?: string
+  data?: string
+  exitCode?: number
+  signal?: number
+  /** For a `target:progress` event: the connect stage now under way. */
+  phase?: string
+}
+
+/**
+ * The door to the relays. One generic request rather than one method per
+ * operation: the relay's protocol is the operation table, so a new operation is
+ * taught to the relay and the target API wrapper, not wired into another IPC
+ * handler.
+ */
+export interface McRemoteApi {
+  request(
+    targetId: string,
+    op: string,
+    args: Record<string, unknown>,
+    blob?: Uint8Array
+  ): Promise<McRemoteResult>
+  onEvent(handler: (event: McRemoteEvent) => void): () => void
 }

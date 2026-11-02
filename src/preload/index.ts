@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
-import type { McApi } from '@shared/api'
+import type { McApi, McRemoteEvent } from '@shared/api'
 import type {
   CopyOutcome,
   DeleteOutcome,
@@ -120,6 +120,26 @@ const api: McApi = {
       const listener = (_event: IpcRendererEvent, payload: GitChangeEvent) => handler(payload)
       ipcRenderer.on('git:changed', listener)
       return () => ipcRenderer.off('git:changed', listener)
+    }
+  },
+  targets: {
+    localUser: process.env.USER ?? 'me',
+    list: () => ipcRenderer.invoke('targets:list'),
+    add: (input) => ipcRenderer.invoke('targets:add', input),
+    remove: (id: string) => ipcRenderer.invoke('targets:remove', id),
+    onProgress: (handler: (phase: string) => void) => {
+      const listener = (_event: IpcRendererEvent, phase: string) => handler(phase)
+      ipcRenderer.on('targets:progress', listener)
+      return () => ipcRenderer.off('targets:progress', listener)
+    }
+  },
+  remote: {
+    request: (targetId: string, op: string, args: Record<string, unknown>, blob?: Uint8Array) =>
+      ipcRenderer.invoke('remote:request', targetId, op, args, blob),
+    onEvent: (handler: (event: McRemoteEvent) => void) => {
+      const listener = (_event: IpcRendererEvent, payload: McRemoteEvent) => handler(payload)
+      ipcRenderer.on('remote:event', listener)
+      return () => ipcRenderer.off('remote:event', listener)
     }
   }
 }

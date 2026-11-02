@@ -23,6 +23,7 @@ import {
   type PreviewTarget,
   type StageRequest
 } from '@renderer/lib/preview'
+import { injectTargetApi } from '@renderer/lib/targetContext'
 import type { PaneMenuRequest } from '@renderer/lib/paneMenu'
 import {
   markSummary,
@@ -105,6 +106,11 @@ const emit = defineEmits<{
    */
   (event: 'context-menu', request: PaneMenuRequest): void
 }>()
+
+// The target this pane lives on, so a preview reads the file where it actually
+// is. Listing and operations go through the pane's own controller; these are the
+// few calls the view makes itself (a preview's bytes, a clip's length).
+const api = injectTargetApi()
 
 const listEl = ref<HTMLUListElement | null>(null)
 const footerEl = ref<HTMLElement | null>(null)
@@ -538,7 +544,14 @@ function cellText(entry: PaneEntry, key: SortKey): string {
  * The row this pane's footer previews: the cursor row when it is a regular file
  * the renderer can show — an image, or a video.
  */
-const previewTarget = computed(() => previewTargetFor(entry.value))
+const previewTarget = computed(() => {
+  const target = previewTargetFor(entry.value)
+  // A clip is streamed by main from a real local file (`mc-media`); on a remote
+  // target that stream would serve a same-named local file. Images are read
+  // through the target's own API, so they preview safely; a clip does not.
+  if (target && target.kind !== 'image' && api.target.kind !== 'local') return null
+  return target
+})
 
 /**
  * The pane title as an archive location, or null when the pane is on a real
@@ -735,14 +748,14 @@ function cancelPreviewRead(): void {
  * the picture's real shape as soon as the row is reached.
  */
 async function loadImageSizeHint(token: number, path: string): Promise<void> {
-  const hint = await window.mc.fs.imageSize(path)
+  const hint = await api.fs.imageSize(path)
   if (token !== previewToken) return
   sizeHint.value = hint
   previewState.value = 'loading'
 }
 
 async function loadImage(token: number, path: string): Promise<void> {
-  const result = await window.mc.fs.readImage(path)
+  const result = await api.fs.readImage(path)
   if (token !== previewToken) return
   frame.value = result.ok ? result.data.dataUrl : null
   if (result.ok) previewState.value = 'ready'
@@ -1336,7 +1349,7 @@ async function loadStage(stage: StageRequest): Promise<void> {
   stageState.value = key === null ? 'idle' : 'loading'
   if (stage.target.kind !== 'image') return
 
-  const result = await window.mc.fs.readImage(stage.target.path)
+  const result = await api.fs.readImage(stage.target.path)
   if (token !== stageToken) return
   if (result.ok) stageFrame.value = result.data.dataUrl
   else stageState.value = 'failed'
@@ -1716,7 +1729,7 @@ function ensureClipLength(target: PreviewTarget): void {
   const key = previewKeyFor(target)
   if (key === null || key === clipLengthKey) return
   clipLengthKey = key
-  void window.mc.fs.videoDuration(target.path).then((seconds) => {
+  void api.fs.videoDuration(target.path).then((seconds) => {
     if (clipLengthKey !== key) return
     clipLength.value = seconds
   })
@@ -1729,7 +1742,7 @@ function ensureStageLength(target: PreviewTarget): void {
   const key = previewKeyFor(target)
   if (key === null || key === stageClipLengthKey) return
   stageClipLengthKey = key
-  void window.mc.fs.videoDuration(target.path).then((seconds) => {
+  void api.fs.videoDuration(target.path).then((seconds) => {
     if (stageClipLengthKey !== key) return
     stageClipLength.value = seconds
   })
@@ -3394,9 +3407,13 @@ function onRenameBlur(): void {
          so the blur would spill over the border into the pane next door. -->
     <div ref="paneContent" class="flex min-h-0 grow flex-col [clip-path:inset(0)]">
       <div
-        class="flex h-7 shrink-0 items-center gap-2 border-b border-border-subtle px-3"
+        class="relative flex h-7 shrink-0 items-center gap-2 border-b border-border-subtle px-3"
         :class="active ? 'bg-accent text-fg-bright' : 'bg-surface text-fg-dim'"
       >
+        <!-- A bar across the title's foot while the pane waits on a remote relay,
+             so a slow connect is motion on the pane itself and not just a word.
+             The delay in styles/connect.css keeps it from flashing on a fast list. -->
+        <div v-if="controller.state.loading" class="connect-bar" aria-hidden="true"></div>
         <span class="flex min-w-0 flex-1 items-center text-ui-sm">
           <!-- An archive the pane is inside: the archive's own name is drawn in
                the archive hue, so it reads as set apart from the entry path after
@@ -3424,11 +3441,18 @@ function onRenameBlur(): void {
           </template>
           <span v-else class="min-w-0 flex-1 truncate">{{ controller.state.path || '—' }}</span>
         </span>
+        <!-- The connect/listing state, in the title's own colour so it reads on
+             both backgrounds: bright on the active pane's accent bar, dim on the
+             other. The spinner's arc is `currentColor` for the same reason. -->
         <span
           v-if="controller.state.loading"
-          class="shrink-0 text-ui-sm text-fg-dim"
+          class="flex shrink-0 items-center gap-1.5 text-ui-sm"
         >
-          loading…
+          <span
+            class="inline-block h-2.5 w-2.5 animate-spin rounded-full border-2 border-transparent border-t-current"
+            aria-hidden="true"
+          ></span>
+          <span>{{ controller.state.connectPhase ?? 'loading…' }}</span>
         </span>
         <!-- The work tree this pane is in: its HEAD, how far that has drifted
              from its upstream, and how much of the tree is changed. Per-pane,

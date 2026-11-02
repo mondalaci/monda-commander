@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type * as MonacoApi from 'monaco-editor'
 import type { FileContent } from '@shared/types'
 import { languageFor, loadMonaco } from '@renderer/lib/monaco'
+import { injectTargetApi } from '@renderer/lib/targetContext'
 
 /**
  * `content` is the file, already read by the pane that opened the viewer: main
@@ -14,6 +15,10 @@ import { languageFor, loadMonaco } from '@renderer/lib/monaco'
 const props = defineProps<{ path: string; mode: 'view' | 'edit'; content: FileContent }>()
 
 const emit = defineEmits<{ (event: 'close'): void }>()
+
+// The file's target, so a save goes back to the host the file lives on rather
+// than to a same-named path on the local disk.
+const api = injectTargetApi()
 
 const host = ref<HTMLElement | null>(null)
 const loading = ref(true)
@@ -70,7 +75,7 @@ async function save(): Promise<void> {
   saving.value = true
   saveError.value = null
 
-  const result = await window.mc.fs.write(props.path, current.getValue())
+  const result = await api.fs.write(props.path, current.getValue())
   saving.value = false
   if (disposed) return
 

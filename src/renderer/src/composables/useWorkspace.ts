@@ -10,7 +10,9 @@ import {
 } from 'vue'
 import { useDirectory, type PaneController, type PaneEntry } from '@renderer/composables/useDirectory'
 import { createShell, type Shell } from '@renderer/composables/useShell'
+import { createTargetApi, type TargetApi } from '@renderer/lib/targetApi'
 import { isArchivePath, splitArchivePath } from '@shared/archive'
+import type { Target } from '@shared/target'
 import type { PanelSide } from '@shared/types'
 
 /**
@@ -23,6 +25,13 @@ import type { PanelSide } from '@shared/types'
 export interface Workspace {
   readonly id: string
   readonly label: string
+  /**
+   * The connection this workspace lives on. Both panes and the shell belong to
+   * it, so there is one filesystem in play and the panel ↔ shell sync stays
+   * honest without a target-equality guard.
+   */
+  readonly target: Target
+  readonly api: TargetApi
   readonly left: Ref<PaneController>
   readonly right: Ref<PaneController>
   readonly shell: Shell
@@ -71,14 +80,15 @@ function shellQuote(value: string): string {
   return "'" + value.replaceAll("'", "'\\''") + "'"
 }
 
-export function createWorkspace(id: string, label: string): Workspace {
+export function createWorkspace(id: string, label: string, target: Target): Workspace {
   const scope = effectScope()
   let api!: Workspace
 
   scope.run(() => {
-    const left = shallowRef<PaneController>(useDirectory('left', { run: runInShell }))
-    const right = shallowRef<PaneController>(useDirectory('right', { run: runInShell }))
-    const shell = createShell(id)
+    const targetApi = createTargetApi(target)
+    const left = shallowRef<PaneController>(useDirectory('left', { run: runInShell, api: targetApi }))
+    const right = shallowRef<PaneController>(useDirectory('right', { run: runInShell, api: targetApi }))
+    const shell = createShell(id, targetApi.pty)
 
     const activeSide = ref<PanelSide>('left')
     const columnsSwapped = ref(false)
@@ -337,6 +347,8 @@ export function createWorkspace(id: string, label: string): Workspace {
     api = {
       id,
       label,
+      target,
+      api: targetApi,
       left,
       right,
       shell,

@@ -1637,3 +1637,101 @@ session — and is still anchored to the directory holding the archive
 (`useWorkspace.shellTargetFor`) so it re-syncs to something real when the pane
 leaves, which is what the pane's path changing re-runs.
 
+## Targets: local, root and remote
+
+Everything above this point describes code that exists. The target model below is
+implemented — the relay in `relay/`, the registry in `src/main/relay/`, the target
+API in `src/renderer/src/lib/targetApi.ts` — with the few divergences from the
+first draft noted as they come up.
+
+### A workspace is a connection
+
+A workspace is one tab and one `user@host`: its two panes and its shell all belong
+to the same connection, so there is only one filesystem in play. That is what lets
+the panel ↔ shell `cd` sync keep its simple rule — the shell's cwd is the pane's
+cwd because they are the same machine — and it is why the terminal opens on the
+workspace's host rather than being told a host per pane. The tab carries the
+`user@host`, so the panes need not: a pane's title stays a plain host path
+(`/home/laci/x`), the way a real ssh session tells you where you are from the
+prompt and the window, not from prefixing every path. A host is chosen when a
+workspace is opened; a terminal is not a way to change hosts, because a
+workspace's shell is inherently on its workspace's host.
+
+### One protocol, three transports
+
+The transport is the only thing that differs between a local, a root-local and a
+remote target. Everything above it — the panes, the shell, the protocol — is one
+codebase, so "manage files as root" and "manage files on another machine" are the
+same feature reached three ways. `me@localhost` runs in main, as it does today.
+`root@localhost` runs the relay as root, launched once through `pkexec` (polkit)
+and speaking the protocol over the pipe: it is session-scoped, started on first
+root use, dies with the app, and a restart is a fresh session that authenticates
+again. The app itself never runs as root. `user@host` runs the same relay over an
+ssh exec channel (`ssh -T host …`) as the ssh user. The protocol rides inside ssh
+rather than beside it, so auth, host verification, encryption, jump hosts and the
+user's own `~/.ssh/config` are the transport's business and not ours. (The first
+draft put the local case on a unix socket; a `pkexec`-launched process on the
+app's own pipes is the same boundary with less machinery, and it reuses the ssh
+path's framing unchanged.)
+
+Root-local is therefore the rehearsal for remote: the same framing, multiplexing,
+pty streams and watch events, exercised over a local pipe with no network and no
+deployment, before ssh enters the picture. A protocol that is wrong is found
+there, cheaply. The relay is also installed on a remote automatically: on first
+connect the app reads the remote `$HOME`, checks the relay's `--version`, and
+uploads the built binary to `~/.monda/monda-relay` if it is missing or stale — so
+a version bump carries the relay to every host.
+
+### The connection is long-lived; the protocol is its guest
+
+The ssh master is kept up rather than redialled. `ControlMaster`/`ControlPersist`
+share one TCP connection and one authentication across every terminal, pane and
+workspace on that host, and keepalive keeps the master from idling out. The
+protocol opens its own channel on that master: listings and file operations are
+request/response on it, and watches are server-push (`fs:changed`) like the local
+watcher, so a pane refreshes on an event and never polls a WAN link. A shell is a
+separate pty channel on the same master, so a second terminal costs a channel,
+not a login. When the master drops the channel dies: the app says so, then
+reconnects by re-opening the master, re-subscribing the watchers and re-listing
+once — a resync, not a reload.
+
+`pty:state` cannot answer remotely, because `/proc/<pid>` belongs to the local
+ssh process and not the remote shell. A remote shell's cwd has to come from the
+remote side — OSC 7 from the prompt, or the relay reading its own `/proc` — and
+until it does, the panel ↔ shell sync stays off for a remote target rather than
+syncing to the wrong directory.
+
+### Quick cd and the hide mode follow the connection
+
+Both are one state for the whole app today — `quickCdDirs` in
+`composables/useQuickCd`, and the module-level toggle in
+`composables/useHideMode` — persisted to `userData/quick-cd.json` and
+`userData/hide-mode.json`. Both become **per connection**: a bookmark is a folder
+on a host, and `/home/laci/x` on the laptop and on the server are the same string
+but not the same folder, so the lists and the remembered mode are keyed by target
+(host and user, plus port or socket when that differs). The same goes for the
+watchers main refcounts by directory: a directory watched on one host is not the
+directory of the same name on another.
+
+A target does not ride inside the location string. Archives already qualify a
+place as `<archive>\0<inner>` and the app compares locations as strings, but a
+target encoded the same way would make `isArchivePath` ambiguous, since a
+target-qualified local path contains a NUL too. The target is therefore carried
+beside the location, as its own field. The pane's own path-keyed maps stay safe
+because a workspace has one target; only the stores that outlive a workspace —
+the quick cd list, the remembered hide mode, main's watcher refcounts — are keyed
+by the target as well as the path. The title still draws the readable path, as
+`archiveDisplay` is the one place the archive split is read.
+
+### The foreign pane, when the panes diverge
+
+The model above keeps both panes on the workspace's host. A later step lets the
+other pane point elsewhere — local or remote — and the rules that keep it honest
+are: the foreign pane runs no commands, because the workspace's shell lives on the
+workspace's host and typing a local path into a remote prompt (or running a file
+from the wrong side) is the failure the shared connection exists to avoid; its
+title draws `user@host` in the path, since the tab can only speak for the
+workspace's host; the panel ↔ shell sync pushes only from the pane whose target
+matches the shell's; and a copy across the two targets proxies the bytes through
+the app rather than pretending the paths meet.
+

@@ -2,6 +2,8 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { app, BrowserWindow } from 'electron'
 import { registerFsHandlers } from './ipc/fs'
+import { registerRemoteHandlers } from './ipc/remote'
+import { targetRegistry } from './relay/registry'
 import { closeAllGitWatchers, registerGitHandlers } from './ipc/git'
 import { registerHideHandlers } from './ipc/hide'
 import { registerQuickCdHandlers } from './ipc/quickCd'
@@ -94,6 +96,7 @@ registerGitHandlers()
 registerPtyHandlers()
 registerWatchHandlers()
 registerWindowHandlers()
+registerRemoteHandlers()
 
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
@@ -108,6 +111,7 @@ if (!gotLock) {
 
   void app.whenReady().then(() => {
     registerMediaProtocol()
+    void targetRegistry.init()
     createWindow()
 
     app.on('activate', () => {
@@ -124,5 +128,6 @@ if (!gotLock) {
     closeAllWatchers()
     closeAllGitWatchers()
     killAllTranscodes()
+    targetRegistry.closeAll()
   })
 }

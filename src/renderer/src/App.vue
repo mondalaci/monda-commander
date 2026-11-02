@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, provide, ref, shallowRef, watch } from 'vue'
 import FilePanel from '@renderer/components/FilePanel.vue'
 import ConfirmTransfer from '@renderer/components/ConfirmTransfer.vue'
 import ConfirmMkdir from '@renderer/components/ConfirmMkdir.vue'
@@ -23,6 +23,8 @@ import {
 } from '@renderer/lib/preview'
 import type { PaneMenuChoice, PaneMenuItem, PaneMenuRequest } from '@renderer/lib/paneMenu'
 import { isArchivePath, splitArchivePath } from '@shared/archive'
+import { targetLabel, type Target } from '@shared/target'
+import { targetApiKey } from '@renderer/lib/targetContext'
 import { HIDE_MARKER } from '@shared/hide'
 import { loadArchiveSupport } from '@renderer/lib/archive'
 import { playSwapAnimation } from '@renderer/lib/swapAnimation'
@@ -39,6 +41,19 @@ import type { FileContent, FsError, PanelSide } from '@shared/types'
 let workspaceSeq = 0
 
 /**
+ * The connection the app opens on. It is local — the one target that needs no
+ * relay and no auth — and its user is read synchronously from the preload so the
+ * first tab exists before the async target list has arrived. The registry's own
+ * local target is the same one; only the label's source differs.
+ */
+const localTarget: Target = {
+  id: 'local',
+  kind: 'local',
+  user: window.mc.targets.localUser,
+  host: 'localhost'
+}
+
+/**
  * The exit-watch stops, one per workspace. The watch cannot live in the
  * workspace's own effect scope: answering a dead shell is the app's job — it is
  * the app that owns the tab strip the tab has to leave — so it is created here
@@ -46,9 +61,12 @@ let workspaceSeq = 0
  */
 const exitStops = new Map<Workspace, () => void>()
 
-function makeWorkspace(): Workspace {
+function makeWorkspace(target: Target): Workspace {
   workspaceSeq += 1
-  const workspace = createWorkspace(`ws-${workspaceSeq}`, `Terminal ${workspaceSeq}`)
+  // The tab names the connection it is on — `user@host` — so two tabs are told
+  // apart by where they are, not by an ordinal that says nothing about the host.
+  const label = targetLabel(target)
+  const workspace = createWorkspace(`ws-${workspaceSeq}`, label, target)
 
   // Watched per workspace, not just the active one: a shell that ends while its
   // tab is in the background must not be found dead only once it is revisited.
@@ -62,7 +80,7 @@ function makeWorkspace(): Workspace {
   return workspace
 }
 
-const workspaces = shallowRef<Workspace[]>([makeWorkspace()])
+const workspaces = shallowRef<Workspace[]>([makeWorkspace(localTarget)])
 const activeIndex = ref(0)
 
 /** Retire a workspace: stop watching its shell, then tear it down. */
@@ -73,6 +91,14 @@ function releaseWorkspace(workspace: Workspace): void {
 }
 
 const activeWorkspace = computed(() => workspaces.value[activeIndex.value] ?? workspaces.value[0]!)
+
+// The components that call the bridge themselves — the viewer, a preview, the
+// hide gesture — take the active workspace's target from here rather than from
+// the pane, so a remote tab does not read a remote path on the local disk.
+provide(
+  targetApiKey,
+  computed(() => activeWorkspace.value.api)
+)
 
 /**
  * The active workspace's bindings, surfaced as plain computeds so the rest of
@@ -206,7 +232,11 @@ const stageSource = computed<PanelSide | null>(() =>
 const stageTarget = computed(() => {
   const side = stageSource.value
   if (side === null) return null
-  return previewTargetFor((side === 'left' ? left.value : right.value).current())
+  const target = previewTargetFor((side === 'left' ? left.value : right.value).current())
+  // As in the footer: a clip's stream is main's local file, so a remote target
+  // offers no display for it. Images travel through the target's API.
+  if (target && target.kind !== 'image' && activeWorkspace.value.target.kind !== 'local') return null
+  return target
 })
 
 /**
@@ -723,12 +753,169 @@ function revealInOtherPane(): void {
  * be.
  */
 function addWorkspace(): void {
+  void openTargetPicker()
+}
+
+/**
+ * The target picker. A new tab is a new connection, so a host is chosen before
+ * the workspace exists: local and root are always offered, the saved remotes
+ * follow, and a remote can be added right here. Choosing one opens the tab on
+ * that target.
+ */
+const targetPickerOpen = ref(false)
+const targetChoices = ref<Target[]>([])
+const targetError = ref('')
+/**
+ * The picker's incremental search. It holds the keyboard from the moment the
+ * dialog opens — the field is focused, so a printable key narrows the targets and
+ * the arrows move the cursor over what is left — exactly as the panes' own search
+ * does. Focus never leaves the field, so the arrows are the cursor's alone.
+ */
+const pickerQuery = ref('')
+const pickerIndex = ref(0)
+const pickerInput = ref<HTMLInputElement | null>(null)
+const pickerConnecting = ref(false)
+const pickerPhase = ref('Connecting…')
+
+const pickerFiltered = computed(() => {
+  const query = pickerQuery.value.trim().toLowerCase()
+  if (!query) return targetChoices.value
+  return targetChoices.value.filter((target) => {
+    const label = targetLabel(target).toLowerCase()
+    return label.includes(query) || target.kind.includes(query)
+  })
+})
+
+/**
+ * The typed query as a target, for the "type a host that is not in the list" path:
+ * `user@host`, `user@host:port`, or a bare `host`, which borrows the local user
+ * the way ssh would. Null when it is not a host-shaped string, so a stray letter
+ * is not turned into a connection attempt.
+ */
+function parseTargetQuery(query: string): { user: string; host: string; port?: number } | null {
+  const value = query.trim()
+  if (!value) return null
+  const at = value.indexOf('@')
+  const user = at >= 0 ? value.slice(0, at).trim() : window.mc.targets.localUser
+  let host = at >= 0 ? value.slice(at + 1).trim() : value
+  if (!user || !host) return null
+  let port: number | undefined
+  const colon = host.lastIndexOf(':')
+  if (colon > 0) {
+    const candidate = Number(host.slice(colon + 1))
+    if (Number.isInteger(candidate) && candidate > 0 && candidate < 65536) {
+      port = candidate
+      host = host.slice(0, colon).trim()
+    }
+  }
+  if (!host) return null
+  return port ? { user, host, port } : { user, host }
+}
+
+const pickerParsed = computed(() => parseTargetQuery(pickerQuery.value))
+
+/**
+ * A rejected IPC call arrives wrapped — "Error invoking remote method 'x':
+ * Error:" — and the reason inside is already short (see `sshReason` in main), so
+ * this only strips the wrapper rather than the explanation.
+ */
+function errorText(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error)
+  return message
+    .replace(/^Error invoking remote method '[^']*':\s*/i, '')
+    .replace(/^Error:\s*/i, '')
+    .trim()
+}
+
+// A narrower list no longer holds the old cursor's row, so the cursor goes home.
+watch(pickerQuery, () => {
+  pickerIndex.value = 0
+})
+
+function movePicker(delta: number): void {
+  const count = pickerFiltered.value.length
+  if (count === 0) return
+  pickerIndex.value = (pickerIndex.value + delta + count) % count
+}
+
+/**
+ * The picker's own keys: arrows move the cursor over the filtered targets and
+ * Enter opens the one under it. A key aimed at the add form's inputs is left to
+ * that form, so Enter there submits rather than opening whatever the list is
+ * highlighting. Escape is the window handler's.
+ */
+function onPickerKey(event: KeyboardEvent): void {
+  const element = event.target as HTMLElement | null
+  if (element && element.tagName === 'INPUT' && element !== pickerInput.value) return
+  if (event.key === 'ArrowDown') {
+    event.preventDefault()
+    movePicker(1)
+  } else if (event.key === 'ArrowUp') {
+    event.preventDefault()
+    movePicker(-1)
+  } else if (event.key === 'Enter') {
+    event.preventDefault()
+    if (pickerConnecting.value) return
+    const choice = pickerFiltered.value[pickerIndex.value]
+    if (choice) {
+      void createWorkspaceFor(choice)
+    } else if (pickerParsed.value) {
+      // Nothing in the list matches what was typed, so the field is the way to a
+      // host that is not saved yet: connect, and add it only if it answers.
+      void submitTypedTarget()
+    }
+  }
+}
+
+async function openTargetPicker(): Promise<void> {
+  targetError.value = ''
+  pickerQuery.value = ''
+  pickerIndex.value = 0
+  try {
+    targetChoices.value = await window.mc.targets.list()
+  } catch {
+    targetChoices.value = [localTarget]
+  }
+  targetPickerOpen.value = true
+  await nextTick()
+  pickerInput.value?.focus()
+}
+
+/**
+ * Connect to the target the search field spells and, only if the relay answers,
+ * remember it and open a workspace on it. A host that cannot be reached leaves the
+ * dialog open with the reason, so a typo never becomes a saved target.
+ */
+async function submitTypedTarget(): Promise<void> {
+  const parsed = pickerParsed.value
+  if (!parsed || pickerConnecting.value) return
+  pickerConnecting.value = true
+  targetError.value = ''
+  pickerPhase.value = 'Connecting…'
+  // The stages the relay's install goes through, straight from main, so a slow
+  // ssh handshake, a download and a hang do not look the same.
+  const stopProgress = window.mc.targets.onProgress((phase) => {
+    pickerPhase.value = phase
+  })
+  try {
+    const target = await window.mc.targets.add(parsed)
+    await createWorkspaceFor(target)
+  } catch (error) {
+    targetError.value = errorText(error)
+  } finally {
+    stopProgress()
+    pickerConnecting.value = false
+  }
+}
+
+async function createWorkspaceFor(target: Target): Promise<void> {
+  targetPickerOpen.value = false
   exitStage()
-  const workspace = makeWorkspace()
+  const workspace = makeWorkspace(target)
   workspaces.value = [...workspaces.value, workspace]
   activeIndex.value = workspaces.value.length - 1
-  void workspace.init()
-  void nextTick(() => focusPanes())
+  await workspace.init()
+  await nextTick(() => focusPanes())
 }
 
 function selectWorkspace(index: number): void {
@@ -772,7 +959,7 @@ function closeExitedWorkspace(workspace: Workspace): void {
   const remaining = workspaces.value.filter((_, i) => i !== index)
 
   if (remaining.length === 0) {
-    const fresh = makeWorkspace()
+    const fresh = makeWorkspace(localTarget)
     workspaces.value = [fresh]
     activeIndex.value = 0
     void fresh.init()
@@ -861,7 +1048,7 @@ async function openViewer(
   // viewer over a newer request.
   const request = (viewerRequest += 1)
 
-  const result = await window.mc.fs.read(target)
+  const result = await activeWorkspace.value.api.fs.read(target)
   if (request !== viewerRequest) return
 
   if (!result.ok) {
@@ -1127,7 +1314,7 @@ function requestPaneMenuAtCursor(): void {
  * icon either way.
  */
 async function hideEntry(pane: PaneController, entry: PaneEntry): Promise<void> {
-  const result = await window.mc.fs.hideAdd(pane.state.path, entry.name)
+  const result = await activeWorkspace.value.api.fs.hideAdd(pane.state.path, entry.name)
   if (!result.ok) {
     pane.state.error = `${result.error.code}: ${result.error.message}`
     return
@@ -1684,6 +1871,17 @@ function handlePaneKey(event: KeyboardEvent): void {
 }
 
 function onKeydown(event: KeyboardEvent): void {
+  // The target picker is modal and owns its keys while it is up: Escape closes
+  // it, and the arrows and Enter are handled on the dialog itself. Nothing below
+  // — a tab shortcut, a pane's cursor — should run behind it.
+  if (targetPickerOpen.value) {
+    if (event.key === 'Escape') {
+      consume(event)
+      targetPickerOpen.value = false
+    }
+    return
+  }
+
   // The pane menu holds the keyboard while it is up: Escape closes it, and its own
   // keys — the arrows, Home/End, Enter — are the menu's, which drives itself from
   // them because it is what is focused. A key that is *not* the menu's is dropped
@@ -2043,6 +2241,67 @@ onBeforeUnmount(() => {
         @toggle-terminal="toggleTerminal"
       />
     </TitleBar>
+
+    <!-- A new workspace is a new connection, so the target is chosen first:
+         local and root are always offered, the saved remotes follow, and a
+         remote can be added here. -->
+    <div
+      v-if="targetPickerOpen"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      @click.self="targetPickerOpen = false"
+    >
+      <div
+        class="w-96 rounded-lg border border-border bg-surface p-3 text-ui-sm shadow-xl"
+        @keydown="onPickerKey"
+      >
+        <div class="mb-2 text-fg-bright">New workspace</div>
+        <input
+          ref="pickerInput"
+          v-model="pickerQuery"
+          class="mb-2 w-full rounded border border-border bg-bg px-2 py-1 text-fg outline-none"
+          placeholder="Search targets"
+          spellcheck="false"
+          autocomplete="off"
+        />
+        <div class="flex max-h-56 flex-col gap-0.5 overflow-y-auto">
+          <button
+            v-for="(choice, index) in pickerFiltered"
+            :key="choice.id"
+            type="button"
+            tabindex="-1"
+            class="flex items-center justify-between rounded px-2 py-1 text-left outline-none"
+            :class="index === pickerIndex ? 'bg-accent text-fg-bright' : 'text-fg hover:bg-hover'"
+            @mouseenter="pickerIndex = index"
+            @click="createWorkspaceFor(choice)"
+          >
+            <span class="truncate">{{ targetLabel(choice) }}</span>
+            <span
+              class="ml-2 shrink-0"
+              :class="index === pickerIndex ? 'text-fg-bright/70' : 'text-fg-dim'"
+            >
+              {{ choice.kind }}
+            </span>
+          </button>
+          <div v-if="pickerConnecting" class="flex items-center gap-2 px-2 py-1 text-fg-dim">
+            <span
+              class="inline-block h-3 w-3 shrink-0 animate-spin rounded-full border border-border border-t-accent"
+              aria-hidden="true"
+            ></span>
+            <span>{{ pickerPhase }}</span>
+          </div>
+          <div
+            v-else-if="pickerFiltered.length === 0 && pickerParsed"
+            class="px-2 py-1 text-fg-dim"
+          >
+            Press Enter to connect to {{ pickerParsed.user }}@{{ pickerParsed.host }}
+          </div>
+          <div v-else-if="pickerFiltered.length === 0" class="px-2 py-1 text-fg-dim">
+            No matching target
+          </div>
+        </div>
+        <div v-if="targetError" class="mt-2 text-danger">{{ targetError }}</div>
+      </div>
+    </div>
 
     <!-- The wrapper is the positioning context for the viewer overlay, which
          covers the panes and the terminal but leaves the title bar visible.
