@@ -168,6 +168,17 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   padding because `overflow: hidden` clips at the padding box.
 - **`pty:state` is Linux-only** (`/proc/<pid>/cwd`, `tpgid`); elsewhere it reports
   `idle: false`, which disables injection rather than guessing.
+- **A `cd` typed at the prompt that did not take is said in the pane's notice.**
+  The command line is the real shell, so the shell's own complaint lands a row
+  above the prompt the collapsed strip shows — `Ctrl+O` is the only way to see it
+  otherwise. `useWorkspace` reads the submitted line off `shell.lastCommand` (the
+  *model's* line; a history recall is not captured), and once the command settles,
+  a `cd`/`pushd` whose shell cwd is unchanged is checked against the filesystem
+  (`lib/directoryChange.ts`): a target that is not a directory is reported, a
+  `cd .` that asked for where the shell already was is not. Only an explicit
+  plain path is judged — a `~user`, `$VAR`, glob or escape is left to the shell.
+  The notice is set after the post-command re-lists land, so they do not wipe the
+  notice by clearing a stale error.
 
 ### Directory listing
 

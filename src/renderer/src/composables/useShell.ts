@@ -40,6 +40,14 @@ export interface Shell {
    * that command finishes, since a command need not change the cwd.
    */
   readonly commandSeq: Ref<number>
+  /**
+   * The last non-empty line submitted, which is what a `cd` typed at the prompt
+   * is read from to report a change that did not take. It is the *model's* line,
+   * so only what was typed is here: a command readline drew itself — a history
+   * recall, a completion — reaches the shell without a byte passing through
+   * `onData` and is not seen.
+   */
+  readonly lastCommand: Ref<string>
   ensureStarted(spawnCwd: string, cols: number, rows: number): Promise<void>
   write(data: string): void
   /** Sends input we originate, keeping the line model in step. */
@@ -59,6 +67,7 @@ export function createShell(id: string, api: McPtyApi): Shell {
   const idle = ref(false)
   const inputLine = ref('')
   const commandSeq = ref(0)
+  const lastCommand = ref('')
   const exitCode = ref<number | null>(null)
 
   let lineBuffer = ''
@@ -161,8 +170,12 @@ export function createShell(id: string, api: McPtyApi): Shell {
 
       if (code === 13 || code === 10) {
         // Enter: a non-empty line is a command the shell is about to run, not
-        // just an empty prompt line, so it is worth re-listing for.
-        if (lineBuffer.length > 0) commandSeq.value++
+        // just an empty prompt line, so it is worth re-listing for — and worth
+        // keeping, so a `cd` it names can be answered for if it fails.
+        if (lineBuffer.length > 0) {
+          lastCommand.value = lineBuffer
+          commandSeq.value++
+        }
         lineBuffer = ''
         continue
       }
@@ -235,6 +248,7 @@ export function createShell(id: string, api: McPtyApi): Shell {
     idle,
     inputLine,
     commandSeq,
+    lastCommand,
     exitCode,
     ensureStarted,
     write,

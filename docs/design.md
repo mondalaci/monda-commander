@@ -119,6 +119,44 @@ visible only when that line had a `p`/`y`/`g`/`q` or an underscore low enough to
 reach it. The gutter above and below is the host's margin (`my-1`), which lies
 outside the clip edge, so the height written there is one row on its own.
 
+### A `cd` that did not take is said in the pane
+
+The command line is the real shell, so a `cd` typed at it runs in the shell and
+the shell's complaint about a path it cannot enter is printed to the pty. The
+collapsed strip shows the row the **cursor** is on, which after a failed command
+is the fresh prompt — so the error sits one row above it, in the clip's
+scrollback, and the only way to see it is `Ctrl+O`. That is the whole reason the
+pane says it instead: the gesture was made in the pane, and the pane is where the
+user is looking.
+
+Three things have to be true to say it without lying. First, the app has to know
+a *directory change* was asked for: the submitted line is read off
+`shell.lastCommand`, which is the model's line (`noteInput`), so only what was
+typed is seen — a command readline drew itself (a history recall, a completion)
+reaches the shell without a byte passing through `onData` and is not captured.
+Second, it has to know the change did not take: `useWorkspace` remembers the
+shell's cwd when the command was submitted and compares it once the command has
+settled (`shell.cwd` is re-polled in `settleCommand` before `finishCommand`, so
+the comparison is against a fresh read). Third — and this is what keeps `cd .`
+from reading as a failure — it has to know the target is not a directory the
+shell could have entered: "the cwd did not change" is also what a `cd` naming the
+directory the shell is already in looks like. The target is resolved against the
+submitted cwd (`lib/directoryChange.ts`) and asked of the filesystem, and only a
+`list` that fails is reported, in the shell's own words.
+
+The reading of the line is deliberately conservative. Only a plain path is
+judged: a `~user`, a `$VAR`, a glob, an escape, a brace — anything the *shell*
+resolves — is left to the shell, because the app resolving it wrongly would mean
+a failure reported for a `cd` that worked. A change naming no path at all (a bare
+`cd`, `cd -`) is likewise the shell's to judge, since whether it worked is not
+something the target can be checked for.
+
+The notice is set on the pane *after* the re-lists the end of a command triggers,
+not before: a `refresh` clears a stale `state.error` on its way through, and the
+re-list is asynchronous, so setting the notice first would let that clear land
+after it and wipe the message. `refreshPanelsAtShellCwd` was made to hand back
+the promises it starts for exactly this ordering.
+
 ### `pty:state` is Linux-only
 
 It reads `/proc/<pid>/cwd` for the cwd and `tpgid` in `/proc/<pid>/stat` to tell

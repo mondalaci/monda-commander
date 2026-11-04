@@ -11,6 +11,12 @@ import {
 import { useDirectory, type PaneController, type PaneEntry } from '@renderer/composables/useDirectory'
 import { createShell, type Shell } from '@renderer/composables/useShell'
 import { createTargetApi, type TargetApi } from '@renderer/lib/targetApi'
+import { homeDir } from '@renderer/composables/useQuickCd'
+import {
+  directoryChange,
+  directoryChangeReason,
+  resolveDirectoryTarget
+} from '@renderer/lib/directoryChange'
 import { isArchivePath, splitArchivePath } from '@shared/archive'
 import type { Target } from '@shared/target'
 import type { PanelSide } from '@shared/types'
@@ -206,27 +212,48 @@ export function createWorkspace(id: string, label: string, target: Target): Work
     /** Whoever is waiting for the command the shell is running to be over. */
     let whenCommandFinished: (() => void) | null = null
 
-    function refreshPanelsAtShellCwd(): void {
+    /**
+     * The command the shell is running, with the directory it started in and the
+     * pane that asked for it. Kept so a `cd` that did not take can be told from
+     * one that asked for where the shell already was, once the command finishes.
+     */
+    let pendingCommand: string | null = null
+    let pendingCwd: string | null = null
+    let pendingPane: PaneController | null = null
+
+    function refreshPanelsAtShellCwd(): Promise<void>[] {
       const target = shell.cwd.value
-      if (!target) return
+      if (!target) return []
+      const running: Promise<void>[] = []
       for (const pane of [left.value, right.value]) {
-        if (pane.state.path === target) void pane.refresh()
+        if (pane.state.path === target) running.push(pane.refresh())
       }
+      return running
     }
 
     /**
      * The command the shell was running is over: unmute the panes it could have
      * changed, re-list them, and release whoever is waiting on it — which is a
      * file Enter started in the shell, whose terminal is shown until it is done.
+     * A directory change that did not take is reported to the pane only after
+     * those re-lists have landed, so the notice it leaves is not wiped by a
+     * re-list's own clearing of a stale error a moment later.
      */
     function finishCommand(): void {
       if (!commandPending) return
       commandPending = false
       const resolve = whenCommandFinished
       whenCommandFinished = null
+      const command = pendingCommand
+      const cwd = pendingCwd
+      const pane = pendingPane
+      pendingCommand = null
+      pendingCwd = null
+      pendingPane = null
       unmuteShellPanes()
-      refreshPanelsAtShellCwd()
+      const refreshes = refreshPanelsAtShellCwd()
       resolve?.()
+      void Promise.all(refreshes).then(() => reportFailedDirectoryChange(pane, command, cwd))
     }
 
     /**
@@ -257,6 +284,13 @@ export function createWorkspace(id: string, label: string, target: Target): Work
 
     function noteCommandSubmitted(): void {
       commandPending = true
+      // Remember what was asked and from where, so a `cd` that leaves the shell
+      // put can be answered for when the command is over. Both are read now
+      // because the settle that ends the command may run after the shell's cwd
+      // has already been re-polled.
+      pendingCommand = shell.cwd.value ? shell.lastCommand.value : null
+      pendingCwd = shell.cwd.value
+      pendingPane = activePane.value
       muteShellPanes()
       if (commandSettleTimer !== null) window.clearTimeout(commandSettleTimer)
       commandSettleTimer = window.setTimeout(() => {
@@ -270,6 +304,41 @@ export function createWorkspace(id: string, label: string, target: Target): Work
       await shell.refreshState()
       if (!commandPending || !shell.idle.value) return
       finishCommand()
+    }
+
+    /**
+     * A `cd` typed at the prompt that did not take leaves the shell — and the
+     * pane synced to it — where it was, with the shell's complaint about why
+     * printed on the row above the prompt the collapsed strip shows. The pane
+     * says it instead, where the gesture was made and where the user is looking,
+     * so noticing it does not mean expanding the terminal.
+     *
+     * A change that did take has already moved the shell, and one naming no path
+     * (`cd`, `cd -`) can only be judged by the shell, so neither is spoken for.
+     * What remains is verified against the filesystem, which is what tells a
+     * failed `cd /typo` from a `cd .` that asked for where the shell already
+     * was — both leave the cwd as it stood.
+     */
+    async function reportFailedDirectoryChange(
+      pane: PaneController | null,
+      command: string | null,
+      cwd: string | null
+    ): Promise<void> {
+      if (!pane || !command || !cwd) return
+      if (shell.cwd.value !== cwd) return
+
+      const change = directoryChange(command)
+      if (!change || change.target === '') return
+
+      const path = resolveDirectoryTarget(change.target, cwd, homeDir.value)
+      if (!path) return
+
+      const result = await targetApi.fs.list(path)
+      // It is a directory: the shell was already there, which is a change that
+      // took rather than one that failed.
+      if (result.ok) return
+
+      pane.state.error = `${change.name}: ${change.target}: ${directoryChangeReason(result.error)}`
     }
 
     watch(shell.commandSeq, noteCommandSubmitted)
