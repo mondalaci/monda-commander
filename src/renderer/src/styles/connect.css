@@ -1,6 +1,7 @@
 /*
  * The relay-connect fill, painted as the background of whatever the connect rides
- * on — the pane title, and the target picker's connecting row.
+ * on — the workspace's single connecting bar, and the target picker's connecting
+ * row.
  *
  * The whole surface is the bar: a hard-edged fill grows from the left across the
  * element's own background, so the wait is stated by the chrome the user is
@@ -9,9 +10,8 @@
  * creeping in between, so the fill is always moving instead of jumping in stages
  * and sitting still.
  *
- * The fill is `currentColor` mixed into the background, so it is the title's own
- * text colour lightened — bright on the active pane, dim on the other — and it
- * leaves the label above it untouched and readable.
+ * The fill is `currentColor` mixed into the background, so it is the element's own
+ * text colour lightened, and it leaves the label above it untouched and readable.
  */
 .connect-title {
   background-image: linear-gradient(

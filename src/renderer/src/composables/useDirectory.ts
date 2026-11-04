@@ -131,10 +131,10 @@ export interface PaneState {
   /**
    * The stage an ssh target's relay is at while the pane waits for its first
    * listing — "contacting", "installing", "starting", "verifying" — and how far
-   * through the connect it sits, 0..1, for the title's determinate bar. Null for a
-   * local or root target (root is launched locally and comes up at once), or once
-   * the first listing has come back; the pane's title shows the stage in place of
-   * the path so a slow connect is legible.
+   * through the connect it sits, 0..1. Null for a local or root target (root is
+   * launched locally and comes up at once), or once the first listing has come
+   * back. Both panes report the same connect, which App draws as one bar across
+   * the pane row rather than twice over.
    */
   connectPhase: string | null
   connectValue: number | null

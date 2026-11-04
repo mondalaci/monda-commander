@@ -39,7 +39,6 @@ import ColumnDropMarker from '@renderer/components/ColumnDropMarker.vue'
 import HoldRing from '@renderer/components/HoldRing.vue'
 import PlaybackOsd from '@renderer/components/PlaybackOsd.vue'
 import { hideMode } from '@renderer/composables/useHideMode'
-import { useConnectFill } from '@renderer/composables/useConnectFill'
 import { archiveDisplay } from '@shared/archive'
 import { HIDE_MODE_OFF_TOOLTIP, HIDE_MODE_TOOLTIP } from '@shared/hide'
 import { MEDIA_SCHEME } from '@shared/video'
@@ -220,15 +219,6 @@ const columnOrder = computed(() => props.controller.state.columnOrder)
 
 /** Whether the pane is showing the quick cd list instead of its directory. */
 const quickCdMode = computed(() => props.controller.state.quickCd)
-
-/**
- * The title's relay-progress fill: while a remote relay comes up the whole title
- * is the bar, painted by useConnectFill straight onto the title element. It follows
- * the stage the relay reported but keeps creeping between stages, so a slow step
- * reads as progress rather than a bar that stopped.
- */
-const connectHost = ref<HTMLElement | null>(null)
-useConnectFill(() => props.controller.state.connectValue, connectHost)
 
 /**
  * The columns a row draws. The quick cd list shows only the directory's path —
@@ -3444,32 +3434,16 @@ function onRenameBlur(): void {
          so the blur would spill over the border into the pane next door. -->
     <div ref="paneContent" class="flex min-h-0 grow flex-col [clip-path:inset(0)]">
       <div
-        ref="connectHost"
         class="relative flex h-7 shrink-0 items-center gap-2 border-b border-border-subtle px-3"
-        :class="[
-          active ? 'bg-accent text-fg-bright' : 'bg-surface text-fg-dim',
-          { 'connect-title': controller.state.connectValue !== null }
-        ]"
+        :class="active ? 'bg-accent text-fg-bright' : 'bg-surface text-fg-dim'"
       >
-        <!-- The whole title *is* the bar while the pane waits on a remote relay:
-             styles/connect.css paints a fill across the title's own background,
-             eased toward the last stage but always creeping, so a slow step reads
-             as motion and not as a bar that stopped. -->
         <span class="flex min-w-0 flex-1 items-center text-ui-sm">
-          <!-- While the relay is coming up there is no path worth showing yet, so
-               the title states the stage instead, at the left where the path would
-               be. It is set in the title's own weight and colour: a slow connect is
-               information, not alarm. -->
-          <span
-            v-if="controller.state.connectPhase"
-            class="min-w-0 flex-1 truncate"
-          >{{ controller.state.connectPhase }}</span>
           <!-- An archive the pane is inside: the archive's own name is drawn in
                the archive hue, so it reads as set apart from the entry path after
                it. A folder merely *named* `foo.zip` keeps the plain title colour,
                which is how the two are told apart in the title. The segments
                carry no space between them, so the title stays one path. -->
-          <span v-else-if="quickCdMode" class="min-w-0 flex-1 truncate font-medium text-fg-bright">
+          <span v-if="quickCdMode" class="min-w-0 flex-1 truncate font-medium text-fg-bright">
             Quick cd
           </span>
           <template v-else-if="archiveTitle">

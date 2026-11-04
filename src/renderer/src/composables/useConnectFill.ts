@@ -1,7 +1,7 @@
 import { onBeforeUnmount, watch, type Ref } from 'vue'
 
 /**
- * The relay-connect fill, as a pane title or the picker draws it.
+ * The relay-connect fill, as the workspace bar or the picker draws it.
  *
  * The connect reports coarse stages — contact, install, start, verify — and a
  * stage can take a while, so a fill that only moved when a stage arrived would
@@ -14,7 +14,7 @@ import { onBeforeUnmount, watch, type Ref } from 'vue'
  * `stage` is the target the relay reported (`null` when not connecting), and `host`
  * is the element the fill is painted on. The value is written straight to the
  * element's `--connect-value` each frame rather than through a reactive ref, so a
- * frame's worth of motion never re-renders the pane around it.
+ * frame's worth of motion never re-renders the view around it.
  */
 export function useConnectFill(stage: () => number | null, host: Ref<HTMLElement | null>): void {
   let value = 0

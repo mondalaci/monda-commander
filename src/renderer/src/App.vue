@@ -121,6 +121,27 @@ const terminalExpanded = computed(() => activeWorkspace.value.terminalExpanded.v
 const terminalFocused = computed(() => activeWorkspace.value.terminalFocused.value)
 
 /**
+ * The active workspace's relay connect, read from its panes. A workspace is one
+ * connection, so its two panes come up together and each would otherwise title
+ * itself with the same stage; while they do, the two titles are drawn as one bar
+ * across the whole pane row instead (the overlay in the template). `null` once the
+ * relay is up, when the panes' titles are worth reading again.
+ */
+const connectPhase = computed(
+  () => left.value.state.connectPhase ?? right.value.state.connectPhase
+)
+const connectStage = computed(
+  () => left.value.state.connectValue ?? right.value.state.connectValue
+)
+
+/**
+ * The single bar is painted straight onto its element by `useConnectFill`, so a
+ * frame's worth of motion never re-renders the app around it.
+ */
+const connectHost = ref<HTMLElement | null>(null)
+useConnectFill(() => connectStage.value, connectHost)
+
+/**
  * Whether the active pane is inside an archive. A shell cannot follow a pane
  * there, so the terminal is disabled while this is true (see TerminalPane): the
  * refusal is shown rather than leaving the shell silently out of sync with the
@@ -2510,6 +2531,24 @@ onBeforeUnmount(() => {
           @stage-off="exitStage()"
           @context-menu="openPaneMenu('right', $event)"
         />
+        <!-- The workspace is one connection, so both panes come up together and
+             their two titles would repeat the same stage. While they do, this bar
+             spans the whole pane row instead: one stage label and one fill across
+             both titles, drawn over them (the panes' own titles are underneath and
+             covered). It is `pointer-events-none` because the strip is not a
+             control, and it leaves when the relay is up. `top-0 h-[29px]` covers
+             the panes' 1px top border and the full 28px title, so nothing of the
+             per-pane title peeks out at the seam. The divider between the panes is
+             a flex item with `order: 1`, so the bar takes `order-last` and a rank
+             above the divider's `z-30`; with an equal rank the divider painted
+             over the bar and scratched a seam down its middle. -->
+        <div
+          v-if="connectPhase !== null"
+          ref="connectHost"
+          class="connect-title pointer-events-none absolute inset-x-0 top-0 z-40 order-last flex h-[29px] items-center border-b border-border-subtle bg-accent px-3 text-ui-sm text-fg-bright"
+        >
+          <span class="min-w-0 flex-1 truncate">{{ connectPhase }}</span>
+        </div>
       </main>
 
       <TerminalPane
