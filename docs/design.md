@@ -1780,6 +1780,28 @@ connect the app reads the remote `$HOME`, checks the relay's `--version`, and
 uploads the built binary to `~/.monda/monda-relay` if it is missing or stale — so
 a version bump carries the relay to every host.
 
+### The connect is a labelled, determinate wait
+
+A remote target's relay is installed on first connect (see "One protocol, three
+transports"), and that is several real steps — contact the host, install the relay
+if it is stale, start it, verify the protocol — so the pane does not leave the user
+looking at a blank list. Main reports each stage over `onProgress` as a
+`RelayProgress`: the stage's label and how far through the connect it sits, 0..1.
+The pane title and the picker's connecting row *are* the bar — `styles/connect.css`
+paints a hard-edged fill across the element's own background — so the wait is
+stated by the chrome the user is already looking at. The pane title states the
+stage where its path would be, because the path is not known until the relay
+answers. There is no spinner: a spinner says only that *something* is happening,
+while a moving fill says how much.
+
+This is an ssh wait only. `root@localhost` launches its relay locally and is up at
+once, so a bar that crept there would be describing a wait that is not happening;
+the pane shows an ordinary busy listing instead. The stages are coarse and a stage
+can take seconds, so even for ssh the fill does not only move when one arrives:
+`useConnectFill` eases toward the stage the relay last reported but adds a floor to
+every step, so the fill is always creeping and progress is visible *between* stages
+rather than jumping and sitting still.
+
 ### The connection is long-lived; the protocol is its guest
 
 The ssh master is kept up rather than redialled. `ControlMaster`/`ControlPersist`

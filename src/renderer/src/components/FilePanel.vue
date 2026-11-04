@@ -39,6 +39,7 @@ import ColumnDropMarker from '@renderer/components/ColumnDropMarker.vue'
 import HoldRing from '@renderer/components/HoldRing.vue'
 import PlaybackOsd from '@renderer/components/PlaybackOsd.vue'
 import { hideMode } from '@renderer/composables/useHideMode'
+import { useConnectFill } from '@renderer/composables/useConnectFill'
 import { archiveDisplay } from '@shared/archive'
 import { HIDE_MODE_OFF_TOOLTIP, HIDE_MODE_TOOLTIP } from '@shared/hide'
 import { MEDIA_SCHEME } from '@shared/video'
@@ -219,6 +220,15 @@ const columnOrder = computed(() => props.controller.state.columnOrder)
 
 /** Whether the pane is showing the quick cd list instead of its directory. */
 const quickCdMode = computed(() => props.controller.state.quickCd)
+
+/**
+ * The title's relay-progress fill: while a remote relay comes up the whole title
+ * is the bar, painted by useConnectFill straight onto the title element. It follows
+ * the stage the relay reported but keeps creeping between stages, so a slow step
+ * reads as progress rather than a bar that stopped.
+ */
+const connectHost = ref<HTMLElement | null>(null)
+useConnectFill(() => props.controller.state.connectValue, connectHost)
 
 /**
  * The columns a row draws. The quick cd list shows only the directory's path —
@@ -3434,20 +3444,32 @@ function onRenameBlur(): void {
          so the blur would spill over the border into the pane next door. -->
     <div ref="paneContent" class="flex min-h-0 grow flex-col [clip-path:inset(0)]">
       <div
+        ref="connectHost"
         class="relative flex h-7 shrink-0 items-center gap-2 border-b border-border-subtle px-3"
-        :class="active ? 'bg-accent text-fg-bright' : 'bg-surface text-fg-dim'"
+        :class="[
+          active ? 'bg-accent text-fg-bright' : 'bg-surface text-fg-dim',
+          { 'connect-title': controller.state.connectValue !== null }
+        ]"
       >
-        <!-- A bar across the title's foot while the pane waits on a remote relay,
-             so a slow connect is motion on the pane itself and not just a word.
-             The delay in styles/connect.css keeps it from flashing on a fast list. -->
-        <div v-if="controller.state.loading" class="connect-bar" aria-hidden="true"></div>
+        <!-- The whole title *is* the bar while the pane waits on a remote relay:
+             styles/connect.css paints a fill across the title's own background,
+             eased toward the last stage but always creeping, so a slow step reads
+             as motion and not as a bar that stopped. -->
         <span class="flex min-w-0 flex-1 items-center text-ui-sm">
+          <!-- While the relay is coming up there is no path worth showing yet, so
+               the title states the stage instead, at the left where the path would
+               be. It is set in the title's own weight and colour: a slow connect is
+               information, not alarm. -->
+          <span
+            v-if="controller.state.connectPhase"
+            class="min-w-0 flex-1 truncate"
+          >{{ controller.state.connectPhase }}</span>
           <!-- An archive the pane is inside: the archive's own name is drawn in
                the archive hue, so it reads as set apart from the entry path after
                it. A folder merely *named* `foo.zip` keeps the plain title colour,
                which is how the two are told apart in the title. The segments
                carry no space between them, so the title stays one path. -->
-          <span v-if="quickCdMode" class="min-w-0 flex-1 truncate font-medium text-fg-bright">
+          <span v-else-if="quickCdMode" class="min-w-0 flex-1 truncate font-medium text-fg-bright">
             Quick cd
           </span>
           <template v-else-if="archiveTitle">
@@ -3467,19 +3489,6 @@ function onRenameBlur(): void {
             </template>
           </template>
           <span v-else class="min-w-0 flex-1 truncate">{{ controller.state.path || '—' }}</span>
-        </span>
-        <!-- The connect/listing state, in the title's own colour so it reads on
-             both backgrounds: bright on the active pane's accent bar, dim on the
-             other. The spinner's arc is `currentColor` for the same reason. -->
-        <span
-          v-if="controller.state.loading"
-          class="flex shrink-0 items-center gap-1.5 text-ui-sm"
-        >
-          <span
-            class="inline-block h-2.5 w-2.5 animate-spin rounded-full border-2 border-transparent border-t-current"
-            aria-hidden="true"
-          ></span>
-          <span>{{ controller.state.connectPhase ?? 'loading…' }}</span>
         </span>
         <!-- The work tree this pane is in: its HEAD, how far that has drifted
              from its upstream, and how much of the tree is changed. Per-pane,

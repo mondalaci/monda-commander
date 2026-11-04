@@ -1,5 +1,6 @@
 import { ipcMain, webContents } from 'electron'
 import { targetRegistry } from '../relay/registry'
+import type { RelayProgress } from '@shared/api'
 import type { Target } from '@shared/target'
 
 /**
@@ -23,8 +24,8 @@ export function registerRemoteHandlers(): void {
   ipcMain.handle('targets:list', () => targetRegistry.list())
 
   ipcMain.handle('targets:add', (event, input: { user: string; host: string; port?: number; relayPath?: string }) =>
-    targetRegistry.add(input, (phase) => {
-      if (!event.sender.isDestroyed()) event.sender.send('targets:progress', phase)
+    targetRegistry.add(input, (progress: RelayProgress) => {
+      if (!event.sender.isDestroyed()) event.sender.send('targets:progress', progress)
     })
   )
 

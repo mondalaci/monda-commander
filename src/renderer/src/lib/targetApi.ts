@@ -1,4 +1,4 @@
-import type { McGitApi, McFsApi, McPtyApi } from '@shared/api'
+import type { McGitApi, McFsApi, McPtyApi, RelayProgress } from '@shared/api'
 import type { Target, TargetApi } from '@shared/target'
 
 export type { TargetApi } from '@shared/target'
@@ -243,11 +243,13 @@ export function createTargetApi(target: Target): TargetApi {
   }
 }
 
-function remoteProgress(target: Target): (handler: (phase: string) => void) => () => void {
+function remoteProgress(target: Target): (handler: (progress: RelayProgress) => void) => () => void {
   const id = target.id
   return (handler) =>
     window.mc.remote.onEvent((event) => {
       if (event.targetId !== id || event.type !== 'target:progress') return
-      if (typeof event.phase === 'string') handler(event.phase)
+      if (typeof event.phase === 'string') {
+        handler({ phase: event.phase, value: typeof event.value === 'number' ? event.value : 0 })
+      }
     })
 }

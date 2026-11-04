@@ -129,12 +129,15 @@ export interface PaneState {
   selected: Set<string>
   loading: boolean
   /**
-   * The stage a remote target's relay is at while the pane waits for its first
-   * listing — "contacting", "installing", "starting", "verifying". Null for a
-   * local target, or once the first listing has come back; the pane's title shows
-   * it in place of the generic "loading…" so a slow connect is legible.
+   * The stage an ssh target's relay is at while the pane waits for its first
+   * listing — "contacting", "installing", "starting", "verifying" — and how far
+   * through the connect it sits, 0..1, for the title's determinate bar. Null for a
+   * local or root target (root is launched locally and comes up at once), or once
+   * the first listing has come back; the pane's title shows the stage in place of
+   * the path so a slow connect is legible.
    */
   connectPhase: string | null
+  connectValue: number | null
   error: string | null
   /**
    * What a folder's contents add up to, by path, for the folders the user asked
@@ -608,6 +611,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     selected: new Set<string>(),
     loading: false,
     connectPhase: null,
+    connectValue: null,
     error: null,
     renaming: null,
     fresh: new Set<string>(),
@@ -1989,21 +1993,29 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
   }
 
   async function init(): Promise<void> {
-    // A remote pane's first listing waits on the relay coming up; mark the pane
-    // busy now (the `home` call happens before `navigateTo` sets it) and listen for
-    // the connect's stages, so the wait is a label and not an empty list.
+    // Only an ssh connect has stages worth showing: it reaches a host, installs
+    // the relay there and starts it, which can take seconds. root@localhost is
+    // launched locally and is up at once, so a creeping bar there would only say
+    // something untrue; the pane stays an ordinary busy listing instead.
     state.loading = true
-    const isRemote = api.target.kind !== 'local'
-    if (isRemote) state.connectPhase = 'Connecting…'
-    const stopProgress = api.onProgress((phase) => {
-      state.connectPhase = phase
-    })
+    const showsConnect = api.target.kind === 'ssh'
+    if (showsConnect) {
+      state.connectPhase = 'Connecting…'
+      state.connectValue = 0.1
+    }
+    const stopProgress = showsConnect
+      ? api.onProgress((progress) => {
+          state.connectPhase = progress.phase
+          state.connectValue = progress.value
+        })
+      : () => {}
     try {
       const home = await api.fs.home()
       await navigateTo(home)
     } finally {
       stopProgress()
       state.connectPhase = null
+      state.connectValue = null
     }
   }
 

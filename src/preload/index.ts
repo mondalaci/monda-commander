@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
-import type { McApi, McRemoteEvent } from '@shared/api'
+import type { McApi, McRemoteEvent, RelayProgress } from '@shared/api'
 import type {
   CopyOutcome,
   DeleteOutcome,
@@ -135,8 +135,8 @@ const api: McApi = {
     list: () => ipcRenderer.invoke('targets:list'),
     add: (input) => ipcRenderer.invoke('targets:add', input),
     remove: (id: string) => ipcRenderer.invoke('targets:remove', id),
-    onProgress: (handler: (phase: string) => void) => {
-      const listener = (_event: IpcRendererEvent, phase: string) => handler(phase)
+    onProgress: (handler: (progress: RelayProgress) => void) => {
+      const listener = (_event: IpcRendererEvent, progress: RelayProgress) => handler(progress)
       ipcRenderer.on('targets:progress', listener)
       return () => ipcRenderer.off('targets:progress', listener)
     }

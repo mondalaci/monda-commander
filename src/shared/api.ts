@@ -225,6 +225,19 @@ export interface McApi {
 }
 
 /**
+ * One stage of a target's relay coming up, as the pane draws it: the label for
+ * the title, and how far through the whole connect that stage sits. `value` is
+ * what makes the title's bar determinate — the stage is a real step, so the bar
+ * can say how much is left instead of sliding with no end in sight.
+ */
+export interface RelayProgress {
+  /** The stage now under way, spelled for the pane title, e.g. "Contacting uhk…". */
+  phase: string
+  /** How far through the connect this stage is, 0..1. */
+  value: number
+}
+
+/**
  * The targets a workspace can run on. Local and root are always present; ssh
  * targets are the ones the user saved. `add` takes what the picker's dialog
  * collects and returns the stored target, id included.
@@ -242,9 +255,10 @@ export interface McTargetsApi {
   /**
    * Live stages of an in-flight `add`: contacting the host, installing the relay,
    * starting it, verifying it. Sent while the promise is pending so the dialog can
-   * tell a slow ssh handshake from a download from a hang.
+   * tell a slow ssh handshake from a download from a hang, each with a fraction of
+   * the connect done for a determinate bar.
    */
-  onProgress(handler: (phase: string) => void): () => void
+  onProgress(handler: (progress: RelayProgress) => void): () => void
 }
 
 /** The raw answer from a relay, before a target API turns it into a domain value. */
@@ -270,6 +284,8 @@ export interface McRemoteEvent {
   signal?: number
   /** For a `target:progress` event: the connect stage now under way. */
   phase?: string
+  /** For a `target:progress` event: how far through the connect it sits, 0..1. */
+  value?: number
 }
 
 /**

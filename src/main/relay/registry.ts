@@ -5,6 +5,7 @@ import { app } from 'electron'
 import { RelayClient } from './client'
 import { ensureRemoteRelay } from './deploy'
 import { relayBinaryPath } from './paths'
+import type { RelayProgress } from '@shared/api'
 import { LOCAL_TARGET_ID, ROOT_TARGET_ID, type Target } from '@shared/target'
 
 /**
@@ -79,7 +80,7 @@ export class TargetRegistry {
 
   async add(
     input: { user: string; host: string; port?: number; relayPath?: string },
-    onProgress?: (phase: string) => void
+    onProgress?: (progress: RelayProgress) => void
   ): Promise<Target> {
     const user = input.user.trim()
     const host = input.host.trim()
@@ -103,7 +104,7 @@ export class TargetRegistry {
     // failure too. A target that cannot be reached is never saved, and the reason
     // is what the caller shows — a typo does not become a permanent entry.
     const client = await this.launch(target, onProgress)
-    onProgress?.('Verifying…')
+    onProgress?.({ phase: 'Verifying…', value: 0.92 })
     const hello = await client.request('hello', {})
     if (!hello.ok) {
       client.close()
@@ -148,8 +149,8 @@ export class TargetRegistry {
       throw new Error(failed.message)
     }
 
-    const launched = this.launch(target, (phase) =>
-      this.forward(id, { type: 'target:progress', phase })
+    const launched = this.launch(target, (progress) =>
+      this.forward(id, { type: 'target:progress', phase: progress.phase, value: progress.value })
     ).then(
       (client) => {
         this.launchFailures.delete(id)
@@ -176,14 +177,17 @@ export class TargetRegistry {
    * here is thrown rather than hidden: the IPC layer turns it into the error the
    * pane shows, so an unreachable host is a message and not an empty panel.
    */
-  private async launch(target: Target, onProgress?: (phase: string) => void): Promise<RelayClient> {
+  private async launch(
+    target: Target,
+    onProgress?: (progress: RelayProgress) => void
+  ): Promise<RelayClient> {
     if (target.kind === 'ssh') {
       await ensureRemoteRelay(target, onProgress)
     } else if (!existsSync(relayBinaryPath())) {
       throw new Error('The relay binary is missing — run `npm run build:relay`')
     }
 
-    onProgress?.('Starting the relay…')
+    onProgress?.({ phase: 'Starting relay…', value: 0.8 })
     const { command, args } = this.launchFor(target)
     const client = new RelayClient(target, command, args)
     client.onEvent('fs:changed', (event) => this.forward(target.id, event))

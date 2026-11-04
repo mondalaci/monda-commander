@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
+import type { RelayProgress } from '@shared/api'
 import type { Target } from '@shared/target'
 import { RELAY_VERSION, relayBinaryPath } from './paths'
 
@@ -78,14 +79,14 @@ function sshRun(target: Target, command: string, stdin?: Buffer): Promise<SshRes
 
 export async function ensureRemoteRelay(
   target: Target,
-  onProgress?: (phase: string) => void
+  onProgress?: (progress: RelayProgress) => void
 ): Promise<void> {
   const binary = relayBinaryPath()
   if (!existsSync(binary)) {
     throw new Error('The relay binary is missing — run `npm run build:relay`')
   }
 
-  onProgress?.(`Contacting ${target.host}…`)
+  onProgress?.({ phase: `Contacting ${target.host}…`, value: 0.3 })
   const home = await sshRun(target, 'printf %s "$HOME"')
   if (home.code !== 0 || home.stdout.trim() === '') {
     throw new Error(`Could not reach ${target.user}@${target.host}: ${sshReason(home.stderr)}`)
@@ -98,7 +99,7 @@ export async function ensureRemoteRelay(
   const check = await sshRun(target, `${quote(remotePath)} --version`)
   if (check.code === 0 && check.stdout.includes(`version ${RELAY_VERSION}`)) return
 
-  onProgress?.('Installing the relay…')
+  onProgress?.({ phase: 'Installing relay…', value: 0.55 })
   const dir = remotePath.slice(0, remotePath.lastIndexOf('/'))
   const quotedPath = quote(remotePath)
   const upload = `mkdir -p ${quote(dir)} && cat > ${quotedPath}.tmp && chmod +x ${quotedPath}.tmp && mv ${quotedPath}.tmp ${quotedPath}`

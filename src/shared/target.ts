@@ -1,4 +1,4 @@
-import type { McGitApi, McFsApi, McPtyApi } from './api'
+import type { McGitApi, McFsApi, McPtyApi, RelayProgress } from './api'
 
 /**
  * Where a workspace's files and shell live. A workspace is one connection: both
@@ -30,11 +30,12 @@ export interface TargetApi {
   git: McGitApi
   /**
    * The stages of this target's relay coming up — contacting the host, installing
-   * the relay, starting and verifying it. A no-op for a local target, which has no
-   * relay to wait for. A pane subscribes for the length of its first listing, so a
-   * slow remote connect is a label instead of a blank list.
+   * the relay, starting and verifying it — each with how far through the connect
+   * it sits. A no-op for a local target, which has no relay to wait for. A pane
+   * subscribes for the length of its first listing, so a slow remote connect is a
+   * labelled, determinate bar instead of a blank list.
    */
-  onProgress(handler: (phase: string) => void): () => void
+  onProgress(handler: (progress: RelayProgress) => void): () => void
 }
 
 /** `user@host`, the way a tab names the connection it is on. */

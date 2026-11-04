@@ -12,6 +12,7 @@ import FileViewer from '@renderer/components/FileViewer.vue'
 import PaneContextMenu from '@renderer/components/PaneContextMenu.vue'
 import { loadHideMode, hideMode, toggleHideMode } from '@renderer/composables/useHideMode'
 import { addQuickCd, isQuickCd, loadQuickCd, quickCdDirs, removeQuickCd, reorderQuickCd } from '@renderer/composables/useQuickCd'
+import { useConnectFill } from '@renderer/composables/useConnectFill'
 import { createWorkspace, type Workspace } from '@renderer/composables/useWorkspace'
 import { stopAllSizeWalks, type PaneController, type PaneEntry } from '@renderer/composables/useDirectory'
 import {
@@ -798,6 +799,15 @@ const pickerIndex = ref(0)
 const pickerInput = ref<HTMLInputElement | null>(null)
 const pickerConnecting = ref(false)
 const pickerPhase = ref('Connecting…')
+const pickerValue = ref(0)
+
+/**
+ * The picker's connecting row is its own progress bar; useConnectFill paints it
+ * straight onto the row and keeps it creeping between stages. It idles — and
+ * resets — whenever no connect is in flight.
+ */
+const pickerHost = ref<HTMLElement | null>(null)
+useConnectFill(() => (pickerConnecting.value ? pickerValue.value : null), pickerHost)
 
 const pickerFiltered = computed(() => {
   const query = pickerQuery.value.trim().toLowerCase()
@@ -914,10 +924,13 @@ async function submitTypedTarget(): Promise<void> {
   pickerConnecting.value = true
   targetError.value = ''
   pickerPhase.value = 'Connecting…'
+  pickerValue.value = 0.1
   // The stages the relay's install goes through, straight from main, so a slow
-  // ssh handshake, a download and a hang do not look the same.
-  const stopProgress = window.mc.targets.onProgress((phase) => {
-    pickerPhase.value = phase
+  // ssh handshake, a download and a hang do not look the same, and the bar has a
+  // real eta.
+  const stopProgress = window.mc.targets.onProgress((progress) => {
+    pickerPhase.value = progress.phase
+    pickerValue.value = progress.value
   })
   try {
     const target = await window.mc.targets.add(parsed)
@@ -2372,12 +2385,12 @@ onBeforeUnmount(() => {
               {{ choice.kind }}
             </span>
           </button>
-          <div v-if="pickerConnecting" class="flex items-center gap-2 px-2 py-1 text-fg-dim">
-            <span
-              class="inline-block h-3 w-3 shrink-0 animate-spin rounded-full border border-border border-t-accent"
-              aria-hidden="true"
-            ></span>
-            <span>{{ pickerPhase }}</span>
+          <div
+            v-if="pickerConnecting"
+            ref="pickerHost"
+            class="connect-title relative flex items-center rounded px-2 py-1 text-accent"
+          >
+            <span class="min-w-0 truncate">{{ pickerPhase }}</span>
           </div>
           <div
             v-else-if="pickerFiltered.length === 0 && pickerParsed"
