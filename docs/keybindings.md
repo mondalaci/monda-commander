@@ -36,6 +36,11 @@ being inside `foo.zip` reads apart from being inside a folder merely named so, a
 needs 7z on the machine; without it an archive file is opened like any other — and
 a double-click
 on a row is the same thing with the mouse (`activate` → `activateRow`),
+`Shift+Enter` hands the row to the system default application whatever the app
+would have done with it — an image or a video that would have been displayed, a
+runnable file that would have been started in the shell, an archive that would
+have been walked into — while a folder still descends, since there is no default
+application to force,
 `Ctrl+Enter` opens that same media as a full-screen display over the whole window
 (a triple-click on the file's name is the mouse's half of the gesture; pressed
 again it gives the window back, and `Escape` leaves the mode),

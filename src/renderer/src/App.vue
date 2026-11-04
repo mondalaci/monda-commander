@@ -318,9 +318,21 @@ watch(stageTarget, (target) => {
  * showing, it takes the display away. A double-click only ever asks for one,
  * since leaving the mode has gestures of its own (Escape, and a right-click on
  * the pane showing it).
+ *
+ * `force` is Shift+Enter: hand the file to the system default application even
+ * when the app has a native way of its own (the display, an archive, the shell).
  */
-function activateRow(side: PanelSide, again: boolean): void {
+function activateRow(side: PanelSide, again: boolean, force = false): void {
   const pane = side === 'left' ? left.value : right.value
+
+  // Shift+Enter is the escape hatch from every native handling: the file goes to
+  // the system default application whether the app would have displayed it,
+  // walked into it as an archive, or run it in the shell. The display is left
+  // alone rather than exited — this is not a gesture about the display.
+  if (force) {
+    void pane.activate(true)
+    return
+  }
 
   if (previewTargetFor(pane.current()) === null) {
     void pane.activate()
@@ -1902,7 +1914,9 @@ function handlePaneKey(event: KeyboardEvent): void {
       // exactly as the user left it.
       if (hasInput) return
       consume(event)
-      activateRow(activeSide.value, true)
+      // Shift+Enter forces the system default application — Enter's own "I know
+      // better than the app does" for the file under the cursor.
+      activateRow(activeSide.value, true, event.shiftKey)
       break
     default:
       break

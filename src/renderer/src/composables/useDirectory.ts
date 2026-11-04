@@ -196,7 +196,13 @@ export interface PaneController {
   moveCursor(delta: number): void
   movePage(direction: 1 | -1): void
   moveTo(index: number): void
-  activate(): Promise<void>
+  /**
+   * Open the row under the cursor. `force` is Shift+Enter's: a file is handed to
+   * the system default application even where the app would handle it itself (a
+   * displayed image or video, an enterable archive, a runnable file). Folders and
+   * the `..` row are unaffected — there is no "default application" to force.
+   */
+  activate(force?: boolean): Promise<void>
   current(): PaneEntry | undefined
   sizeDirectory(): boolean
   /** Re-order the listing by a column, cycling the direction of the one in use. */
@@ -1910,7 +1916,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     }
   }
 
-  async function activate(): Promise<void> {
+  async function activate(force = false): Promise<void> {
     const entry = current()
     if (!entry) return
 
@@ -1933,6 +1939,21 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
 
     if (entry.kind === 'directory') {
       await navigateTo(entry.path)
+      return
+    }
+
+    // Shift+Enter: the system default application, whatever the app would make
+    // of the file itself — an image or a video that would have been displayed, a
+    // runnable file that would have been started in the shell, an archive that
+    // would have been walked into. A file inside an archive is the one thing it
+    // cannot do, since it has no path the system could open.
+    if (force) {
+      if (inArchive()) {
+        state.error = 'Extract this entry to open it'
+        return
+      }
+      const message = await api.fs.open(entry.path)
+      if (message) state.error = message
       return
     }
 
