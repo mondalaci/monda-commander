@@ -21,6 +21,7 @@ import type {
   DirEntry,
   DirListing,
   DirSize,
+  DiskUsage,
   EntryKind,
   FileContent,
   ImagePreview,
@@ -46,6 +47,46 @@ function toFsError(error: unknown): { code: string; message: string } {
     code: err.code ?? 'EUNKNOWN',
     message: err.message || 'Unknown filesystem error'
   }
+}
+
+/** A mount point as `/proc` writes it: `\040` for a space, and so on. */
+function decodeMountPath(raw: string): string {
+  return raw.replace(/\\([0-7]{3})/g, (_match, octal: string) =>
+    String.fromCharCode(parseInt(octal, 8))
+  )
+}
+
+/** Whether `target` sits at or under `mount`, on a path boundary. */
+function isWithinMount(target: string, mount: string): boolean {
+  if (mount === '/') return target.startsWith('/')
+  const prefix = mount.endsWith('/') ? mount : `${mount}/`
+  return target === mount || target.startsWith(prefix)
+}
+
+/**
+ * The mount point holding a path, matched by the *longest* mount point in
+ * `/proc/self/mountinfo` that contains it — so a directory on a nested mount
+ * answers with the inner one rather than the root. Null when the file cannot be
+ * read, which is how a non-Linux platform or a restricted sandbox answers.
+ */
+async function mountPointFor(target: string): Promise<string | null> {
+  let text: string
+  try {
+    text = await fs.readFile('/proc/self/mountinfo', 'utf8')
+  } catch {
+    return null
+  }
+  const resolved = path.resolve(target)
+  let best: string | null = null
+  for (const line of text.split('\n')) {
+    if (!line) continue
+    const field = line.split(' ')[4]
+    if (!field) continue
+    const mount = decodeMountPath(field)
+    if (!isWithinMount(resolved, mount)) continue
+    if (best === null || mount.length > best.length) best = mount
+  }
+  return best
 }
 
 async function readEntry(dir: string, name: string): Promise<DirEntry> {
@@ -746,6 +787,36 @@ export function registerFsHandlers(): void {
     const walks = sizeWalks.get(event.sender.id)
     if (!walks) return
     for (const walk of walks) walk.cancelled = true
+  })
+
+  // How full the filesystem holding a pane's path is. `statfs` answers in
+  // blocks, so the block size turns them into bytes; `bavail` is what a
+  // non-root writer may still use, while `bfree` is every free block including
+  // the reserved ones `df`'s "used" subtracts. A path inside an archive is
+  // answered for the archive file itself — that is the disk extracting into it
+  // would fill.
+  ipcMain.handle('fs:disk-usage', async (_event, target: string): Promise<Result<DiskUsage>> => {
+    if (typeof target !== 'string' || target.length === 0) {
+      return { ok: false, error: { code: 'EINVAL', message: 'No path to measure' } }
+    }
+    const probe = isArchivePath(target)
+      ? (splitArchivePath(target) as { archive: string }).archive
+      : target
+    try {
+      const stats = await fs.statfs(probe)
+      const blockSize = stats.bsize
+      return {
+        ok: true,
+        data: {
+          total: blockSize * stats.blocks,
+          used: blockSize * (stats.blocks - stats.bfree),
+          free: blockSize * stats.bavail,
+          mount: await mountPointFor(probe)
+        }
+      }
+    } catch (error) {
+      return { ok: false, error: toFsError(error) }
+    }
   })
 
   ipcMain.handle('fs:open', async (_event, target: string) => {

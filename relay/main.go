@@ -18,7 +18,7 @@ import (
 // has to equal: a remote running anything else answers `--version` with a number
 // the app does not accept and is replaced before the connection opens. Adding an
 // operation to the protocol is what bumps it.
-const relayVersion = 4
+const relayVersion = 5
 
 type HelloInfo struct {
 	Version      int    `json:"version"`
@@ -190,6 +190,10 @@ func handle(conn *Conn, req Request, id uint32) {
 	case "fs:dirSize":
 		bytes, err := directorySize(req.Path)
 		respond(map[string]int64{"bytes": bytes}, err)
+
+	case "fs:diskUsage":
+		usage, err := diskUsage(req.Path)
+		respond(usage, err)
 
 	case "fs:imageSize":
 		respond(nil, nil)

@@ -33,6 +33,7 @@ import {
   type GitMark
 } from '@renderer/lib/gitMark'
 import FileIcon from '@renderer/components/FileIcon.vue'
+import DiskUsage from '@renderer/components/DiskUsage.vue'
 import ColumnAddButton from '@renderer/components/ColumnAddButton.vue'
 import ColumnDropMarker from '@renderer/components/ColumnDropMarker.vue'
 import HoldRing from '@renderer/components/HoldRing.vue'
@@ -41,7 +42,7 @@ import { hideMode } from '@renderer/composables/useHideMode'
 import { archiveDisplay } from '@shared/archive'
 import { HIDE_MODE_OFF_TOOLTIP, HIDE_MODE_TOOLTIP } from '@shared/hide'
 import { MEDIA_SCHEME } from '@shared/video'
-import type { PixelSize } from '@shared/types'
+import type { DiskUsage as DiskUsageInfo, PixelSize } from '@shared/types'
 
 const ROW_HEIGHT = 22
 
@@ -111,6 +112,32 @@ const emit = defineEmits<{
 // is. Listing and operations go through the pane's own controller; these are the
 // few calls the view makes itself (a preview's bytes, a clip's length).
 const api = injectTargetApi()
+
+/**
+ * How full this pane's filesystem is, drawn in the title bar left of the hide
+ * icon. It is re-read whenever the pane lands somewhere new or its listing is
+ * refreshed (a transfer that fills the disk should move the meter), and a token
+ * keeps a slow answer for a directory already left from landing on the new one.
+ */
+const diskUsage = ref<DiskUsageInfo | null>(null)
+let diskUsageToken = 0
+
+async function loadDiskUsage(path: string): Promise<void> {
+  const token = ++diskUsageToken
+  if (!path) {
+    diskUsage.value = null
+    return
+  }
+  const result = await api.fs.diskUsage(path)
+  if (token !== diskUsageToken) return
+  diskUsage.value = result.ok ? result.data : null
+}
+
+watch(
+  () => [props.controller.state.path, props.controller.state.allEntries] as const,
+  () => void loadDiskUsage(props.controller.state.path),
+  { immediate: true }
+)
 
 const listEl = ref<HTMLUListElement | null>(null)
 const footerEl = ref<HTMLElement | null>(null)
@@ -3491,6 +3518,10 @@ function onRenameBlur(): void {
             <span>{{ gitSummaryText }}</span>
           </span>
         </span>
+        <!-- How full this pane's filesystem is, left of the hide icon so the two
+             state chips share the title's tail; the tooltip carries the exact
+             sizes and the mount point. -->
+        <DiskUsage :usage="diskUsage" />
         <!-- The mode is otherwise invisible: the rows it covers are simply not
              there, so nothing in the listing says they were left out on purpose.
              The icon is a state as much as a notice — the dim open eye is the

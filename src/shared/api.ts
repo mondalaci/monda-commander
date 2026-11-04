@@ -5,6 +5,7 @@ import type {
   DirListing,
   DirSize,
   DirSizeProgress,
+  DiskUsage,
   FileContent,
   FsChangeEvent,
   GitChangeEvent,
@@ -35,6 +36,13 @@ export interface McFsApi {
    * holding one protected subdirectory still reports the rest.
    */
   dirSize(target: string): Promise<Result<DirSize>>
+  /**
+   * What the filesystem holding `path` looks like: its size, what is allocated
+   * on it, and what is still available to the user. A path inside an archive is
+   * answered for the archive file's own filesystem, since that is what extracting
+   * into it would fill.
+   */
+  diskUsage(target: string): Promise<Result<DiskUsage>>
   /**
    * Stop every folder walk this window has running. The walks give up at their
    * next batch, so a tree that is still being traversed does not keep the disk

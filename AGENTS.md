@@ -66,6 +66,9 @@ src/renderer/src/components/TitleBar.vue       frameless title bar + window cont
                                                hosts the workspace tab strip
 src/renderer/src/components/WorkspaceTabs.vue  the tab strip
 src/renderer/src/components/FilePanel.vue      one pane: path bar, list, footer, display
+src/renderer/src/components/DiskUsage.vue      the pane title's disk-occupancy widget:
+                                               `used / total` inside a progress bar,
+                                               with the mount point in its tooltip
 src/renderer/src/components/TerminalPane.vue   xterm: collapsed strip / full terminal
 src/renderer/src/components/FileViewer.vue     Monaco overlay: read-only (F3) or edit (F4)
 src/renderer/src/components/PaneContextMenu.vue  a row's menu
@@ -291,6 +294,20 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   is said in the pane's notice, and a write that fails is put back and said there
   too (`changeQuickCd`), so the rows never show an entry the next launch will not
   have.
+
+### Disk occupancy
+
+- **A pane's title bar shows how full its filesystem is, left of the hide icon.**
+  `fs:disk-usage` reads `statfs` for the pane's path (`DiskUsage`: `total`, `used`
+  as `df` counts it, `free` as what the user may still write), answered for the
+  archive file itself inside an archive and by the relay's `syscall.Statfs` on a
+  remote. The pane re-reads it on every navigation and refresh, token-guarded so
+  a slow answer for a directory already left cannot land, and its tooltip names
+  the filesystem's mount point (`/proc/self/mountinfo`, longest match, so a nested
+  mount answers with the inner one). `DiskUsage.vue` is one progress bar with
+  `used / total` (`2.1T / 4T`) written *inside* it, filled in the app's own green →
+  gold → red; the label's colour is *read from* the fill (WCAG luminance) rather
+  than fixed.
 
 ### Git status
 

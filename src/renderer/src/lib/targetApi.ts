@@ -7,6 +7,7 @@ import type {
   DeleteOutcome,
   DirListing,
   DirSize,
+  DiskUsage,
   FileContent,
   FsChangeEvent,
   GitChangeEvent,
@@ -60,6 +61,7 @@ function remoteFs(target: Target): McFsApi {
     },
     list: async (dir) => toResult<DirListing>(await request(id, 'fs:list', { path: dir })),
     dirSize: async (path) => toResult<DirSize>(await request(id, 'fs:dirSize', { path })),
+    diskUsage: async (path) => toResult<DiskUsage>(await request(id, 'fs:diskUsage', { path })),
     cancelDirSize: () => {
       // A remote walk is one request; there is no in-flight walk to cancel from
       // here. The pane's own epoch still stops it waiting for the answer.

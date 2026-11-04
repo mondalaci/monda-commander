@@ -31,6 +31,26 @@ export interface DirSize {
 }
 
 /**
+ * How full the filesystem holding a path is, for the pane title's occupancy
+ * readout. `total` is the filesystem's size, `used` is what is allocated (the
+ * total less the free blocks, which is what `df` reports), and `free` is what an
+ * unprivileged process may still write (the available blocks). `used + free` can
+ * therefore be smaller than `total`: the root-reserved blocks belong to neither.
+ */
+export interface DiskUsage {
+  total: number
+  used: number
+  free: number
+  /**
+   * The mount point the path's filesystem is mounted at, or null when it cannot
+   * be determined (no `/proc`, or a platform that keeps mounts elsewhere). Read
+   * from `/proc/self/mountinfo` and matched by the longest mount point that
+   * holds the path, so a nested mount answers with the inner one.
+   */
+  mount: string | null
+}
+
+/**
  * A running total from a folder walk, sent while it is still going so the row
  * can fill in as the tree is traversed rather than only when it ends. `path` is
  * the folder the walk was asked about, which is what lets a pane match the

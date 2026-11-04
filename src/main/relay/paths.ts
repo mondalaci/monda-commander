@@ -8,7 +8,7 @@ import { app } from 'electron'
  * (see deploy.ts), so a stale relay from an earlier build is never talked to with
  * a newer protocol; adding an operation to the protocol is what bumps it.
  */
-export const RELAY_VERSION = 4
+export const RELAY_VERSION = 5
 
 /**
  * The relay binary's location. Root needs an absolute path (pkexec does not do a
