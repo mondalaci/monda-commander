@@ -18,7 +18,7 @@ import (
 // has to equal: a remote running anything else answers `--version` with a number
 // the app does not accept and is replaced before the connection opens. Adding an
 // operation to the protocol is what bumps it.
-const relayVersion = 3
+const relayVersion = 4
 
 type HelloInfo struct {
 	Version      int    `json:"version"`
@@ -222,6 +222,10 @@ func handle(conn *Conn, req Request, id uint32) {
 	case "git:status":
 		status, err := gitStatus(req.Dir)
 		respond(status, err)
+
+	case "git:fileBase":
+		base, err := gitFileBase(req.Path)
+		respond(base, err)
 
 	case "git:watch":
 		respond(nil, startWatch(conn, req.Path, "git:changed"))

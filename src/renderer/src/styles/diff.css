@@ -1,0 +1,70 @@
+/*
+ * The viewer's changed-line view (FileViewer.vue, lib/diff.ts): the lines a
+ * file's working copy has added, changed or taken away since HEAD, shown
+ * interleaved — the buffer's side tinted on the line itself, HEAD's removed side
+ * painted as a view zone above it — in the panes' own git palette: green for an
+ * addition, amber for a modification, red for a removal, so the editor and the
+ * rows it was opened from speak the same hues.
+ *
+ * The line's own tint is deliberately faint: the gutter bar and the
+ * overview-ruler mark beside it carry the signal, and a line of text reads
+ * better on a hint of colour than on a slab of it.
+ *
+ * The three hex values are mirrored in DIFF_COLORS (lib/gitMark.ts), which is
+ * what the overview ruler is coloured with: a canvas cannot read a stylesheet.
+ */
+.monaco-editor .mc-diff-added {
+  background: color-mix(in srgb, #81b88b 14%, transparent);
+}
+
+.monaco-editor .mc-diff-modified {
+  background: color-mix(in srgb, #e2c08d 14%, transparent);
+}
+
+/*
+ * The removed side, shown inline above the run it was replaced by. It has no
+ * buffer line to tint — the viewer paints it as a view zone instead — so this is
+ * the one place the app draws editor text itself: HEAD's own lines, in the
+ * editor's font and line height, on the removal tint.
+ */
+.monaco-editor .mc-diff-removed {
+  background: color-mix(in srgb, #c74e39 14%, transparent);
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.monaco-editor .mc-diff-removed-line {
+  color: var(--color-fg);
+  white-space: pre;
+  overflow: hidden;
+}
+
+/* The last row of a removal too large to draw whole: how many lines were not. */
+.monaco-editor .mc-diff-removed-more {
+  color: var(--color-fg-dim);
+  font-style: italic;
+}
+
+/*
+ * The gutter bars sit at the left of the decoration strip, against the line
+ * numbers, as a diff's do.
+ */
+.monaco-editor .mc-diff-added-gutter {
+  box-shadow: inset 3px 0 0 0 #81b88b;
+}
+
+.monaco-editor .mc-diff-modified-gutter {
+  box-shadow: inset 3px 0 0 0 #e2c08d;
+}
+
+/* A removal's own text is the inline zone, so the gutter only needs the cue the
+   triangle gives: that a block was taken away after this line. */
+.monaco-editor .mc-diff-deleted::after {
+  content: '';
+  position: absolute;
+  right: 1px;
+  bottom: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-bottom: 5px solid #c74e39;
+}

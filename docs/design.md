@@ -1432,6 +1432,70 @@ the mouse still selects and copies; the current-line highlight goes too, via
 `renderLineHighlight: 'none'`, since with no caret there is nothing for it to point
 out.
 
+### The changed-line gutter is diffed in the renderer
+
+A changed file opened in the viewer shows what its working copy has done to HEAD,
+with both sides of each change on screen: the buffer's lines as a faint tint and a
+gutter bar (green for an addition, amber for a change), and HEAD's removed lines
+drawn inline above the run they were replaced by, on the same removal tint, so a
+modification reads as its old line then its new one and a removal reads as the old
+line alone. A triangle is left in the gutter at each removal and a mark sits in
+the overview ruler for every run. It is the same question the panes' dots answer,
+asked of the file rather than the listing, and it is drawn in the same palette
+(`DIFF_COLORS`, read from `gitMark.ts`, so the editor and the rows cannot drift
+apart). **The baseline is HEAD and not the index** on purpose: a change already
+staged still reads as changed from the last commit, which is what the pane's own
+dot says about it, where a diff against the index would blank the view for a file
+the row is still showing as modified.
+
+**The removed side is a view zone, not a decoration**, because there is no buffer
+line for it to be a decoration *of* — the text it names is gone from the model.
+Monaco's `IViewZone` is the mechanism the diff editor itself uses for this: a
+`domNode` the viewer builds from the baseline's own lines (`removedLinesNode`),
+each on the editor's line height so the interleaved old content lines up with the
+buffer beneath it, placed after the line the run sat behind (or above the run's
+first buffer line, for a change). A zone reserves a fixed `heightInLines`, so the
+old lines are drawn as they were and clipped at the right rather than wrapped: how
+many lines a wrapped one would need is not known before the zone is placed. A run
+larger than `MAX_REMOVED_LINES` shows that many and counts the rest in a final row,
+so a whole-file rewrite does not become a hundred thousand nodes. The zones are
+rebuilt with the decorations on every repaint, from the same comparison, so what
+HEAD held moves with the text exactly as the rest of the view does.
+
+**The comparison is made in the renderer, and main only supplies the baseline.**
+The user edits an unsaved buffer, so a diff taken once at open would drift under
+the caret the moment a line was inserted above it; re-running it against the
+buffer is what keeps the marks on the lines they belong to, and that can only
+happen where the buffer lives. Monaco's own diff engine was the obvious choice and
+was turned down: it is reachable only through a second diff editor or through an
+untyped import into its internals, either of which is more than a longest-common-
+subsequence over lines costs (`lib/diff.ts`). The common head and tail are trimmed
+before anything quadratic runs, which is what keeps an ordinary edit — and even
+most large ones — from ever reaching the matrix at all; a stretch that would
+outgrow `MAX_CELLS` is shown as one change rather than guessed at, and the whole
+thing is debounced so a keystroke does not re-run it for every character. Lines
+are compared without their terminators, so a checkout that shifted line endings
+under `core.autocrlf` does not read as a whole-file change.
+
+**A baseline is read as soon as it is needed, and never before.** App.vue asks for
+it when the pane's own git view already marks the file as changed, so a file that
+is changed when opened has its diff on screen from the first paint. Every other
+file has no baseline until the buffer is *edited*: the viewer then fetches one for
+itself and starts diffing, which is what makes a clean file opened and changed here
+show its diff without being closed and reopened — and what keeps a file that is
+only being looked at from ever costing a `git show`. The answer, once given, is
+settled: a path outside a repository, a symlink and an oversized blob each leave
+the view empty and are not asked again.
+
+Main answers `git:file-base` with `git show HEAD:<rel>`. A path HEAD has no blob
+for is new content — a new, staged-add or untracked file — and comes back empty, so
+every line reads as added, which is what is true of it; a path git *ignores* comes
+back as no baseline instead, the same nothing the panes' dots say about it. A
+`truncated` read is given no baseline, because the part the viewer could not show
+would read as one enormous deletion against the whole blob; a symlink is given none
+either, since its HEAD blob is the link's own text and the viewer was handed the
+file it points at.
+
 ### Monaco is imported only when the viewer first opens
 
 Its workers are answered by `MonacoEnvironment.getWorker` with Vite `?worker`

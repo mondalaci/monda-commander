@@ -10,6 +10,7 @@ import type {
   FileContent,
   FsChangeEvent,
   GitChangeEvent,
+  GitFileBase,
   GitStatus,
   ImagePreview,
   MoveOutcome,
@@ -205,6 +206,7 @@ function remoteGit(target: Target): McGitApi {
 
   return {
     status: async (dir) => toResult<GitStatus>(await request(id, 'git:status', { dir })),
+    fileBase: async (path) => toResult<GitFileBase>(await request(id, 'git:fileBase', { path })),
     watch: async (root) => {
       await request(id, 'git:watch', { path: root })
     },

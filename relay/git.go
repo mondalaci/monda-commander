@@ -7,6 +7,7 @@ package main
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -26,6 +27,15 @@ type GitStatus struct {
 	Ahead    int             `json:"ahead"`
 	Behind   int             `json:"behind"`
 	Files    []GitFileStatus `json:"files"`
+}
+
+// GitFileBase is what HEAD holds for one path, the baseline a remote viewer's
+// changed-line gutter is drawn against. Exists is false for a path HEAD has no
+// blob for — a new, untracked or ignored file — whose working copy then reads
+// as entirely added.
+type GitFileBase struct {
+	Text   string `json:"text"`
+	Exists bool   `json:"exists"`
 }
 
 // gitEnv is the environment a read must run in. A status read that is allowed
@@ -162,4 +172,41 @@ func gitStatus(dir string) (*GitStatus, error) {
 		}
 	}
 	return status, nil
+}
+
+// gitFileBase returns what HEAD holds for one path, the baseline a viewer's
+// changed-line gutter compares the working copy against. A path HEAD has no
+// blob for is not an error: it answers with Exists false and empty text, which
+// reads as a wholly added file. The lookup walks up from the file's own folder,
+// because `git -C` has to be pointed at a directory.
+func gitFileBase(path string) (*GitFileBase, error) {
+	dir := filepath.Dir(path)
+
+	rootOut, err := runGit(dir, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return nil, fsError("ENOTREPO", "not a git repository")
+	}
+	root := strings.TrimSpace(string(rootOut))
+
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil, fsError("ENOTREPO", "not a git repository")
+	}
+
+	// A symlink's HEAD blob is its target text, not the file a viewer read, so it
+	// has no line diff; no baseline is the honest answer.
+	if info, statErr := os.Lstat(path); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+		return nil, fsError("ENODIFF", "this file has no line diff")
+	}
+
+	out, err := runGit(root, "show", "HEAD:"+filepath.ToSlash(rel))
+	if err != nil {
+		// No blob in HEAD. An untracked path is new content and reads as all
+		// added; an ignored one is not git's to show, so it gets no baseline.
+		if _, ignoreErr := runGit(root, "check-ignore", "-q", "--", filepath.ToSlash(rel)); ignoreErr == nil {
+			return nil, fsError("ENODIFF", "this file is ignored")
+		}
+		return &GitFileBase{Text: "", Exists: false}, nil
+	}
+	return &GitFileBase{Text: string(out), Exists: true}, nil
 }

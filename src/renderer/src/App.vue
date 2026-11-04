@@ -27,6 +27,7 @@ import { targetLabel, type Target } from '@shared/target'
 import { targetApiKey } from '@renderer/lib/targetContext'
 import { HIDE_MARKER } from '@shared/hide'
 import { loadArchiveSupport } from '@renderer/lib/archive'
+import { untrackedAbove } from '@renderer/lib/gitMark'
 import { playSwapAnimation } from '@renderer/lib/swapAnimation'
 import type { FileContent, FsError, PanelSide } from '@shared/types'
 
@@ -162,6 +163,15 @@ const shellInput = computed(() => shell.value.inputLine.value)
 const viewerPath = ref<string | null>(null)
 const viewerMode = ref<'view' | 'edit'>('view')
 const viewerContent = ref<FileContent | null>(null)
+/**
+ * What HEAD holds for the file the viewer is showing, when App.vue already knows
+ * the file is changed — the head start that puts the diff on screen from the
+ * first paint. Null leaves it to the viewer, which fetches its own baseline the
+ * first time the buffer is edited (a clean file opened and changed must show its
+ * diff without being closed and reopened, and a file nobody edits pays for no
+ * `git show`).
+ */
+const viewerBase = ref<string | null>(null)
 const viewerRef = ref<InstanceType<typeof FileViewer> | null>(null)
 
 /**
@@ -1059,8 +1069,12 @@ async function openViewer(
   // while this one is in flight. The token keeps a stale read from opening the
   // viewer over a newer request.
   const request = (viewerRequest += 1)
+  // The workspace's target is taken once, so the file and the baseline it is
+  // diffed against are read from the same host even if the active tab changes
+  // while the reads are in flight.
+  const api = activeWorkspace.value.api
 
-  const result = await activeWorkspace.value.api.fs.read(target)
+  const result = await api.fs.read(target)
   if (request !== viewerRequest) return
 
   if (!result.ok) {
@@ -1070,7 +1084,29 @@ async function openViewer(
 
   pane.state.error = null
   discardOpen.value = false
+
+  // The changed-line view compares the buffer against what HEAD holds. When the
+  // pane's own git view already says the file is changed, the baseline is read
+  // here — before the viewer exists, like the file itself — so the diff is on
+  // screen from the first paint. A clean, ignored or outside-a-repo file is left
+  // to the viewer, which fetches a baseline only if and when the buffer is
+  // actually edited. A truncated read is given none either: the part it could
+  // not show would read as one huge deletion against the whole baseline.
+  const view = pane.state.git
+  const changed =
+    view !== null &&
+    !result.data.truncated &&
+    (view.files.has(target) || untrackedAbove(view, target) !== null)
+
+  let base: string | null = null
+  if (changed) {
+    const head = await api.git.fileBase(target)
+    if (request !== viewerRequest) return
+    if (head.ok) base = head.data.text
+  }
+
   viewerContent.value = result.data
+  viewerBase.value = base
   viewerMode.value = mode
   viewerPath.value = target
 }
@@ -1094,6 +1130,7 @@ function dismissViewer(): void {
   viewerRequest += 1
   viewerPath.value = null
   viewerContent.value = null
+  viewerBase.value = null
   focusPanes()
 }
 
@@ -2479,6 +2516,7 @@ onBeforeUnmount(() => {
         :path="viewerPath"
         :mode="viewerMode"
         :content="viewerContent"
+        :base="viewerBase"
         @close="closeViewer"
       />
     </div>

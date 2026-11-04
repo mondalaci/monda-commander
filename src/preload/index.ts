@@ -9,6 +9,7 @@ import type {
   FileContent,
   FsChangeEvent,
   GitChangeEvent,
+  GitFileBase,
   GitStatus,
   ImagePreview,
   PixelSize,
@@ -116,6 +117,8 @@ const api: McApi = {
   },
   git: {
     status: (dir: string): Promise<Result<GitStatus>> => ipcRenderer.invoke('git:status', dir),
+    fileBase: (path: string): Promise<Result<GitFileBase>> =>
+      ipcRenderer.invoke('git:file-base', path),
     watch: (root: string): Promise<void> => ipcRenderer.invoke('git:watch', root),
     unwatch: (root: string): Promise<void> => ipcRenderer.invoke('git:unwatch', root),
     onChanged: (handler: (event: GitChangeEvent) => void) => {

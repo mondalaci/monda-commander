@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type * as MonacoApi from 'monaco-editor'
 import type { FileContent } from '@shared/types'
 import { languageFor, loadMonaco } from '@renderer/lib/monaco'
+import { diffDecorations, diffLineArrays, toLines, type LineChange } from '@renderer/lib/diff'
 import { injectTargetApi } from '@renderer/lib/targetContext'
 
 /**
@@ -12,7 +13,18 @@ import { injectTargetApi } from '@renderer/lib/targetContext'
  * refusal is the pane's notice to give (see `openViewer` in App.vue), not an
  * overlay whose only content is the message.
  */
-const props = defineProps<{ path: string; mode: 'view' | 'edit'; content: FileContent }>()
+const props = defineProps<{
+  path: string
+  mode: 'view' | 'edit'
+  content: FileContent
+  /**
+   * What HEAD holds for the file, when App.vue already read it — a head start
+   * for a file the pane marks as changed, so the diff is on screen from the first
+   * paint. Null means the viewer fetches its own baseline the first time the
+   * buffer is edited; a file that is never edited is never diffed.
+   */
+  base: string | null
+}>()
 
 const emit = defineEmits<{ (event: 'close'): void }>()
 
@@ -50,11 +62,46 @@ let changeSubscription: MonacoApi.IDisposable | null = null
 let viewKeyDisposables: MonacoApi.IDisposable[] = []
 let savedTimer: number | null = null
 /**
+ * The changed-line gutter: the decorations themselves, the subscription that
+ * keeps them describing the current buffer, and the debounce that keeps a
+ * keystroke from re-running the comparison for every character typed.
+ */
+let diffMarks: MonacoApi.editor.IEditorDecorationsCollection | null = null
+let diffSubscription: MonacoApi.IDisposable | null = null
+let diffTimer: number | null = null
+/**
+ * The inline view zones showing the lines a change removed — the baseline side,
+ * which has no line in the buffer to decorate. They are rebuilt with the
+ * decorations on every repaint, so what HEAD held moves with the text too.
+ */
+let diffZones: string[] = []
+/**
+ * What HEAD holds for the file, split into lines — the comparison's baseline, or
+ * null before it is known. App.vue supplies it for a file its pane already marks
+ * changed; any other file fetches it on the first edit (see `ensureBaseline`), so
+ * a clean file pays for no `git show` until it is actually changed here.
+ */
+let baseLines: string[] | null = null
+/** Whether the baseline has been settled — fetched, or found to be nothing. */
+let baseSettled = false
+/** Whether a baseline is being fetched right now. */
+let baseAsking = false
+/**
  * The Monaco import is awaited, so the view can be unmounted (Escape, another
  * F3/F4) before it settles. Without this the late continuation would create an
  * editor in a detached element and leak it.
  */
 let disposed = false
+
+/** How long after the last edit the changed-line gutter is brought up to date. */
+const DIFF_DEBOUNCE_MS = 120
+
+/**
+ * The most removed lines one view zone will draw. A whole-file rewrite would
+ * otherwise put every line of the baseline into the DOM at once; past this the
+ * rest is counted in a final row instead.
+ */
+const MAX_REMOVED_LINES = 1000
 
 const editable = computed(() => props.mode === 'edit')
 const name = computed(() => props.path.split(/[\\/]/).pop() ?? props.path)
@@ -66,6 +113,101 @@ function monoFontStack(): string {
     .getPropertyValue('--font-mono')
     .trim()
   return value || 'monospace'
+}
+
+/**
+ * The buffer's lines, read the way the baseline was (`toLines`). `getLinesContent`
+ * hands back the lines already split, which is the form the comparison wants; a
+ * text that ends in a newline leaves Monaco a final empty line — exactly as
+ * splitting the text would — and that one is dropped to meet the baseline's line
+ * numbers. A `\r` left on a CRLF model's lines is stripped for the same reason:
+ * the baseline was split on `\r\n`, so the buffer has to meet it there.
+ */
+function bufferLines(): string[] {
+  if (model === null) return []
+  const lines = model.getLinesContent()
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i] ?? ''
+    if (line.endsWith('\r')) lines[i] = line.slice(0, -1)
+  }
+  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
+  return lines
+}
+
+/**
+ * The lines a change removed, as the DOM its view zone is drawn with: the
+ * baseline's own text, each line on the editor's line height, so the interleaved
+ * old content lines up with the buffer below it and the zone's reserved height is
+ * exactly right. A line is drawn as it was and clipped at the right rather than
+ * wrapped, because a zone reserves a fixed number of lines and how many a wrapped
+ * line would need is not known before the zone is placed. At most
+ * `MAX_REMOVED_LINES` are drawn — a whole-file rewrite must not become a hundred
+ * thousand nodes — with the rest counted in a final row.
+ */
+function removedLinesNode(
+  monaco: typeof MonacoApi,
+  lines: string[],
+  hidden: number
+): HTMLElement {
+  const node = document.createElement('div')
+  node.className = 'mc-diff-removed'
+  node.style.fontFamily = monoFontStack()
+  node.style.fontSize = `${editor?.getOption(monaco.editor.EditorOption.fontSize) ?? 12}px`
+  node.style.tabSize = String(model?.getOptions().tabSize ?? 4)
+
+  const lineHeight = editor?.getOption(monaco.editor.EditorOption.lineHeight) ?? 16
+  const addRow = (text: string, extra = ''): void => {
+    const row = document.createElement('div')
+    row.className = `mc-diff-removed-line${extra}`
+    row.style.height = `${lineHeight}px`
+    row.style.lineHeight = `${lineHeight}px`
+    row.textContent = text
+    node.appendChild(row)
+  }
+
+  for (const line of lines) addRow(line)
+  if (hidden > 0) addRow(`… ${hidden} more lines removed`, ' mc-diff-removed-more')
+  return node
+}
+
+/**
+ * Replace the removed-line view zones with the ones the current comparison asks
+ * for, so the interleaved old content describes the buffer as it now stands. A
+ * run with no baseline lines adds nothing; a run with buffer lines anchors its
+ * zone above them, a removal after the line it sat behind (or the top).
+ */
+function paintRemovedLines(
+  monaco: typeof MonacoApi,
+  changes: LineChange[],
+  baseLines: string[]
+): void {
+  if (editor === null) return
+  // Nothing to draw and nothing drawn last time: no need to touch the zones.
+  if (diffZones.length === 0 && !changes.some((change) => change.baseStart > 0)) return
+
+  editor.changeViewZones((accessor) => {
+    for (const id of diffZones) accessor.removeZone(id)
+    diffZones = []
+
+    for (const change of changes) {
+      if (change.baseStart === 0) continue
+
+      const removed = baseLines.slice(change.baseStart - 1, change.baseEnd)
+      if (removed.length === 0) continue
+
+      const shown = removed.slice(0, MAX_REMOVED_LINES)
+      const hidden = removed.length - shown.length
+
+      diffZones.push(
+        accessor.addZone({
+          afterLineNumber: change.currentStart > 0 ? change.currentStart - 1 : change.afterLine,
+          heightInLines: shown.length + (hidden > 0 ? 1 : 0),
+          domNode: removedLinesNode(monaco, shown, hidden),
+          suppressMouseDown: true
+        })
+      )
+    }
+  })
 }
 
 async function save(): Promise<void> {
@@ -188,6 +330,54 @@ onMounted(async () => {
     dirty.value = true
   })
 
+  // The changed-line view, when App.vue read a HEAD version to compare against.
+  // It is painted once now and again, debounced, after every edit, so the marks
+  // move with the text rather than being a snapshot that drifts under the caret.
+  // A truncated read is never given a baseline in the first place (App.vue
+  // checks), because the part it could not show would read as deleted.
+  diffMarks = editor.createDecorationsCollection()
+
+  if (props.base !== null) {
+    baseLines = toLines(props.base)
+    baseSettled = true
+  }
+
+  const paint = (): void => {
+    if (disposed || diffMarks === null) return
+    const lines = baseLines
+    const changes = lines === null ? [] : diffLineArrays(lines, bufferLines())
+    diffMarks.set(diffDecorations(monaco, changes))
+    paintRemovedLines(monaco, changes, lines ?? [])
+  }
+
+  // A file App.vue already had a baseline for is drawn at once. Any other file
+  // fetches one the first time it is edited — a clean file opened and changed
+  // here must start showing its diff without being closed and reopened, and it
+  // pays for no `git show` while it is only being looked at. The answer, success
+  // or not (no repository, a symlink, a blob too large), is settled once.
+  const ensureBaseline = (): void => {
+    if (baseSettled || baseAsking) return
+    baseAsking = true
+    void api.git.fileBase(props.path).then((result) => {
+      baseAsking = false
+      baseSettled = true
+      if (disposed) return
+      if (result.ok) baseLines = toLines(result.data.text)
+      paint()
+    })
+  }
+
+  paint()
+
+  diffSubscription = model.onDidChangeContent(() => {
+    ensureBaseline()
+    if (diffTimer !== null) window.clearTimeout(diffTimer)
+    diffTimer = window.setTimeout(() => {
+      diffTimer = null
+      paint()
+    }, DIFF_DEBOUNCE_MS)
+  })
+
   if (editable.value) {
     // Ctrl/Cmd+S is the save gesture; the window-level handler lets it through
     // to the editor while the viewer is open. Registered through `addAction`
@@ -213,8 +403,15 @@ onBeforeUnmount(() => {
   disposed = true
   if (savedTimer !== null) window.clearTimeout(savedTimer)
   savedTimer = null
+  if (diffTimer !== null) window.clearTimeout(diffTimer)
+  diffTimer = null
   changeSubscription?.dispose()
   changeSubscription = null
+  diffSubscription?.dispose()
+  diffSubscription = null
+  diffMarks?.clear()
+  diffMarks = null
+  diffZones = []
   for (const disposable of viewKeyDisposables) disposable.dispose()
   viewKeyDisposables = []
   editor?.dispose()

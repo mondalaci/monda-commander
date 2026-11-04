@@ -99,6 +99,19 @@ export interface GitStatus {
 }
 
 /**
+ * What HEAD holds for one path, read for the viewer's changed-line gutter. `text`
+ * is the blob decoded as UTF-8; `exists` is false when HEAD has no such path at
+ * all — a file that is new, untracked or ignored — in which case `text` is empty
+ * and every line of the working copy reads as added. The viewer is only ever
+ * handed one of these for a path its own pane already reports as changed, so an
+ * ignored path never reaches here.
+ */
+export interface GitFileBase {
+  text: string
+  exists: boolean
+}
+
+/**
  * Pushed to the renderer when a repository may have changed: a stage, a commit, a
  * checkout, or an ordinary write to a directory of it that main already watches.
  * `root` is the work tree's own path, matching `GitStatus.root`, so a pane can

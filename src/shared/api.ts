@@ -8,6 +8,7 @@ import type {
   FileContent,
   FsChangeEvent,
   GitChangeEvent,
+  GitFileBase,
   GitStatus,
   ImagePreview,
   PixelSize,
@@ -183,6 +184,15 @@ export interface McGitApi {
    * does for transcoding.
    */
   status(dir: string): Promise<Result<GitStatus>>
+  /**
+   * What HEAD holds for one path, for the viewer's changed-line gutter: the blob
+   * the working copy is compared against. `path` is the file itself rather than a
+   * directory, and the answer names the work tree that holds it. A path HEAD has
+   * no blob for — a new, untracked or ignored file — comes back with `exists`
+   * false and empty text rather than as an error, so the viewer can mark the whole
+   * working copy as added.
+   */
+  fileBase(path: string): Promise<Result<GitFileBase>>
   /**
    * Watch a work tree for changes to what git thinks. `root` is the
    * `GitStatus.root`, not an arbitrary directory, because a pane keeps one

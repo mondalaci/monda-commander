@@ -40,7 +40,7 @@ src/main/imageSize.ts    header-only image dimensions (PNG/JPEG+EXIF/GIF/BMP/ICO
 src/main/videoCodec.ts   header-only codec sniff for ISOBMFF (mp4/m4v/mov)
 src/main/media.ts        mc-media scheme: ranged video stream + live ffmpeg transcode
 src/main/ipc/watch.ts    IPC: fs:watch, fs:unwatch; pushes fs:changed
-src/main/ipc/git.ts      IPC: git:status, git:watch, git:unwatch;
+src/main/ipc/git.ts      IPC: git:status, git:file-base, git:watch, git:unwatch;
                          pushes git:changed (one watcher per work tree)
 src/main/gitStatus.ts    the `status --porcelain=v2` reader (pure: no Electron)
 src/main/ipc/pty.ts      IPC: pty:create/write/resize/kill/state; pushes pty:data, pty:exit
@@ -88,6 +88,11 @@ src/renderer/src/lib/fileIcon.ts      per-entry icon: name/extension -> 24x24 sv
                                       (FILENAME_ICONS, EXTENSION_ICONS, fallback text)
 src/renderer/src/lib/gitMark.ts       git status -> per-row marks, folder roll-ups,
                                       and the palette they are drawn in
+src/renderer/src/lib/diff.ts          the viewer's changed-line view: a line diff
+                                      against a HEAD baseline, and the Monaco
+                                      decorations the buffer's side is drawn with
+                                      (styles/diff.css; the removed side is a view
+                                      zone, built in FileViewer.vue)
 src/renderer/src/lib/hideAnimation.ts how a change to what the hide mode covers is
                                       shown: covered rows squeezed out where they
                                       stood, the rest closing the gap by sliding,
@@ -99,8 +104,8 @@ src/renderer/src/lib/paneMenu.ts      the context menu's model
 ```
 
 Styles are referenced inline below: `styles/mark.css`, `hold.css`, `notice.css`,
-`flash.css`, `hide.css`, `osd.css`, `swap.css`, `viewer.css`, `columns.css`, all
-under `src/renderer/src/`.
+`flash.css`, `hide.css`, `osd.css`, `swap.css`, `viewer.css`, `diff.css`,
+`columns.css`, all under `src/renderer/src/`.
 
 ## Gotchas
 
@@ -529,6 +534,26 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   name matches as a whole name, a dotted tail (`bash.bashrc`) or a bare head
   (`Dockerfile.dev`), and `/usr/bin/env` is followed past its options and
   `VAR=value` assignments.
+- **The changed-line view is diffed in the renderer and shown interleaved**,
+  against a HEAD baseline main reads (`git:file-base`, `git show HEAD:<rel>`):
+  `lib/diff.ts` is a plain LCS over the two files' lines with the common
+  head/tail trimmed first, so the marks update live as the buffer is edited
+  (debounced) rather than being a snapshot that drifts under the caret. The
+  buffer's side is a tinted line and a gutter bar (green added, amber modified);
+  HEAD's removed side has no buffer line to tint, so the viewer draws it as an
+  inline **view zone** above the run, in the editor's own font and line height
+  (`removedLinesNode`), with a triangle left in the gutter and a red ruler mark.
+  Lines are compared without their terminators, so a CRLF checkout does not
+  differ from the LF blob. App.vue reads the baseline eagerly for a file the
+  pane already marks changed, so its diff is on screen at open; every other file
+  has the viewer fetch its own baseline the first time the buffer is *edited*, so
+  a clean file opened and changed shows its diff without being reopened and a
+  file only looked at costs nothing. An ignored path gets no baseline (a
+  `truncated` read or a symlink gets none either, because the part that could not
+  be shown — or the link's own text — would read as a whole file of deletions);
+  a path HEAD has no blob for reads as wholly added. The palette is the panes'
+  (`DIFF_COLORS` from `gitMark.ts`); `styles/diff.css` paints the lines, the
+  gutter bars and the removal tint, and the overview ruler takes the same hues.
 
 ### The terminal
 

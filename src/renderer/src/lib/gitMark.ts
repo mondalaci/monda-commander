@@ -30,6 +30,20 @@ const PALETTE = {
   none: '#8c8c8c'
 } as const
 
+/**
+ * The three hues a changed line is drawn in inside the viewer, taken from the
+ * mark palette above so the editor's gutter and a row's dot cannot say different
+ * things: green for what HEAD does not have, amber for what it has differently,
+ * red for a line taken away. The values are also written into `styles/diff.css`,
+ * which the line itself is painted from; this copy is what the overview ruler —
+ * a canvas the stylesheet cannot reach — is coloured with.
+ */
+export const DIFF_COLORS = {
+  added: PALETTE.added,
+  modified: PALETTE.modified,
+  deleted: PALETTE.deleted
+} as const
+
 /** The colour a single status character is drawn in. */
 export function sideColor(side: string): string {
   switch (side) {

@@ -1,9 +1,10 @@
 import { execFile } from 'node:child_process'
 import { watch as watchPath, type FSWatcher } from 'node:fs'
-import { join } from 'node:path'
+import { lstat } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import { ipcMain, webContents } from 'electron'
-import type { FsError, GitChangeEvent, GitStatus, Result } from '@shared/types'
+import type { FsError, GitChangeEvent, GitFileBase, GitStatus, Result } from '@shared/types'
 import { parseStatus } from '../gitStatus'
 
 /**
@@ -31,6 +32,14 @@ const TIMEOUT_MS = 5000
  * truncate. 64 MiB is far past any plausible listing.
  */
 const MAX_BUFFER = 64 * 1024 * 1024
+
+/**
+ * The ceiling on a baseline the viewer will diff against, matching the viewer's
+ * own read limit. A larger HEAD blob is not shipped: the buffer it would be
+ * compared with is itself truncated at that size, and the untouched tail of the
+ * baseline would read as one enormous deletion.
+ */
+const BASE_MAX_BYTES = 8 * 1024 * 1024
 
 /**
  * A status read must not write to the repository it is reading. Without this git
@@ -105,8 +114,17 @@ function gitAvailable(): Promise<boolean> {
   return availableProbe
 }
 
-function notARepo(): Result<GitStatus> {
+function notARepo<T>(): Result<T> {
   return { ok: false, error: { code: 'ENOTREPO', message: 'Not a git repository' } }
+}
+
+/**
+ * A path that can have no line diff — a symlink, whose HEAD blob is its target
+ * rather than the file the viewer read — answered as no baseline rather than as
+ * an empty one, so the gutter is left alone instead of marking the whole file.
+ */
+function noBaseline(): Result<GitFileBase> {
+  return { ok: false, error: { code: 'ENODIFF', message: 'This file has no line diff' } }
 }
 
 function toGitError(error: unknown): FsError {
@@ -182,10 +200,10 @@ async function readStatus(repo: RepoInfo): Promise<Result<GitStatus>> {
 }
 
 async function statusFor(dir: string): Promise<Result<GitStatus>> {
-  if (!(await gitAvailable())) return notARepo()
+  if (!(await gitAvailable())) return notARepo<GitStatus>()
 
   const repo = await resolveRepo(dir)
-  if (!repo) return notARepo()
+  if (!repo) return notARepo<GitStatus>()
 
   const cached = statusCache.get(repo.root)
   if (cached !== undefined && Date.now() - cached.at < FRESH_MS) return cached.result
@@ -197,6 +215,91 @@ async function statusFor(dir: string): Promise<Result<GitStatus>> {
   const promise = readStatus(repo).finally(() => statusInFlight.delete(repo.root))
   statusInFlight.set(repo.root, promise)
   return promise
+}
+
+/**
+ * The viewer's baseline: what HEAD holds for one path, so the editor can mark
+ * the lines the working copy has changed. The blob is returned as it is — no
+ * smudge filters — which is what git's own diff compares against; a
+ * `core.autocrlf` checkout can differ from it in line endings, and the viewer
+ * ignores those because it compares line by line.
+ *
+ * A path HEAD has no blob for — a file that is new, untracked or ignored — is
+ * deliberately not an error: it comes back with `exists` false and empty text,
+ * so every line of the working copy reads as added. The caller has already asked
+ * the pane's own git view whether the file is changed, so an ignored path never
+ * arrives here to be misread.
+ */
+async function readFileBase(target: string): Promise<Result<GitFileBase>> {
+  if (!(await gitAvailable())) return notARepo<GitFileBase>()
+
+  // `git -C` has to be pointed at a directory, so the lookup walks up from the
+  // file's own folder; the repository it names is the one the file belongs to.
+  const repo = await resolveRepo(dirname(target))
+  if (!repo) return notARepo<GitFileBase>()
+
+  const rel = relativeToRoot(repo.root, target)
+  if (rel === null) return notARepo<GitFileBase>()
+
+  // A symlink is tracked for what it points at, not for what its target holds, so
+  // HEAD's blob for it is the link's text — comparing that with the file the
+  // viewer was actually handed would mark nonsense. No baseline is the honest
+  // answer, and the gutter simply stays empty.
+  try {
+    if ((await lstat(target)).isSymbolicLink()) return noBaseline()
+  } catch {
+    return noBaseline()
+  }
+
+  let stdout: string
+  try {
+    stdout = await git(['-C', repo.root, 'show', `HEAD:${rel}`])
+  } catch {
+    // No blob in HEAD. An untracked path is new content and reads as all added;
+    // an ignored one is not git's to show at all, so it gets no baseline — the
+    // same nothing the panes' dots say about it.
+    if (await isIgnored(repo.root, rel)) return noBaseline()
+    return { ok: true, data: { text: '', exists: false } }
+  }
+
+  // A baseline larger than the viewer would ever show cannot be compared against
+  // a buffer that was itself truncated: the tail would read as one huge deletion.
+  if (Buffer.byteLength(stdout, 'utf8') > BASE_MAX_BYTES) {
+    return {
+      ok: false,
+      error: { code: 'ETOOLARGE', message: 'The HEAD version is too large to diff' }
+    }
+  }
+
+  return { ok: true, data: { text: stdout, exists: true } }
+}
+
+/**
+ * Whether git ignores a path. `check-ignore` answers with its exit code alone,
+ * so resolution means ignored and a rejection is the ordinary "not ignored"; an
+ * error it cannot answer with is read the same as not ignored, which only ever
+ * means the file is taken as new content.
+ */
+async function isIgnored(root: string, rel: string): Promise<boolean> {
+  try {
+    await git(['-C', root, 'check-ignore', '-q', '--', rel])
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * A path relative to the work tree's root, forward-slashed for the `HEAD:<rel>`
+ * revision git takes. Null when the path is not under the root the way the two
+ * spellings have to line up — which should not happen, but is better answered
+ * than guessed past.
+ */
+function relativeToRoot(root: string, target: string): string | null {
+  const base = root.replace(/[\\/]+$/, '')
+  const separator = base.includes('\\') ? '\\' : '/'
+  if (!target.startsWith(base + separator)) return null
+  return target.slice(base.length + 1).replace(/\\/g, '/')
 }
 
 /**
@@ -343,9 +446,22 @@ export function noteDirectoryChanged(dir: string): void {
 
 export function registerGitHandlers(): void {
   ipcMain.handle('git:status', (_event, dir: string): Promise<Result<GitStatus>> => {
-    if (typeof dir !== 'string' || dir.length === 0) return Promise.resolve(notARepo())
+    if (typeof dir !== 'string' || dir.length === 0) return Promise.resolve(notARepo<GitStatus>())
     return statusFor(dir)
   })
+
+  ipcMain.handle(
+    'git:file-base',
+    (_event, path: string): Promise<Result<GitFileBase>> => {
+      if (typeof path !== 'string' || path.length === 0) {
+        return Promise.resolve({
+          ok: false,
+          error: { code: 'EINVAL', message: 'No path to look up' }
+        })
+      }
+      return readFileBase(path)
+    }
+  )
 
   ipcMain.handle('git:watch', async (event, root: string) => {
     if (typeof root !== 'string' || root.length === 0) return
