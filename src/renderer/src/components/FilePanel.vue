@@ -4505,6 +4505,18 @@ function footerSizeText(entry: PaneEntry): string {
  */
 let renameInput: HTMLInputElement | null = null
 
+/**
+ * The text the rename input is showing, held apart from the row it was started
+ * from. The pane re-renders for reasons of its own — a footer clip reports its
+ * position several times a second while it plays, a `git` read lands, a
+ * `fs:changed` refresh arrives — and a `:value` bound straight to the entry's
+ * name would be written back over whatever the user had typed on each of those
+ * renders. Binding the input to this draft instead keeps the two in step: a
+ * re-render patches it with the very text it already holds, so the caret and
+ * the selection stay where the user left them.
+ */
+const renameDraft = ref('')
+
 function setRenameInput(el: Element | ComponentPublicInstance | null): void {
   renameInput = el instanceof HTMLInputElement ? el : null
 }
@@ -4513,6 +4525,10 @@ watch(
   () => props.controller.state.renaming,
   async (renaming) => {
     if (!renaming) return
+    // Seed the draft from the entry once, so the input opens on the name it is
+    // about to replace (and not on the previous rename's leftovers).
+    renameDraft.value =
+      props.controller.state.entries.find((entry) => entry.path === renaming)?.name ?? ''
     await nextTick()
     const input = renameInput
     if (!input) return
@@ -4954,7 +4970,7 @@ function onRenameBlur(): void {
                 :ref="setRenameInput"
                 type="text"
                 class="min-w-0 flex-1 rounded border border-accent-strong bg-bg px-1 font-mono text-ui text-fg outline-none"
-                :value="row.entry.name"
+                v-model="renameDraft"
                 spellcheck="false"
                 autocomplete="off"
                 @keydown="onRenameKey"
