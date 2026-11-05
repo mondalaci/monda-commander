@@ -15,6 +15,10 @@ import {
   killAllPdfRenders,
   registerPdfHandlers
 } from './pdf'
+import {
+  killAllModelConversions,
+  registerModelHandlers
+} from './model'
 import { registerPdfViewHandlers } from './pdfView'
 import {
   killAllTranscodes,
@@ -104,6 +108,7 @@ registerWindowHandlers()
 registerRemoteHandlers()
 registerPdfHandlers()
 registerPdfViewHandlers()
+registerModelHandlers()
 
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
@@ -136,6 +141,7 @@ if (!gotLock) {
     closeAllGitWatchers()
     killAllTranscodes()
     killAllPdfRenders()
+    killAllModelConversions()
     targetRegistry.closeAll()
   })
 }

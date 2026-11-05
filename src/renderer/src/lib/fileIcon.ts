@@ -306,6 +306,7 @@ const EXTENSION_ICONS: Record<string, IconName> = {
   step: 'threeD',
   stpz: 'threeD',
   stl: 'threeD',
+  fcstd: 'threeD',
   obj: 'threeD',
   mtl: 'threeD',
   iges: 'threeD',

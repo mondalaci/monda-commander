@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { ComponentPublicInstance } from 'vue'
 import type { PaneController, PaneEntry, ScrollAlign, SortKey } from '@renderer/composables/useDirectory'
 import { COLUMN_TYPES } from '@renderer/composables/useDirectory'
@@ -63,7 +63,22 @@ import {
   PDF_ZOOM_TOOLTIP
 } from '@shared/pdf'
 import { MEDIA_SCHEME } from '@shared/video'
-import type { DiskUsage as DiskUsageInfo, PdfPageText, PdfWord, PixelSize } from '@shared/types'
+import type {
+  DiskUsage as DiskUsageInfo,
+  ModelData,
+  PdfPageText,
+  PdfWord,
+  PixelSize
+} from '@shared/types'
+
+/**
+ * The 3D model viewer is fetched on demand: three.js is a large library that only
+ * a model preview needs, so it is kept out of the renderer's main chunk and
+ * loaded when a row is actually a model — exactly as Monaco is kept out of it.
+ * The panes show a spinner in the reserved box until it lands, as they do while
+ * any other preview is read.
+ */
+const ModelViewer = defineAsyncComponent(() => import('@renderer/components/ModelViewer.vue'))
 
 const ROW_HEIGHT = 22
 
@@ -633,6 +648,14 @@ const frame = ref<string | null>(null)
 const pdfFrame = ref<string | null>(null)
 
 /**
+ * A 3D model's bytes and format, once main has read (or converted) it. Unlike a
+ * picture's frame this is not something to draw directly: the viewer parses it
+ * into a scene, so it is kept as the payload main handed over and handed on
+ * again, and rebuilt only when the row under the cursor changes.
+ */
+const modelData = ref<ModelData | null>(null)
+
+/**
  * How wide a page is rasterized for the footer thumbnail. The box is at most
  * 160px wide, so this is a few times that — enough for a crisp thumbnail on a
  * retina display without rendering a display-sized page for a small box.
@@ -745,6 +768,14 @@ const showVideo = computed(
 )
 /** The current page of the PDF under the cursor, once main has rasterized it. */
 const showPdf = computed(() => previewTarget.value?.kind === 'pdf' && pdfFrame.value !== null)
+/**
+ * The model under the cursor — its bytes and format — or null when the row is
+ * not one or main has not answered yet. What the footer's viewer is handed:
+ * non-null is also what puts the canvas on screen, in place of the spinner.
+ */
+const previewModel = computed<ModelData | null>(() =>
+  previewTarget.value?.kind === 'model' ? modelData.value : null
+)
 /**
  * Whether the box is still waiting for its picture. It is, for as long as the box
  * is on screen with no frame in it — and for a clip main has to transcode first
@@ -881,6 +912,33 @@ async function loadPdfPage(token: number, target: PreviewTarget): Promise<void> 
   }
 }
 
+/**
+ * Read the model under the cursor — or, for a CAD document, convert it to a mesh
+ * in main first. The bytes are not drawn here: the viewer parses them, and the
+ * box keeps its spinner until that viewer reports a frame is really there, so
+ * the reveal in a display grows out of a thumbnail that has something in it.
+ */
+async function loadModel(token: number, target: PreviewTarget): Promise<void> {
+  const result = await api.fs.readModel(target.path)
+  if (token !== previewToken) return
+  if (result.ok) {
+    modelData.value = result.data
+    previewState.value = 'loading'
+  } else {
+    previewState.value = 'failed'
+  }
+}
+
+/** The footer's viewer has drawn its first frame: the box is no longer waiting. */
+function onFooterModelReady(): void {
+  if (previewState.value !== 'failed') previewState.value = 'ready'
+}
+
+/** The file would not parse as a model: release the box rather than spin on it. */
+function onFooterModelError(): void {
+  previewState.value = 'failed'
+}
+
 watch(
   () => previewKeyFor(previewTarget.value),
   (key) => {
@@ -888,6 +946,7 @@ watch(
     const token = (previewToken += 1)
     frame.value = null
     pdfFrame.value = null
+    modelData.value = null
     videoTime.value = 0
     videoLength.value = null
     clipLength.value = null
@@ -916,7 +975,12 @@ watch(
     // what lets the box be reserved at the page's ratio before it is rendered.
     if (target.kind === 'image') void loadImageSizeHint(token, target.path)
     else if (target.kind === 'video') probeVideoCodec(target)
-    else {
+    else if (target.kind === 'model') {
+      // A model has no header to measure and no page to lay out, so the box is
+      // reserved square — a solid reads as one either way — until the viewer's
+      // own first frame arrives.
+      sizeHint.value = { width: 1, height: 1 }
+    } else {
       ensurePdfInfo(target, api)
       // A shape the header already gave keeps the box's ratio straight away; one
       // that has not answered yet leaves the row just left's shape standing, as
@@ -933,6 +997,7 @@ watch(
       settled.value = true
       if (target.kind === 'image') void loadImage(token, target.path)
       else if (target.kind === 'pdf') void loadPdfPage(token, target)
+      else if (target.kind === 'model') void loadModel(token, target)
     }, PREVIEW_SETTLE_MS)
   }
 )
@@ -1156,6 +1221,9 @@ const stageVideoUrl = computed(() => {
 
 /** An image being displayed on behalf of another pane, as a `data:` URL. */
 const stageFrame = ref<string | null>(null)
+
+/** A model being displayed on behalf of another pane: the payload the viewer parses. */
+const stageModel = ref<ModelData | null>(null)
 
 /**
  * Where the display has got to. It is kept out of sight until the frame itself
@@ -1566,6 +1634,7 @@ watch(
     stageDismissal?.cancel()
     stageDismissal = null
     shownStage.value = null
+    stageModel.value = null
     stageState.value = 'idle'
     clearStageClock()
     emit('stage-clock', null)
@@ -1577,7 +1646,19 @@ async function loadStage(stage: StageRequest): Promise<void> {
   const key = previewKeyFor(stage.target)
   const token = (stageToken += 1)
   stageFrame.value = null
+  stageModel.value = null
   stageState.value = key === null ? 'idle' : 'loading'
+
+  if (stage.target.kind === 'model') {
+    // A model is not a raster: main hands over the bytes (a CAD document meshed
+    // through FreeCAD first) and the viewer parses them. Its first frame is what
+    // reports `ready`, through `onStageShown` — which is also the reveal.
+    const result = await api.fs.readModel(stage.target.path)
+    if (token !== stageToken) return
+    if (result.ok) stageModel.value = result.data
+    else stageState.value = 'failed'
+    return
+  }
 
   if (stage.target.kind === 'pdf') {
     // A document is not one raster: its pages are stacked in a scroller, so
@@ -2506,6 +2587,7 @@ async function runDismissal(): Promise<void> {
 
   if (stage === null || element === null) {
     shownStage.value = null
+    stageModel.value = null
     stageState.value = 'idle'
     fullscreenPresentation.value = false
     clearStageClock()
@@ -2548,6 +2630,7 @@ async function runDismissal(): Promise<void> {
   if (shownStage.value !== stage) return
 
   shownStage.value = null
+  stageModel.value = null
   stageState.value = 'idle'
   fullscreenPresentation.value = false
   clearStageClock()
@@ -3461,6 +3544,15 @@ function onStageWheel(event: WheelEvent): void {
   // flip. The press is still noted, so a scroll with a button held does not read
   // as a click that leaves the mode.
   if (shownStage.value?.target.kind === 'pdf') {
+    noteWheelPress(event)
+    return
+  }
+
+  // A model is turned with the pointer and zoomed with the wheel, so the wheel
+  // is left to the viewer's own controls rather than turned into a folder step.
+  // The press is still noted, so a scroll with a button held does not read as
+  // the click that leaves the mode.
+  if (shownStage.value?.target.kind === 'model') {
     noteWheelPress(event)
     return
   }
@@ -5123,6 +5215,17 @@ function onRenameBlur(): void {
               @ended="readVideoClock"
               @error="onVideoError"
             ></video>
+            <!-- A 3D model, drawn into a canvas rather than read as a picture.
+                 The thumbnail turns on its own; the display, in the other pane,
+                 is where it is handled with the pointer. -->
+            <ModelViewer
+              v-else-if="previewModel && !transferred"
+              :key="previewKeyFor(previewTarget) ?? undefined"
+              :format="previewModel.format"
+              :bytes="previewModel.bytes"
+              @ready="onFooterModelReady"
+              @error="onFooterModelError"
+            />
             <!-- The play/pause or seek feedback for this thumbnail's own clip. -->
             <PlaybackOsd
               v-if="footerOsd"
@@ -5676,6 +5779,29 @@ function onRenameBlur(): void {
             @dblclick="onStageMediaDblclick"
             @error="onStageError"
           />
+
+          <!-- A model is drawn into a canvas rather than handed to a media
+               element, so the wrapper is what the reveal measures and moves —
+               exactly as a still's own element is. The viewer's first frame is
+               what reports `ready`, which is what reveals the display. -->
+          <div
+            v-else-if="
+              stageModel && shownStage?.target.kind === 'model' && stageState !== 'failed'
+            "
+            ref="stageMedia"
+            class="relative h-full w-full origin-top-left"
+            :class="stageState === 'ready' ? '' : 'invisible'"
+            @dblclick="onStageMediaDblclick"
+          >
+            <ModelViewer
+              :key="previewKeyFor(shownStage?.target ?? null) ?? undefined"
+              :format="stageModel.format"
+              :bytes="stageModel.bytes"
+              interactive
+              @ready="onStageShown"
+              @error="onStageError"
+            />
+          </div>
 
           <!-- The play/pause or seek feedback for the clip being displayed —
                over the picture, and never a click of its own. -->

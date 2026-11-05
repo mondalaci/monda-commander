@@ -1,6 +1,7 @@
 import { ref } from 'vue'
 import { isArchivePath } from '@shared/archive'
 import { imageMimeFor } from '@shared/image'
+import { isCadModelName, meshFormatFor } from '@shared/model'
 import { isPdfName } from '@shared/pdf'
 import {
   codecNeedsTranscode,
@@ -44,8 +45,27 @@ export async function loadPdfSupport(): Promise<void> {
   renderPdf.value = await window.mc.fs.canRenderPdf()
 }
 
-/** What a pane can show of the cursor's row: an image, a video, or a PDF page. */
-export type PreviewKind = 'image' | 'video' | 'pdf'
+/**
+ * Whether main can mesh a CAD document (STEP, IGES, FreeCAD's `.fcstd`) for the
+ * preview. Until the answer is in, those files are not models at all — which is
+ * also the answer when FreeCAD is missing, and what keeps `Enter` opening such a
+ * file with the system rather than showing nothing. A mesh format needs no
+ * answer: the renderer parses it itself, so STL, 3MF, OBJ, PLY and glTF are
+ * previewable however this lands.
+ */
+const convertModel = ref(false)
+
+export function canConvertModelPreview(): boolean {
+  return convertModel.value
+}
+
+/** Ask main once, early, so the answer is there before a cursor lands on a `.step`. */
+export async function loadModelSupport(): Promise<void> {
+  convertModel.value = await window.mc.fs.canRenderModel()
+}
+
+/** What a pane can show of the cursor's row: an image, a video, a PDF page, or a model. */
+export type PreviewKind = 'image' | 'video' | 'pdf' | 'model'
 
 /**
  * The video codec inside a container Chromium demuxes, by the identity of the
@@ -123,6 +143,12 @@ export function previewKindFor(entry: PaneEntry): PreviewKind | null {
   }
 
   if (canTranscodePreview() && needsTranscode(entry.name)) return 'video'
+
+  // A mesh format is previewable wherever the renderer runs, its triangles parsed
+  // there; a CAD document is a model only where main can mesh it through FreeCAD.
+  if (meshFormatFor(entry.name) !== null) return 'model'
+  if (isCadModelName(entry.name)) return canConvertModelPreview() ? 'model' : null
+
   return null
 }
 

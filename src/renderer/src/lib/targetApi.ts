@@ -127,6 +127,14 @@ function remoteFs(target: Target): McFsApi {
       toResult<ImagePreview>(await request(id, 'fs:pdfPage', { path, page, width })),
     pdfText: async (path, page) =>
       toResult<PdfPageText>(await request(id, 'fs:pdfText', { path, page })),
+    // A model preview is the local machine's: a CAD conversion runs a binary
+    // main can reach, and a mesh travels the bridge whole. The panes gate it the
+    // same way they gate a clip and a PDF.
+    canRenderModel: async () => false,
+    readModel: async () => ({
+      ok: false,
+      error: { code: 'ENOTSUP', message: 'Models are previewed on the local machine only' }
+    }),
     write: async (path, text) => {
       const response = await request(id, 'fs:write', { path }, new TextEncoder().encode(text))
       return toResult<string>(response)

@@ -191,6 +191,25 @@ export interface PixelSize {
 }
 
 /**
+ * The mesh formats a 3D model preview is parsed from, one per parser the
+ * renderer reaches for. `gltf` covers both the JSON `.gltf` and its binary
+ * `.glb` sibling, which one loader reads either way.
+ */
+export type ModelFormat = 'stl' | '3mf' | 'obj' | 'ply' | 'gltf'
+
+/**
+ * A 3D model read for a pane's preview: the bytes of a mesh the renderer parses
+ * itself, and which parser to use. A mesh format travels as it stands; a CAD
+ * document (STEP, IGES, FreeCAD's `.fcstd`) is a boundary representation no mesh
+ * loader can open, so main converts it to STL first — `format` is `'stl'` for
+ * those however the file was named, exactly as a PDF page arrives as a PNG.
+ */
+export interface ModelData {
+  format: ModelFormat
+  bytes: Uint8Array
+}
+
+/**
  * What a pane needs to show a PDF: how many pages it has, and the shape of each
  * so the pages can be stacked without rendering anything first. `sizes` is in
  * points, as `pdfinfo` reports it, with each page's own rotation folded in so it

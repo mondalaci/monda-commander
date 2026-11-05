@@ -12,6 +12,7 @@ import type {
   GitFileBase,
   GitStatus,
   ImagePreview,
+  ModelData,
   PixelSize,
   MoveOutcome,
   PtyDataEvent,
@@ -125,6 +126,23 @@ export interface McFsApi {
    * draw a layer for.
    */
   pdfText(target: string, page: number): Promise<Result<PdfPageText>>
+  /**
+   * Whether main can convert a CAD document — STEP, IGES, FreeCAD's own
+   * `.fcstd` — to a mesh for the preview, which needs FreeCAD's command-line
+   * binary (`MC_FREECAD`). False on a machine without it, in which case those
+   * files are not models at all and `Enter` opens them with the system. A mesh
+   * format (STL, 3MF, OBJ, PLY, glTF) needs no answer: the renderer parses it
+   * itself.
+   */
+  canRenderModel(): Promise<boolean>
+  /**
+   * A 3D model read for a pane's preview: the bytes of a mesh the renderer can
+   * parse, and which parser to use. A mesh format travels as it stands; a CAD
+   * document is converted to STL by main first, so `format` is `'stl'` for those
+   * however the file was named. Read on the local machine only — a CAD
+   * conversion runs a binary main can reach and a mesh travels the bridge whole.
+   */
+  readModel(target: string): Promise<Result<ModelData>>
   /**
    * Overwrite a regular text file with edited content (the editor's save).
    * Returns the resolved path that was written.

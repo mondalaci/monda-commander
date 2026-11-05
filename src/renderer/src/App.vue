@@ -17,6 +17,7 @@ import { useConnectFill } from '@renderer/composables/useConnectFill'
 import { createWorkspace, type Workspace } from '@renderer/composables/useWorkspace'
 import { stopAllSizeWalks, type PaneController, type PaneEntry } from '@renderer/composables/useDirectory'
 import {
+  loadModelSupport,
   loadPdfSupport,
   loadTranscodeSupport,
   previewKeyFor,
@@ -2593,6 +2594,9 @@ onMounted(async () => {
   void loadTranscodeSupport()
   // Whether Enter on a `.pdf` renders it in-app or opens it with the system.
   void loadPdfSupport()
+  // Whether a CAD document (STEP, `.fcstd`) can be meshed in-app, or is opened
+  // with the system; a mesh format (STL, 3MF, OBJ) needs no answer.
+  void loadModelSupport()
   // Whether Enter on a `.zip` enters it or opens it with the system.
   void loadArchiveSupport()
   // The remembered quick cd list, so a pane opened on it already has the folders.

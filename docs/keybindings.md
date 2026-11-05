@@ -39,8 +39,9 @@ page is wider than the pane and scrolls sideways. The transport's fit buttons an
 `Enter` descends, or runs a file the user can run in the workspace's own shell —
 the green name is a promise, and the shell is where it is kept, shown for as long
 as the program runs — or opens anything else with the system default app, except
-an image, a video or a PDF, which it displays in the other pane instead (one there
-is nothing in the app to decode is opened like any other file), and except an archive
+an image, a video, a PDF or a 3D model, which it displays in the other pane instead
+(one there is nothing in the app to render — for a model, a CAD document with no
+FreeCAD to mesh it — is opened like any other file), and except an archive
 (a `.zip`, a `.tar.gz`, a `.7z`, …), which it *descends into* as if it were a
 directory — the pane title marks it with a chip carrying the archive's name, so
 being inside `foo.zip` reads apart from being inside a folder merely named so, and
@@ -49,8 +50,8 @@ needs 7z on the machine; without it an archive file is opened like any other —
 a double-click
 on a row is the same thing with the mouse (`activate` → `activateRow`),
 `Shift+Enter` hands the row to the system default application whatever the app
-would have done with it — an image, a video or a PDF that would have been displayed, a
-runnable file that would have been started in the shell, an archive that would
+would have done with it — an image, a video, a PDF or a model that would have been
+displayed, a runnable file that would have been started in the shell, an archive that would
 have been walked into — while a folder still descends, since there is no default
 application to force,
 `Ctrl+Enter` opens that same media as a full-screen display over the whole window

@@ -13,6 +13,7 @@ import type {
   GitFileBase,
   GitStatus,
   ImagePreview,
+  ModelData,
   PixelSize,
   MoveOutcome,
   PtyDataEvent,
@@ -56,6 +57,9 @@ const api: McApi = {
       ipcRenderer.invoke('fs:pdf-page', target, page, width),
     pdfText: (target: string, page: number): Promise<Result<PdfPageText>> =>
       ipcRenderer.invoke('fs:pdf-text', target, page),
+    canRenderModel: (): Promise<boolean> => ipcRenderer.invoke('fs:can-render-model'),
+    readModel: (target: string): Promise<Result<ModelData>> =>
+      ipcRenderer.invoke('fs:read-model', target),
     write: (target: string, text: string): Promise<Result<string>> =>
       ipcRenderer.invoke('fs:write', target, text),
     open: (target: string) => ipcRenderer.invoke('fs:open', target),

@@ -1333,6 +1333,72 @@ on a remote is left to the system. It is left out of an archive for the same rea
 and the page-count read is left out of one too — there is no real path for poppler to
 open either way.
 
+### Models
+
+A 3D file is shown as *media* like any other — it previews in the footer, `Enter`
+hands it to the display, `Ctrl+Enter` fills the window — but it is two quite
+different things behind that one shape, and the split is what keeps the app honest
+about its dependencies.
+
+A **mesh** format (STL, 3MF, OBJ, PLY, glTF) *is* its triangles, so nothing external
+is needed: main reads the bytes (`fs:read-model`) and the renderer parses them itself
+through three.js (`lib/model.ts`). No system tool, no scheme, no CSP change — the
+library is pure JavaScript, and Vite bundles it into the renderer on demand: the
+viewer is an async component, so three and its loaders sit in their own chunk and
+are fetched when a row really is a model, exactly as Monaco is kept out of the main
+chunk. A **CAD** document
+(STEP, IGES, FreeCAD's own `.fcstd`) is a boundary representation, and no mesh loader
+can open one; the only thing that can is a CAD kernel. So main meshes it to STL
+through FreeCAD first (`MC_FREECAD`, one conversion per file, cached by identity,
+run in a scratch directory and killed on quit), exactly as a PDF page is rasterized
+through poppler. That is also why such a file is **not a model at all** on a machine
+without FreeCAD (`fs:can-render-model`, asked once like the transcoder and the PDF
+renderer): rather than reserve a box for something that can never fill it, `Enter`
+opens the file with the system, and the preview that can never render is never
+promised. A mesh format needs no such answer — it is previewable wherever the
+renderer runs.
+
+The conversion is one generated Python script, and two details of it matter. The
+first is that a STEP or IGES file is *not* a FreeCAD project, so it cannot go in
+through `openDocument` — which reads only `.fcstd` — and goes in through
+`Import.insert` instead; the script branches on the extension. The second is *what*
+to export: the shapes that are **nobody's input** (`not o.InList`). A PartDesign
+document lists a Body and, inside it, the Pad and the Pocket that built it; exporting
+every object with a shape would stack all three on top of one another. Taking only
+the top-level shapes — the Body, a boolean's result rather than its operands — gives
+the solid the user actually sees, and a document of only nested shapes falls back to
+every shape with one.
+
+On the renderer side a model is drawn into a **canvas** rather than handed to a media
+element, so a small component owns that canvas and its scene (`ModelViewer.vue`):
+it parses the bytes, centres the model on its own bounds, frames the camera on it and
+lights it, and turns it slowly so a single still reads as a solid rather than a
+silhouette — the thumbnail by turning the model itself, the enlarged view through
+`OrbitControls.autoRotate`. The two are drawn at different rates on purpose: the
+thumbnail is ambient, so it is throttled to a calm ~40fps, while the display is
+watched and handled and is drawn at every frame the compositor offers — the
+monitor's own rate — and only when `OrbitControls.update()` reports the camera
+moved, so a settled, non-spinning display draws nothing. The display also hands the
+pointer to `OrbitControls`,
+which take the turning over the moment they are grabbed (`autoRotate` is switched
+off on the controls' own `start` event), so from then on the drag turns the model
+and the wheel zooms it. The controls have **pan turned off**: the display's right
+button is already its own gesture (a quick right-click leaves the mode), so the
+model turns with the left button and zooms with the wheel, and the wheel is left to
+the controls rather than turned into a folder step, exactly as a PDF's is left to
+the browser's scroll. A
+WebGL context is a scarce resource — a folder of models is stepped through quickly —
+so the component gives its context back on unmount (`dispose()` and
+`forceContextLoss()`), not merely when the page goes away.
+
+What the display reveals off is the wrapper element around the canvas, not the canvas
+itself: `stageMedia` is a `div`, so the reveal, the travel between presentations and
+the wheel's hit test work on it as they do on a still's `<img>`. The one timing
+detail is that the viewer announces `ready` only once it has a **non-zero box** — a
+footer box that the strip has not yet grown to hold measures zero — and the display's
+reveal grows out of that event, so it never measures the media before there is any to
+measure.
+
 ### A clip Chromium cannot play is transcoded, when ffmpeg is there to do it
 
 Chromium has no demuxer for AVI or ASF, and no decoder for the motion JPEG of an

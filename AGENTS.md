@@ -56,11 +56,19 @@ src/main/quickCd.ts      quick cd directories persisted in userData/quick-cd.jso
 src/main/pdfView.ts      how a PDF display is sized — a fit (width/page) or a scale
                          of the page's own — persisted in userData/pdf-view.json;
                          IPC: pdf:view-get, pdf:view-set
+src/main/model.ts        the model reader (pure: no Electron except the two IPC
+                         handlers): a mesh format's bytes read as they stand, a CAD
+                         document (STEP/IGES/.fcstd) meshed to STL through FreeCAD
+                         (MC_FREECAD), probed once and cached; fs:read-model,
+                         fs:can-render-model
 src/preload/index.ts     contextBridge -> window.mc (implements McApi)
 src/shared/types.ts      DirEntry/DirListing/Result/ImagePreview/PixelSize/Pty* types
 src/shared/api.ts        McApi interface (the preload contract)
 src/shared/image.ts      extension -> previewable image MIME map
 src/shared/pdf.ts        the one PDF extension the panes render in-app, and its MIME
+src/shared/model.ts      the two model families by extension: mesh formats the
+                         renderer parses (stl/3mf/obj/ply/gltf) and CAD documents
+                         main meshes through FreeCAD (step/iges/fcstd)
 src/shared/video.ts      video MIME map, ffmpeg-only extensions, decodable codecs, scheme name
 src/shared/hide.ts       the `.mchide` name, the toggle key, the two tooltips
 src/shared/quickCd.ts    the quick cd key and the two tooltips the title-bar
@@ -80,6 +88,9 @@ src/renderer/src/components/DiskUsage.vue      the pane title's disk-occupancy w
                                                `used / total` inside a progress bar,
                                                with the mount point in its tooltip
 src/renderer/src/components/TerminalPane.vue   xterm: collapsed strip / full terminal
+src/renderer/src/components/ModelViewer.vue    three.js canvas for a 3D model: the
+                                               footer thumbnail (auto-turning) and
+                                               the display (orbit + wheel zoom)
 src/renderer/src/components/FileViewer.vue     Monaco overlay: read-only (F3) or edit (F4)
 src/renderer/src/components/PaneContextMenu.vue  a row's menu
 src/renderer/src/components/HoldRing.vue       the ring on a held right press
@@ -100,6 +111,9 @@ src/renderer/src/lib/preview.ts       preview target, PlaybackClock, stage reque
 src/renderer/src/lib/pdf.ts           the shared page each PDF is on, keyed by file,
                                       plus the stacked document's layout and the one
                                       probe of its page count and page shapes
+src/renderer/src/lib/model.ts         three.js loaders: a model's bytes -> one scene
+                                      object (mesh formats), with the neutral
+                                      material a bare STL/PLY is shaded in
 src/renderer/src/lib/monaco.ts        lazy monaco import + worker wiring + language
 src/renderer/src/lib/fileIcon.ts      per-entry icon: name/extension -> 24x24 svg
                                       (FILENAME_ICONS, EXTENSION_ICONS, fallback text)
@@ -649,6 +663,55 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   (`switchStagePresentation`, `stageTravelling` at `z-40`); the backdrop is
   `stageBackdrop` (faded, not switched); leaving latches `fullscreenPresentation`.
   The pane row must be `isolate` **and** `relative z-10`.
+
+### Models
+
+- **One preview kind, two families, split by extension** (`shared/model.ts`). A
+  *mesh* format (stl, 3mf, obj, ply, gltf/glb) is the file's own triangles: main
+  reads the bytes (`fs:read-model`) and the renderer parses them through three.js
+  (`lib/model.ts`) — no system dependency at all. A *CAD* document (step, stp,
+  iges, igs, `.fcstd`) is a boundary representation no mesh loader can open, so
+  main meshes it to STL through FreeCAD (`main/model.ts`, `MC_FREECAD`) first —
+  and, like a PDF without poppler, it is **not a model at all** where FreeCAD is
+  missing (`fs:can-render-model` is the probe, asked once like the others, so
+  `Enter` opens such a file with the system instead). A converted file comes back
+  as `{format: 'stl'}`, whatever it was named, exactly as a PDF page arrives as a
+  PNG. `fcstd` is the icon table's too (`fileIcon.ts`, the teal `threeD` cube).
+  the binary is `freecadcmd` on `PATH` (the default); `MC_FREECAD` names another.
+  A FreeCAD *AppImage* keeps `freecadcmd` *inside* itself rather than on `PATH`,
+  so that machine needs a one-line wrapper — `exec /path/FreeCAD.AppImage freecadcmd
+  "$@"` — saved as `freecadcmd` somewhere on `PATH`.
+- **`openDocument` reads only `.fcstd`; a STEP/IGES goes in through
+  `Import.insert`.** The conversion script `main/model.ts` generates branches on
+  the extension. It exports the shapes that are **nobody's input**
+  (`not o.InList`): a PartDesign Body is one solid, not the Body plus the Pad plus
+  the Pocket stacked on top of one another. A document with no such top shape
+  falls back to every shape. The conversion runs in a scratch dir, is killed on
+  quit (`killAllModelConversions`) and is cached by path+size/mtime.
+- **`ModelViewer.vue` owns a WebGL context and gives it back on unmount**
+  (`dispose()` **and** `forceContextLoss()`): stepping the cursor across a folder
+  of models must not push the browser past its context limit. It announces
+  `ready` only once it has a non-zero box — a footer box that is still `v-show`n
+  away measures zero — and the display's reveal grows out of that event.
+- **Both canvases turn on their own; the display's is then handled.** The
+  thumbnail auto-rotates at a throttled ~40fps (a still frame reads as a silhouette,
+  and a 64px ambient box is not worth a monitor-rate redraw), and the enlarged one
+  auto-rotates too — via `OrbitControls.autoRotate`, switched off on the controls'
+  own `start` event — so it reads as a solid until the pointer takes it over, at
+  which point the drag turns it and the wheel zooms it. **The display is not
+  throttled**: it is drawn every frame the compositor offers (the monitor's own
+  rate), and only when `OrbitControls.update()` reports the camera moved, so an
+  idle, settled, non-spinning display costs nothing. The display's controls have
+  **pan disabled**, because the display's right button is already its own gesture —
+  a quick right-click leaves the mode. `onStageWheel` hands a model's wheel to the
+  controls rather than stepping the folder (as it does for a PDF's scroll), and
+  `stageMedia` is the wrapper `div` the reveal measures and moves, the canvas inside
+  it being what draws.
+- **`three` is pure JS, bundled by Vite**, so the renderer CSP is untouched — no
+  `wasm-unsafe-eval`, no new scheme. It is the app's one large renderer
+  dependency, so `ModelViewer` is a `defineAsyncComponent` (`FilePanel.vue`):
+  three and its loaders sit in their own lazy chunk, fetched when a row really is
+  a model, exactly as Monaco is kept out of the main chunk.
 
 ### Media codecs
 

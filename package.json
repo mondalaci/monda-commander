@@ -12,7 +12,7 @@
     "dev:sandboxed": "electron-vite dev",
     "start": "electron-vite preview",
     "build": "npm run typecheck && electron-vite build",
-  "build:relay": "cd relay && go build -o ../resources/monda-relay .",
+    "build:relay": "cd relay && go build -o ../resources/monda-relay .",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
     "typecheck:web": "vue-tsc --noEmit -p tsconfig.web.json",
@@ -24,11 +24,13 @@
     "@xterm/xterm": "^6.0.0",
     "monaco-editor": "^0.57.0",
     "node-pty": "^1.1.0",
+    "three": "^0.187.0",
     "vue": "^3.5.44"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^26.6.5",
+    "@types/three": "^0.187.0",
     "@vitejs/plugin-vue": "^6.0.10",
     "@vue/tsconfig": "^0.9.1",
     "electron": "^44.8.0",
