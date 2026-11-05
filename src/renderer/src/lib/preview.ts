@@ -1,6 +1,7 @@
 import { ref } from 'vue'
 import { isArchivePath } from '@shared/archive'
 import { imageMimeFor } from '@shared/image'
+import { isPdfName } from '@shared/pdf'
 import {
   codecNeedsTranscode,
   needsTranscode,
@@ -26,8 +27,25 @@ export async function loadTranscodeSupport(): Promise<void> {
   transcode.value = await window.mc.fs.canTranscode()
 }
 
-/** What a pane can show of the cursor's row: an image, or a video. */
-export type PreviewKind = 'image' | 'video'
+/**
+ * Whether main can rasterize a PDF page in-app. Like transcode support, this has
+ * to be known before a cursor lands: until it is, a PDF is not media at all, and
+ * with no poppler on the machine that is the answer for good — Enter opens it
+ * with the system's own viewer instead.
+ */
+const renderPdf = ref(false)
+
+export function canRenderPdfPreview(): boolean {
+  return renderPdf.value
+}
+
+/** Ask main once, early, so the answer is there before a cursor lands on a `.pdf`. */
+export async function loadPdfSupport(): Promise<void> {
+  renderPdf.value = await window.mc.fs.canRenderPdf()
+}
+
+/** What a pane can show of the cursor's row: an image, a video, or a PDF page. */
+export type PreviewKind = 'image' | 'video' | 'pdf'
 
 /**
  * The video codec inside a container Chromium demuxes, by the identity of the
@@ -88,7 +106,12 @@ export function previewKindFor(entry: PaneEntry): PreviewKind | null {
   // A video inside an archive is not streamable: the ranged stream serves a real
   // file on disk, and an entry is not one. An image still previews, since it
   // travels as a data URL main can extract — so only the video answer is given up.
+  // A PDF is rendered from a real file too, so it goes with the video.
   if (isArchivePath(entry.path)) return null
+
+  // A PDF is media only where main has poppler to rasterize a page; without it,
+  // the file is an ordinary one and Enter opens it with the system's viewer.
+  if (isPdfName(entry.name)) return canRenderPdfPreview() ? 'pdf' : null
 
   if (videoMimeFor(entry.name) !== null) {
     // A container Chromium demuxes, which is still only playable while the
@@ -116,7 +139,8 @@ export interface PreviewTarget {
    * an ffmpeg encode rather than the file. True for a container Chromium has
    * nothing for, and for one it demuxes whose stream it cannot decode — so it is
    * the same flag that carries the seek that a live stream needs and the length
-   * only the file itself can report. False for an image, which is never a stream.
+   * only the file itself can report. False for an image or a PDF page, neither of
+   * which is a stream.
    */
   encode: boolean
   path: string

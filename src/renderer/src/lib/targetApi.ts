@@ -15,6 +15,8 @@ import type {
   GitStatus,
   ImagePreview,
   MoveOutcome,
+  PdfInfo,
+  PdfPageText,
   PixelSize,
   PtySpawnOptions,
   PtyStateSnapshot,
@@ -113,6 +115,18 @@ function remoteFs(target: Target): McFsApi {
       const response = await request(id, 'fs:videoDuration', { path })
       return response.ok ? ((response.data as number | null) ?? null) : null
     },
+    canRenderPdf: async () => {
+      const response = await request(id, 'fs:canRenderPdf', {})
+      return response.ok ? Boolean(response.data) : false
+    },
+    pdfInfo: async (path) => {
+      const response = await request(id, 'fs:pdfInfo', { path })
+      return response.ok ? ((response.data as PdfInfo | null) ?? null) : null
+    },
+    pdfPage: async (path, page, width) =>
+      toResult<ImagePreview>(await request(id, 'fs:pdfPage', { path, page, width })),
+    pdfText: async (path, page) =>
+      toResult<PdfPageText>(await request(id, 'fs:pdfText', { path, page })),
     write: async (path, text) => {
       const response = await request(id, 'fs:write', { path }, new TextEncoder().encode(text))
       return toResult<string>(response)

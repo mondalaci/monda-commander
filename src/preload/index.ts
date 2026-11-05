@@ -18,6 +18,9 @@ import type {
   PtyDataEvent,
   PtyExitEvent,
   PtySpawnOptions,
+  PdfInfo,
+  PdfPageText,
+  PdfViewState,
   Result
 } from '@shared/types'
 
@@ -46,6 +49,13 @@ const api: McApi = {
       ipcRenderer.invoke('fs:video-codec', target),
     videoDuration: (target: string): Promise<number | null> =>
       ipcRenderer.invoke('fs:video-duration', target),
+    canRenderPdf: (): Promise<boolean> => ipcRenderer.invoke('fs:can-render-pdf'),
+    pdfInfo: (target: string): Promise<PdfInfo | null> =>
+      ipcRenderer.invoke('fs:pdf-info', target),
+    pdfPage: (target: string, page: number, width: number): Promise<Result<ImagePreview>> =>
+      ipcRenderer.invoke('fs:pdf-page', target, page, width),
+    pdfText: (target: string, page: number): Promise<Result<PdfPageText>> =>
+      ipcRenderer.invoke('fs:pdf-text', target, page),
     write: (target: string, text: string): Promise<Result<string>> =>
       ipcRenderer.invoke('fs:write', target, text),
     open: (target: string) => ipcRenderer.invoke('fs:open', target),
@@ -117,6 +127,10 @@ const api: McApi = {
   quickCd: {
     get: (): Promise<string[]> => ipcRenderer.invoke('quickcd:get'),
     set: (directories: string[]): Promise<void> => ipcRenderer.invoke('quickcd:set', directories)
+  },
+  pdfView: {
+    get: (): Promise<PdfViewState> => ipcRenderer.invoke('pdf:view-get'),
+    set: (view: PdfViewState): Promise<void> => ipcRenderer.invoke('pdf:view-set', view)
   },
   git: {
     status: (dir: string): Promise<Result<GitStatus>> => ipcRenderer.invoke('git:status', dir),

@@ -190,6 +190,67 @@ export interface PixelSize {
   height: number
 }
 
+/**
+ * What a pane needs to show a PDF: how many pages it has, and the shape of each
+ * so the pages can be stacked without rendering anything first. `sizes` is in
+ * points, as `pdfinfo` reports it, with each page's own rotation folded in so it
+ * is the orientation the page is drawn in; it may be shorter than `pages` when
+ * the header stopped early — the first entry then stands for the rest — and is
+ * empty when nothing could be read, in which case a page keeps a default shape
+ * until it is rendered.
+ */
+export interface PdfInfo {
+  pages: number
+  sizes: PixelSize[]
+}
+
+/**
+ * How a PDF display is sized: `width` fills the box's width and scrolls a page at
+ * a time; `page` scales a whole page to fit the box, so the page's own aspect
+ * decides how much of the width is used.
+ */
+export type PdfFitMode = 'width' | 'page'
+
+/**
+ * How a PDF display is sized, remembered across launches and shared by every
+ * display. Either a *fit* — the page keeps filling the box as the box changes, and
+ * the magnification shown follows the box — or a scale of the page's own, which is
+ * the same size whatever the box does.
+ */
+export interface PdfViewState {
+  mode: PdfFitMode | 'free'
+  /** The magnification for `free` mode: 1 is the page at its own size. */
+  scale: number
+}
+
+/**
+ * One word of a page's text, with its box in the page's own points and its origin
+ * at the page's top-left — the coordinates a text layer is laid over the rendered
+ * page with. The box is what makes a selection land on the glyphs: the text is
+ * drawn transparently and the browser selects the boxes. `block` is the text block
+ * the word fell in, poppler's own grouping — the nearest thing to a paragraph a
+ * triple-click can offer.
+ */
+export interface PdfWord {
+  text: string
+  x: number
+  y: number
+  width: number
+  height: number
+  block: number
+}
+
+/**
+ * A page's text, as `pdftotext -bbox` reports it: the page's size in points and
+ * every word in reading order. Read for the page being looked at, so a document
+ * is never all extracted at once.
+ */
+export interface PdfPageText {
+  width: number
+  height: number
+  words: PdfWord[]
+}
+
 export type Result<T> = { ok: true; data: T } | { ok: false; error: FsError }
 
 export interface DeleteFailure {

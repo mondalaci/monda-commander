@@ -22,13 +22,25 @@ folder under the cursor, counting the total up in the row's size column as
 subdirectories are traversed, and steps to the next row so a column of folders can
 be sized in one pass — or, from the `..` row, sizes every folder in the listing
 at once and leaves the cursor where it is; with none of that it stays the shell's
-own space),
+own space — a PDF under the cursor has no playhead, so `←`/`→` and the coarser Ctrl
+steps turn it a page instead, `Space` not being claimed by it, and which page it is
+on is shown in the footer beside its count; in the display a PDF is a scrollable
+document, so a wheel over it scrolls it (across page boundaries) rather than turning
+a page, a middle-button drag pans it — both ways, since a magnified page is wider
+than the box as often as it is taller — and `Alt+W`/`Alt+P` fit it to the box's
+width or to a whole page (a fit is a rule rather than a size, so its percentage is
+the box's to decide — fit width being 100% by definition), and `Alt+=`/`Alt+-` step
+the magnification to the next rung above or below the percentage shown, which then
+stays that fraction of the pane however it is resized. The percentage is the page's
+width against the pane's — the `%` label says so in its tooltip — so above 100% the
+page is wider than the pane and scrolls sideways. The transport's fit buttons and its
+`-`/percentage/`+` group are the same gestures, remembered across launches),
 
 `Enter` descends, or runs a file the user can run in the workspace's own shell —
 the green name is a promise, and the shell is where it is kept, shown for as long
 as the program runs — or opens anything else with the system default app, except
-an image or a video, which it displays in the other pane instead (one there is
-nothing in the app to decode is opened like any other file), and except an archive
+an image, a video or a PDF, which it displays in the other pane instead (one there
+is nothing in the app to decode is opened like any other file), and except an archive
 (a `.zip`, a `.tar.gz`, a `.7z`, …), which it *descends into* as if it were a
 directory — the pane title marks it with a chip carrying the archive's name, so
 being inside `foo.zip` reads apart from being inside a folder merely named so, and
@@ -37,7 +49,7 @@ needs 7z on the machine; without it an archive file is opened like any other —
 a double-click
 on a row is the same thing with the mouse (`activate` → `activateRow`),
 `Shift+Enter` hands the row to the system default application whatever the app
-would have done with it — an image or a video that would have been displayed, a
+would have done with it — an image, a video or a PDF that would have been displayed, a
 runnable file that would have been started in the shell, an archive that would
 have been walked into — while a folder still descends, since there is no default
 application to force,
@@ -84,7 +96,15 @@ it is claimed outright there: interrupting is the *terminal's* — `Ctrl+O` expa
 it, and a `Ctrl+C` inside the expanded, focused terminal is still readline's own
 SIGINT — so a `Ctrl+C` with the panes showing is always the copy, whatever the
 command line is doing. A search box keeps the key, since it is a text field with
-a selection of its own. On the `..` row, or below the last one, there is nothing
+a selection of its own, and so does a selected PDF page — there `Ctrl+C` copies the
+selected *text* (the app puts it on the clipboard itself), the row's own copy
+standing aside for it. On such a page a double-click selects a word and a
+triple-click the paragraph — and holding the button and dragging adds whole
+paragraphs from there, the way they would in any text — rather than enlarging the
+display (`Ctrl+Enter` still does that), and a key typed while a page holds the
+keyboard is handed to the command line, so selecting text costs nothing afterwards
+— the first character typed goes into the shell and returns the keyboard there). On
+the `..` row, or below the last one, there is nothing
 to copy and it does nothing. Inside an archive the path copy takes the readable
 form the pane title shows (`foo.zip/dir/file`), because nothing in there is a
 real path,

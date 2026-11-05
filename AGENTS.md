@@ -39,6 +39,10 @@ src/main/ipc/fs.ts       IPC: fs:home, fs:list, fs:dir-size, fs:dir-size-cancel,
 src/main/imageSize.ts    header-only image dimensions (PNG/JPEG+EXIF/GIF/BMP/ICO/WebP/SVG)
 src/main/videoCodec.ts   header-only codec sniff for ISOBMFF (mp4/m4v/mov)
 src/main/media.ts        mc-media scheme: ranged video stream + live ffmpeg transcode
+src/main/pdf.ts          poppler-backed PDF pages: page count and every page's
+                         shape (pdfinfo), page -> PNG rasterization (pdftocairo),
+                         a page's word boxes for the selection layer (pdftotext
+                         -bbox-layout), all probed and cached
 src/main/ipc/watch.ts    IPC: fs:watch, fs:unwatch; pushes fs:changed
 src/main/ipc/git.ts      IPC: git:status, git:file-base, git:watch, git:unwatch;
                          pushes git:changed (one watcher per work tree)
@@ -49,10 +53,14 @@ src/main/ipc/hide.ts     IPC: hide:get, hide:set
 src/main/hideMode.ts     hide mode persisted in userData/hide-mode.json
 src/main/ipc/quickCd.ts  IPC: quickcd:get, quickcd:set
 src/main/quickCd.ts      quick cd directories persisted in userData/quick-cd.json
+src/main/pdfView.ts      how a PDF display is sized — a fit (width/page) or a scale
+                         of the page's own — persisted in userData/pdf-view.json;
+                         IPC: pdf:view-get, pdf:view-set
 src/preload/index.ts     contextBridge -> window.mc (implements McApi)
 src/shared/types.ts      DirEntry/DirListing/Result/ImagePreview/PixelSize/Pty* types
 src/shared/api.ts        McApi interface (the preload contract)
 src/shared/image.ts      extension -> previewable image MIME map
+src/shared/pdf.ts        the one PDF extension the panes render in-app, and its MIME
 src/shared/video.ts      video MIME map, ffmpeg-only extensions, decodable codecs, scheme name
 src/shared/hide.ts       the `.mchide` name, the toggle key, the two tooltips
 src/shared/archive.ts    the archive location model: the NUL-joined
@@ -81,11 +89,15 @@ src/renderer/src/composables/useShell.ts       createShell(id): one shell sessio
 src/renderer/src/composables/useDirectory.ts   per-pane navigation state + actions
 src/renderer/src/composables/useHideMode.ts    the hide mode's on/off state
 src/renderer/src/composables/useQuickCd.ts     the app-wide quick cd directory list
+src/renderer/src/composables/usePdfView.ts      the app-wide PDF fit + magnification
 src/renderer/src/lib/format.ts        size/date/permission formatting
 src/renderer/src/lib/executable.ts    runnable/green rule and `shouldExecute`
 src/renderer/src/lib/archive.ts       the archive-support ref (`fs:can-archive`),
                                       asked once so Enter knows what a `.zip` means
 src/renderer/src/lib/preview.ts       preview target, PlaybackClock, stage requests
+src/renderer/src/lib/pdf.ts           the shared page each PDF is on, keyed by file,
+                                      plus the stacked document's layout and the one
+                                      probe of its page count and page shapes
 src/renderer/src/lib/monaco.ts        lazy monaco import + worker wiring + language
 src/renderer/src/lib/fileIcon.ts      per-entry icon: name/extension -> 24x24 svg
                                       (FILENAME_ICONS, EXTENSION_ICONS, fallback text)
@@ -505,6 +517,20 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   bar shows position/length (`fs:video-duration` for an encoded clip). A `.mov` is
   served as `video/mp4` (`videoMimeFor`). The element mounts only after the cursor
   settles. The hardware video decoder is disabled in `src/main/index.ts`.
+- **A pane footer shows a PDF's page, and a display stacks the whole document.**
+  A PDF is not one picture, so main renders a *page*: `pdftocairo`
+  (`MC_PDFTOCAIRO`) at the width the box needs, as a PNG `data:` URL, alongside
+  `pdfinfo` (`MC_PDFINFO`) for the page count and every page's shape. Both are
+  gated on poppler being there (`fs:can-render-pdf`, asked once as transcode
+  support is); without it a `.pdf` is not media and `Enter` opens it with the
+  system. `fs:pdf-page` and `fs:pdf-info` are cached in main by path+size/mtime,
+  page and width. The footer asks for 320px wide; the display lays its pages out
+  from the header — stacked vertically, at the pane's width — and renders the page
+  or two near the viewport at `devicePixelRatio` (capped at 2400), windowed like
+  the listing. The wheel **scrolls** it; the transport and the arrows jump between
+  pages by scrolling to them. The page in view is shared state (`lib/pdf.ts`), not
+  handed across like a clip: a page costs nothing to show twice, and a display and
+  a footer have to agree on which one is on screen.
 
 ### Display and full-screen
 
@@ -516,7 +542,81 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   the clip's sound is ramped (muted at rest) and it does not loop. The display
   *takes the clip over* (`stage-clock` + `resumeAt` both ways). `seekPreview` on
   the arrows, `wheelScrub` on the wheel (`overStageMedia` distinguishes the
-  picture/transport from the folder).
+  picture/transport from the folder). A PDF is a document rather than a picture:
+  its display is a scroll box of stacked pages, so the wheel is left to the
+  browser to scroll it, while `seekStage` and the transport turn a page by
+  scrolling to it, and the page under the top of the box is the shared page the
+  footer reads. A **middle-button drag pans** the document (`onPdfPanStart`): the
+  box's own scroll follows the pointer, both ways, since a magnified page is wider
+  than the box as often as it is taller — and the press's default is called off, or
+  the middle button's paste (and, where a browser offers it, its autoscroll) would
+  be reading the same gesture.
+  The scroll box *is* the display's media element (`stageMedia`), so
+  it carries `origin-top-left` like the clip and the still do — `handoffTransform`
+  scales about the element's top-left, and at the default centre origin the reveal
+  would start half a pane to the right of the thumbnail it grows out of. Its
+  transport carries the fit switch — fill the box's width, or scale a whole page
+  into it (`pdfView.mode`, `Alt+W`/`Alt+P`) — and a magnification (`pdfView.scale`,
+  `Alt+=`/`Alt+-`, a fixed ladder of steps in `shared/pdf.ts`), with the two fit
+  buttons and the `-`/percentage/`+` group at its right end. The two are one state,
+  either a fit or a magnification of the box's own width: a fit keeps filling the
+  box as the box changes, while a magnification chosen by hand is the same fraction
+  of the width however the pane is resized. The percentage's reference is the
+  *box's width*, not the page's size in inches — the thing on screen a reader can
+  point at, and the reason **fit width is exactly 100%** (`Fit width — 100%` is what
+  its tooltip says) while fit-page reads as the fraction of the width a page takes
+  when its *height* is what was fitted. `+`/`-` step from the percentage *shown* —
+  a page fitted at 80% steps to 100%, not to 80% of a rung — and so leave the fit
+  behind. Above 100% the page is wider than the box and scrolls sideways
+  (`overflow-x` is `auto`). The state is remembered in `userData/pdf-view.json`.
+  Each page also carries an **invisible text layer** (`pdftotext -bbox-layout`
+  through `fs:pdf-text`): every word is a
+  transparent `span` at the box the tool reported for it, scaled to the width the
+  page is drawn at, laid over the raster — so a drag selects the page's text and
+  `Ctrl+C` copies it (the copy is made by the app from the selection's text —
+  remembered as it is made, so a focus change or a reloaded display folding the
+  selection away cannot hand the copy back to the row's name — rather than left to
+  the browser). The separating space is written as an *expression*
+  (`word.text + ' '`), never as template text: the template compiler's whitespace
+  condensing drops a trailing space written between the interpolation and the close
+  tag, and every word of the copy then runs into the next.
+  A word span is a block of its own, so the browser's paragraph *is* one word;
+  poppler's text blocks are kept as each word's `block` and a **triple-click
+  selects that block** — the paragraph — as one range. Holding the button and
+  dragging adds whole paragraphs from there (`paragraphDrag`), the word nearest the
+  pointer deciding which end grows and across pages the layers' own order deciding
+  the direction, so the paragraph the gesture began on is never lost. The nearest
+  word is worked out from the word boxes rather than by hit-testing, because the
+  boxes have gaps between them that the layer's own background fills. That is also
+  why a PDF display has **no double-click-to-enlarge** (a double-click on a page is
+  a word selection, as in any text; `Ctrl+Enter` and the row's triple-click still
+  enlarge), why the panes' `Ctrl+C` keeps the *selection's* text rather than the
+  row's name (`pdfSelection` in `App.vue`; the row copy is what it stands aside
+  for), and why the focus model stands
+  down too: a press on the text layer must not have `restoreFocus` put the keyboard
+  back on the command line, which folds the selection away as it focuses. The
+  scroll box is `tabindex="-1"` so a press inside it keeps the keyboard there
+  rather than dropping it to `<body>`, and `selectingText` (a window-wide
+  pointerdown/up watch in `App.vue`) covers the drag before a selection exists. A
+  key the panes did not claim is not lost to that: with the keyboard on the document
+  it is handed back to the command line — `TerminalPane.forwardKey` re-dispatches it
+  to xterm's textarea, so readline's keys, Backspace and Enter arrive as if typed
+  there (a `forwardingToShell` guard keeps the synthetic event off `App.vue`'s own
+  capture listener) — except a bare modifier or lock key (`MODIFIER_KEYS`), which
+  xterm sends nothing for and which must not take the keyboard either: a `Ctrl`
+  pressed on the way to `Ctrl+C` is the first half of the copy gesture, and
+  focusing the command line with it would fold away the very selection the copy is
+  about. (A copy with a selection up never reaches that path: it is
+  claimed earlier and the selection's text put on the clipboard.)
+  The page subtrees carry `v-memo`, so a scroll re-renders only the pages that
+  enter or leave the window rather than every word of every page on screen.
+- **A display request that names the same media is not a reload.** The panes
+  re-derive the target from their cursor (`stageTarget` → `previewTargetFor`) on
+  every re-list, and that builds a *fresh* object each time, so `props.stage`
+  changes identity whenever a directory is refreshed. The `props.stage` watcher
+  compares kind, `encode` and `previewKeyFor` and returns early for the same media
+  (`sameMedia`) — otherwise every refresh would tear the display down and build it
+  again, which for a PDF drops its text layer and the user's selection with it.
 - **A clip action is answered by a YouTube-style OSD** (`PlaybackOsd.vue`,
   `styles/osd.css`) that owns only the animation and reports done via a `done`
   event; one per surface. `seek()` flashes, a transport drag does not.

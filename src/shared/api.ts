@@ -18,6 +18,9 @@ import type {
   PtyExitEvent,
   PtySpawnOptions,
   PtyStateSnapshot,
+  PdfInfo,
+  PdfPageText,
+  PdfViewState,
   Result
 } from './types'
 
@@ -96,6 +99,33 @@ export interface McFsApi {
    */
   videoDuration(target: string): Promise<number | null>
   /**
+   * Whether main can rasterize a PDF page in-app (poppler's `pdftocairo` is
+   * present). False on a machine without it, in which case a PDF is not media at
+   * all and `Enter` opens it with the system's own viewer instead.
+   */
+  canRenderPdf(): Promise<boolean>
+  /**
+   * How many pages a PDF has, and the shape of its first page, read from the
+   * document's header without rendering anything. Null when the file is not a
+   * PDF or its header could not be read.
+   */
+  pdfInfo(target: string): Promise<PdfInfo | null>
+  /**
+   * One page of a PDF, rasterized at `width` pixels wide (the height follows the
+   * page's own aspect) and returned as a PNG `data:` URL, for the same reason an
+   * image is read that way: the renderer has no URL for a file on disk. `page` is
+   * 1-based.
+   */
+  pdfPage(target: string, page: number, width: number): Promise<Result<ImagePreview>>
+  /**
+   * One page's text, with each word's box in points, for the invisible layer a
+   * selection is made over. Read for the page being looked at rather than the
+   * whole document; a page with no text comes back with no words, and a build
+   * without poppler's `pdftotext` answers with an error the pane simply does not
+   * draw a layer for.
+   */
+  pdfText(target: string, page: number): Promise<Result<PdfPageText>>
+  /**
    * Overwrite a regular text file with edited content (the editor's save).
    * Returns the resolved path that was written.
    */
@@ -166,6 +196,16 @@ export interface McHideApi {
   set(enabled: boolean): Promise<void>
 }
 
+export interface McPdfViewApi {
+  /**
+   * How a PDF display is sized — the fit (the box's width, or a whole page) and a
+   * magnification on top of it. The choice is remembered across launches and
+   * shared by every display, as the hide mode is.
+   */
+  get(): Promise<PdfViewState>
+  set(view: PdfViewState): Promise<void>
+}
+
 export interface McQuickCdApi {
   /**
    * The remembered quick cd directories, one absolute path each, in the order
@@ -219,6 +259,7 @@ export interface McApi {
   win: McWindowApi
   hide: McHideApi
   quickCd: McQuickCdApi
+  pdfView: McPdfViewApi
   git: McGitApi
   targets: McTargetsApi
   remote: McRemoteApi

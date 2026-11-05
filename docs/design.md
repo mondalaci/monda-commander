@@ -1132,6 +1132,179 @@ its frames reach the compositor as DMA-BUFs that a Linux session without a worki
 GBM path cannot import, which takes the GPU process down with the decode and
 disturbs the window's rendering over a preview nobody asked to watch.
 
+### PDFs
+
+A PDF is a document rather than a picture, and the one thing a pane shows of it is
+a *page* — so a PDF is rendered a page at a time and then behaves like any other
+media file: `Enter` hands it to the display, `Ctrl+Enter` fills the window, `Esc`
+leaves, and the transport under the picture says where in it the box is. Chromium
+can display a PDF through its built-in viewer, and that would be less code; it is
+turned down for three reasons. The viewer is a plugin, and the renderer's CSP
+forbids `<object>`/`<embed>` outright (`object-src 'none'`). It is a full chrome of
+its own, a toolbar and a scrollbar rather than a picture the panes' reveal, blur
+and full-screen could drive. And most of all it would not be *media*: the cursor in
+the pane that asked keeps the keyboard, while the document is in the other pane, so
+the page has to be something the app turns — not a plugin that turns it for itself
+when it happens to be focused.
+
+So main rasterizes a page at a time and the renderer stacks them into a document.
+`src/main/pdf.ts` runs poppler's `pdftocairo` (`MC_PDFTOCAIRO`) with `-f`/`-l` at the
+page asked for and `-scale-to-x` at the width the box needs, writing one PNG to
+standard output (`-` with `-singlefile`) so no temporary file ever touches the disk;
+`pdfinfo` (`MC_PDFINFO`) answers the page count and every page's shape, with each
+page's rotation folded in so a ratio is the orientation the page is drawn in. Both
+are probed once — a missing poppler means a PDF is not media at all, and `Enter`
+opens it with the system's own viewer — and both are cached in main by the file's
+size and mtime as well as the page and the width, so scrolling back over a document
+is a lookup rather than a render. The footer asks for a page 320px wide to make its
+thumbnail; a display lays the pages out from the header's shapes — stacked
+vertically at the pane's width — and renders the page or two near its viewport (at
+`devicePixelRatio`, capped at 2400), windowed like the listing, so a thousand-page
+document is never all in the DOM or on the bridge at once. That is the same trade
+the image reader makes when it hands a small file over whole and downscales a large
+one: a page is rasterized at the size it will sit in.
+
+A display is where a PDF is *read*, so it is a scroll box rather than a fitted
+picture: the wheel scrolls the stack natively, the pages flow into one another as a
+document's do, and the transport and the arrows turn a page by scrolling to it
+rather than swapping a raster. The page in view — the last page whose top has
+reached the top of the box — is what the footer's counter and the transport's thumb
+read. That answer is shared state (`lib/pdf.ts`), not something a pane hands to a
+display, and it is the one place a PDF is deliberately unlike a clip. A clip is
+handed across because it can only play in one element at a time — decoding it twice
+to draw the same thing is the cost the hand-off exists to avoid — and because its
+position is something the *element* knows. A page has neither property: rendering it
+twice is two cached lookups, and its position is the app's own number, not the
+element's clock. So `lib/pdf.ts` keeps one page per file, keyed by the same identity
+a preview is, and the footer's thumbnail and the display both read it; a scroll in
+the display moves the same answer, and a display being dismissed finds the footer
+already on the page that was last in view. A PDF claims no `Space`: it has no
+playhead to pause, so the key falls through to the folder walk or the shell as it
+would on a still image.
+
+How the document is *sized* in that box is a choice, because a page and a pane
+rarely agree on an aspect: filling the box's width makes the text as large as the
+pane allows and leaves the page to be scrolled, while fitting the whole page in the
+box shrinks it until its height — not just its width — is in view, which is what a
+page of layout is read at. So the transport carries both, a button at its right end
+for each and `Alt+W`/`Alt+P` with them, and a *magnification* beside them: `-`/`+`
+stepping a fixed ladder (`shared/pdf.ts`), the step's percentage shown between them
+and `Alt+=`/`Alt+-` as its keys.
+
+The percentage's reference point is the **box's own width**, not the page's size in
+inches: that is the thing on screen a reader can point at, and it is what makes
+fitting the width *exactly* 100% — the fit-width button says so in its tooltip. So a
+fit-page percentage is simply how much of the width a page takes when its height is
+what was fitted, and anything above 100% is a page wider than the box, which then
+scrolls sideways (`overflow-x` is `auto`). It is a deliberate choice over the
+absolute reference a reader might bring from Acrobat, where 100% is the page at its
+own size: a CSS pixel is not a fixed physical length, so that 100% is only as real
+as the display's scale factor, while the box's width is exactly what is on screen —
+and the label's own tooltip states it, so the number never has to be guessed at.
+
+The fit and the magnification are one state rather than two (`pdfView.mode` and
+`pdfView.scale`): they are two answers to the same question, and having both would
+leave a stale magnification waiting behind a fit. `+`/`-` step from the percentage
+that is *shown* — a page fitted at 80% steps to 100%, not to 80% of a rung — and so
+leave the fit behind for a magnification of the box's own width, which is the same
+fraction however the pane is resized. A fitted page, by contrast, is a rule rather
+than a number: resizing the pane refits it and the percentage follows.
+
+That sizing is one remembered answer for the whole app (`userData/pdf-view.json`),
+as the hide mode is: it is a reader's preference rather than a property of a file, so
+a second document opens the way the first was left rather than making the reader say
+it again. Fit-page is worked out from the *first* page's aspect — the layout is
+stacked at one column width, so a per-page width would reflow the whole document as
+it scrolled — which is what makes it stable on a mixed document, the taller pages
+simply scrolling. Fit-page also measures the box's *border-box* height rather than
+its content height: a magnified page wider than the box raises a horizontal
+scrollbar, and dividing by a height that scrollbar had just taken would make the two
+chase each other as the page grew and shrank.
+
+A rasterized page carries no text of its own, so selecting from one needs a second
+layer over it: what is *seen* is the picture, and what is *selected* is an
+invisible copy of the page's words laid on top. Main gets them from poppler's
+`pdftotext -bbox-layout`, which writes each word's box in the page's own points
+with the origin at its top-left — the coordinate space a text layer is drawn in —
+and `fs:pdf-text` answers one page at a time, cached and fetched alongside the raster
+as the page comes into view. The pane puts each word in a transparent `span` at its
+box, scaled by the one factor that maps the page's width to the width it is drawn
+at, so a zoom keeps the selection on the glyphs without asking for the text again.
+The spans are clipped to their boxes and the font is not the PDF's own, so a word
+the substitute draws wider is trimmed rather than spilled; what matters is that a
+drag over a line selects the words under it, and that the copied text is exact
+whatever the font draws. The space between words is *in the markup as an
+expression* (`word.text + ' '`) rather than as template text: Vue's template
+whitespace condensing drops a trailing space written after an interpolation and
+before the close tag, which would run every word of the copy together — the one
+thing a text layer exists to avoid. `white-space: pre` is what then keeps that
+space through the browser's own selection serialization, which otherwise drops a
+line's trailing spaces.
+
+The copy is the app's, not the browser's. A selection here lives inside a
+`select-none` document, and the browser's own copy is a default action the app
+cannot see the result of; doing it explicitly — `Ctrl+C` reads the selection's text
+and puts it on the clipboard — is what makes it certain that the *text* is copied
+rather than the row's name. The read is also *remembered as it is made*
+(`selectionchange` keeps the last PDF selection's text, dropped when a press lands
+outside a text layer, when a key is handed to the shell, and when the display is
+left or moves to another file), because two things can take the live selection away
+before the key arrives: a focus change — any focus change folds a document selection
+away, which is the whole reason the focus model has to stand down here — and the
+display being *reloaded*, which the panes used to cause on every re-list, since
+`previewTargetFor` builds a fresh target object each time and the stage watcher
+treated a new object as a new thing to show. The second is fixed at its source: a
+request naming the same media (same kind, same `encode`, same
+`previewKeyFor` — `sameMedia`) is the same display, so the pages are not torn down
+and rebuilt under the reader's selection. (`pdfSelection` is the scoped read: a
+non-collapsed document selection that is not the terminal's own, which xterm's DOM
+renderer mirrors into the document selection; the terminal is excluded rather than
+the text layer required, so a selection whose spans were re-rendered under it is
+still recognised.) The panes' own copy therefore stands aside for the selection, and a
+PDF display gives up its double-click-to-enlarge for the same reason — a
+double-click on a page is a word selection, as it is in any text. A word span is a
+block of its own, which makes the browser's idea of a paragraph one word, so the
+paragraph is drawn from poppler instead: the `<block>` each word sits in is kept
+with it, and a triple-click selects that whole block as one range — the browser's
+own third-press selection being called off, since the only thing it would add is
+the word again. The button that made it can then be *held and dragged*, and the
+selection grows a paragraph at a time, which is the gesture a triple-click promises
+and the browser cannot give once its own paragraph is a word: the drag
+(`paragraphDrag`) keeps the paragraph it began on and adds whole blocks toward the
+pointer, the word nearest it — worked out from the word boxes, since the gaps
+between the boxes are the layer's background and hit-testing them would name
+nothing — telling it which end grows, and the pages' own order telling it which way
+is forward.
+
+The app's focus model needs the same care, and it
+is the subtle half: a pane normally keeps the command line focused by listening for
+a focus drop and putting the keyboard back, and *putting it back is a focus change
+that folds the document selection away* — which is exactly what made a word flash
+into highlight and vanish. So the scroll box is focusable (`tabindex="-1"`) and a
+press inside it leaves the keyboard there rather than dropping it to `<body>`, and
+`restoreFocus` stands down while a drag is in flight (`selectingText`, a window-wide
+pointerdown/up watch) or a selection stands. Typing is not interrupted by any of it:
+a key the panes did not claim, with the keyboard on the document, is handed back to
+the command line. `TerminalPane.forwardKey` re-dispatches it to xterm — a synthetic
+key is enough, since xterm's listener is an ordinary one on its textarea and the
+fields it reads (`keyCode` among them) are set by the `KeyboardEvent` constructor
+the way a real key sets them — so readline's keys, Backspace and Enter arrive
+exactly as if typed there, and the keyboard moves to the command line with them. A
+bare modifier or lock key is the exception (`MODIFIER_KEYS`): xterm sends nothing
+for one, and taking the keyboard for it would be pure harm — a `Ctrl` pressed on
+the way to `Ctrl+C` is the *first half of the copy gesture*, and focusing the
+command line with it folds away the selection the copy is about, which is exactly
+how a selection came to vanish the instant a reader reached for the copy key. A
+copy with a selection up never reaches that path: it is claimed earlier and its text
+is put on the clipboard. (The synthetic event would also reach the app's own capture
+listener, which is why a `forwardingToShell` guard sits at the top of it.)
+
+A page is only offered where main can render it, which is the local filesystem: the
+stream a remote target would need is the relay's business, so as with a clip a PDF
+on a remote is left to the system. It is left out of an archive for the same reason,
+and the page-count read is left out of one too — there is no real path for poppler to
+open either way.
+
 ### A clip Chromium cannot play is transcoded, when ffmpeg is there to do it
 
 Chromium has no demuxer for AVI or ASF, and no decoder for the motion JPEG of an
@@ -1209,8 +1382,8 @@ file instead of its name.
 
 ### A display is a mode of the panes, not a third overlay
 
-`Enter` on an image or a video hands it to the *other* pane to show at full size
-(`Enter` again takes it away, and `Escape` leaves the mode): the cursor stays where
+`Enter` on an image, a video or a PDF hands it to the *other* pane to show at full
+size (`Enter` again takes it away, and `Escape` leaves the mode): the cursor stays where
 it was, the pane that asked keeps the keyboard, and the display follows that cursor
 from row to row — so the two panes are a browser and a screen rather than two
 browsers. The listing the pane was showing stays in place and is blurred behind
@@ -1226,7 +1399,9 @@ exit`, the two ways out) — and coming back to a media file fills it again.
 
 The display itself carries no chrome, not even the file's name, so the media is all
 there is to look at — except a video's play bar directly beneath it, exactly as
-wide as the picture, with a play/pause button, its position and its length. The
+wide as the picture, with a play/pause button, its position and its length, or a
+PDF's page transport in the same place (back and forward buttons, the page, a
+track over the pages and the count) beneath the document's scroll box. The
 whole row is the seek target, so it is grabbable with the mouse: clicking or
 dragging scrubs the clip (a clip main must encode is re-asked from the dropped
 position, rather than re-encoding per pixel). A left click on the picture itself
@@ -1325,7 +1500,11 @@ minute) and `Ctrl+H`/`Ctrl+;` (ten) steps — are a scrubber for what is showing
 (`seekPreview` steps the footer's clip and, when a display is up, the same clip in
 the other pane, so the two cannot drift apart): stepping back into a clip that had
 played itself out plays on from there, and stepping past its end stops there — the
-end of a clip is not quietly its beginning again. The wheel over a clip is a
+end of a clip is not quietly its beginning again. A PDF takes the same keys in a
+different medium: the arrows and the coarser Ctrl steps turn it a page, `seekStage`
+scrolling the document to that page rather than seeking an element, and the
+transport's track is its seek target. The wheel is the one gesture that does not
+turn a page — it scrolls the document itself, page boundaries and all. The wheel over a clip is a
 scrubber too (`wheelScrub` in `FilePanel`): a plain wheel steps it ten seconds, the
 left button held a minute and the right button ten — wheel-up forward — and in a
 footer it is bound to the media box rather than the whole pane, so the wheel over

@@ -12,6 +12,11 @@ import { closeAllWatchers, registerWatchHandlers } from './ipc/watch'
 import { registerWindowHandlers } from './ipc/window'
 import { restoreWindowState, trackWindowState } from './windowState'
 import {
+  killAllPdfRenders,
+  registerPdfHandlers
+} from './pdf'
+import { registerPdfViewHandlers } from './pdfView'
+import {
   killAllTranscodes,
   registerMediaHandlers,
   registerMediaProtocol,
@@ -97,6 +102,8 @@ registerPtyHandlers()
 registerWatchHandlers()
 registerWindowHandlers()
 registerRemoteHandlers()
+registerPdfHandlers()
+registerPdfViewHandlers()
 
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
@@ -128,6 +135,7 @@ if (!gotLock) {
     closeAllWatchers()
     closeAllGitWatchers()
     killAllTranscodes()
+    killAllPdfRenders()
     targetRegistry.closeAll()
   })
 }

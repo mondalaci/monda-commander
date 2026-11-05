@@ -221,6 +221,40 @@ function focusTerminal(): void {
   void nextTick(() => term?.focus())
 }
 
+/**
+ * Hand a keystroke to the terminal as if it had been typed there. The keyboard can
+ * sit on a PDF page — its scroll box is focusable so a text selection can be made
+ * — and a key the panes did not claim is a key for the shell, exactly as it would
+ * be with the command line focused. xterm's own handling is what encodes it, so
+ * readline's keys, Backspace and Enter arrive as they always do, and a synthetic
+ * event is enough to reach it: xterm's listener is an ordinary one on the
+ * textarea, and the fields it reads (`keyCode` among them) are set by the
+ * `KeyboardEvent` constructor the same way a real key sets them.
+ */
+function forwardKey(event: KeyboardEvent): boolean {
+  const textarea = term?.textarea
+  if (!textarea) return false
+
+  textarea.dispatchEvent(
+    new KeyboardEvent('keydown', {
+      key: event.key,
+      code: event.code,
+      keyCode: event.keyCode,
+      charCode: event.charCode,
+      which: event.which,
+      ctrlKey: event.ctrlKey,
+      shiftKey: event.shiftKey,
+      altKey: event.altKey,
+      metaKey: event.metaKey,
+      repeat: event.repeat,
+      location: event.location,
+      bubbles: true,
+      cancelable: true
+    })
+  )
+  return true
+}
+
 function startTerminal(): void {
   if (termReady || !host.value) return
   termReady = true
@@ -406,7 +440,7 @@ function onFocusOut(event: FocusEvent): void {
   emit('focused-change', false)
 }
 
-defineExpose({ focusTerminal, lineHasContent })
+defineExpose({ focusTerminal, lineHasContent, forwardKey })
 </script>
 
 <template>

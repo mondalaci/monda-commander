@@ -23,6 +23,15 @@ import {
   type PreviewTarget,
   type StageRequest
 } from '@renderer/lib/preview'
+import {
+  ensurePdfInfo,
+  pdfLayoutFor,
+  pdfPageCountFor,
+  pdfPageFor,
+  pdfSizeHintFor,
+  setPdfPage,
+  stepPdfPage
+} from '@renderer/lib/pdf'
 import { injectTargetApi } from '@renderer/lib/targetContext'
 import type { PaneMenuRequest } from '@renderer/lib/paneMenu'
 import {
@@ -39,10 +48,21 @@ import ColumnDropMarker from '@renderer/components/ColumnDropMarker.vue'
 import HoldRing from '@renderer/components/HoldRing.vue'
 import PlaybackOsd from '@renderer/components/PlaybackOsd.vue'
 import { hideMode } from '@renderer/composables/useHideMode'
+import { pdfView, setPdfFit, setPdfZoom } from '@renderer/composables/usePdfView'
 import { archiveDisplay } from '@shared/archive'
 import { HIDE_MODE_OFF_TOOLTIP, HIDE_MODE_TOOLTIP } from '@shared/hide'
+import {
+  nextPdfZoom,
+  PDF_FIT_PAGE_KEY,
+  PDF_FIT_WIDTH_KEY,
+  PDF_MAX_SCALE,
+  PDF_MIN_SCALE,
+  PDF_ZOOM_IN_KEY,
+  PDF_ZOOM_OUT_KEY,
+  PDF_ZOOM_TOOLTIP
+} from '@shared/pdf'
 import { MEDIA_SCHEME } from '@shared/video'
-import type { DiskUsage as DiskUsageInfo, PixelSize } from '@shared/types'
+import type { DiskUsage as DiskUsageInfo, PdfPageText, PdfWord, PixelSize } from '@shared/types'
 
 const ROW_HEIGHT = 22
 
@@ -605,6 +625,53 @@ const sizeHint = ref<PixelSize | null>(null)
 const frame = ref<string | null>(null)
 
 /**
+ * A PDF's current page, rasterized by main, as a PNG `data:` URL. The document's
+ * page is not read here because it cannot be: a PDF is not one picture, and the
+ * box only needs the one page it is showing.
+ */
+const pdfFrame = ref<string | null>(null)
+
+/**
+ * How wide a page is rasterized for the footer thumbnail. The box is at most
+ * 160px wide, so this is a few times that — enough for a crisp thumbnail on a
+ * retina display without rendering a display-sized page for a small box.
+ */
+const PDF_PREVIEW_WIDTH = 320
+
+/**
+ * How a PDF is laid out in a display. The document is a vertical stack of pages
+ * at the width of the pane, `PDF_PAGE_GAP` apart, with `PDF_PAGE_PAD` above the
+ * first and below the last. Pages are only in the document near the viewport
+ * (`PDF_WINDOW_OVERSCAN` pages beyond it on each side), so a thousand-page document
+ * renders the two or three pages being looked at — and it is the *raster* that is
+ * capped (`PDF_RENDER_MAX`), not the layout, so a page may be drawn wider than the
+ * raster it came from on a very wide pane rather than stopping short of the width.
+ */
+const PDF_PAGE_GAP = 12
+const PDF_PAGE_PAD = 12
+const PDF_WINDOW_OVERSCAN = 1
+
+/**
+ * The width a page is rasterized at, in device pixels, snapped to a step so a
+ * resized pane re-renders on a stable set of widths rather than one per pixel.
+ */
+const PDF_RENDER_STEP = 40
+const PDF_RENDER_MAX = 2400
+const PDF_RENDER_MIN = 320
+
+/**
+ * How many rendered pages and how many pages' text a display keeps in the
+ * renderer. Main caches them too, but a scroll back over a page should not have to
+ * cross the bridge again; the bounds are small because only a windowful is ever on
+ * screen. How many may be fetched at once is bounded too, so a fast scroll across
+ * a long document does not start a run for every page it flies past.
+ */
+const PDF_FRAME_CACHE_MAX = 12
+const PDF_TEXT_CACHE_MAX = 24
+const PDF_MAX_INFLIGHT = 4
+
+
+/**
  * Whether the cursor has held still on this row long enough to start loading
  * it. A video begins fetching the moment its element is mounted, so mounting it
  * is what this gates — the same discipline the read gets for an image.
@@ -675,6 +742,8 @@ const showVideo = computed(
     settled.value &&
     previewState.value !== 'failed'
 )
+/** The current page of the PDF under the cursor, once main has rasterized it. */
+const showPdf = computed(() => previewTarget.value?.kind === 'pdf' && pdfFrame.value !== null)
 /**
  * Whether the box is still waiting for its picture. It is, for as long as the box
  * is on screen with no frame in it — and for a clip main has to transcode first
@@ -789,12 +858,35 @@ async function loadImage(token: number, path: string): Promise<void> {
   else previewState.value = 'failed'
 }
 
+/**
+ * Rasterize the current page of the PDF under the cursor, at the thumbnail's own
+ * width. Main keeps the answer, so stepping back onto a page already shown costs
+ * a lookup rather than a render, and a slow render for a page already left cannot
+ * land on the newer one.
+ */
+async function loadPdfPage(token: number, target: PreviewTarget): Promise<void> {
+  // A page being turned keeps its predecessor on screen until the new raster is
+  // there — the box is already showing a page, and a spinner over it between two
+  // pages would read as the document hiccuping. Only a first page, with nothing
+  // to keep, reserves the space with a spinner.
+  if (pdfFrame.value === null) previewState.value = 'loading'
+  const result = await api.fs.pdfPage(target.path, pdfPageFor(target), PDF_PREVIEW_WIDTH)
+  if (token !== previewToken) return
+  if (result.ok) {
+    pdfFrame.value = result.data.dataUrl
+    previewState.value = 'ready'
+  } else {
+    previewState.value = 'failed'
+  }
+}
+
 watch(
   () => previewKeyFor(previewTarget.value),
   (key) => {
     cancelPreviewRead()
     const token = (previewToken += 1)
     frame.value = null
+    pdfFrame.value = null
     videoTime.value = 0
     videoLength.value = null
     clipLength.value = null
@@ -818,18 +910,75 @@ watch(
     // to mount is settled by a header read: a container Chromium demuxes holds
     // a codec it cannot decode as often as one it can. The probe is issued here,
     // on the cursor move, so its answer is in before the settle lets the element
-    // fetch anything — the same reason an image's shape is asked for here.
+    // fetch anything — the same reason an image's shape is asked for here. A
+    // PDF's shape and page count come from one header read of its own, which is
+    // what lets the box be reserved at the page's ratio before it is rendered.
     if (target.kind === 'image') void loadImageSizeHint(token, target.path)
-    else probeVideoCodec(target)
+    else if (target.kind === 'video') probeVideoCodec(target)
+    else {
+      ensurePdfInfo(target, api)
+      // A shape the header already gave keeps the box's ratio straight away; one
+      // that has not answered yet leaves the row just left's shape standing, as
+      // an image's does, rather than collapsing the box to nothing.
+      const hint = pdfSizeHintFor(target)
+      if (hint) sizeHint.value = hint
+    }
 
     previewTimer = window.setTimeout(() => {
       previewTimer = null
       if (token !== previewToken) return
       // A video starts fetching by being mounted, which `settled` lets it do
-      // from here; an image is read outright.
+      // from here; an image is read outright, and a PDF's page is rendered.
       settled.value = true
       if (target.kind === 'image') void loadImage(token, target.path)
+      else if (target.kind === 'pdf') void loadPdfPage(token, target)
     }, PREVIEW_SETTLE_MS)
+  }
+)
+
+/**
+ * A PDF's page being stepped while its thumbnail is on screen: the new page is
+ * rendered at the settle's own width, immediately rather than after a delay — a
+ * step is a deliberate look at another page, not a row a key repeat flew over.
+ * A step that arrives before the first page has been rendered is left to the
+ * settle, which reads whatever page is current when it fires.
+ */
+watch(
+  () => pdfPageFor(previewTarget.value),
+  () => {
+    const target = previewTarget.value
+    if (!target || target.kind !== 'pdf' || props.transferred === true) return
+    if (!settled.value) return
+    const token = (previewToken += 1)
+    void loadPdfPage(token, target)
+  }
+)
+
+/**
+ * The page count and shape arriving after the cursor has landed: the box takes
+ * the page's ratio the moment the header answers, so a portrait page is not
+ * reserved as a wide one.
+ */
+watch(
+  () => (previewTarget.value?.kind === 'pdf' ? pdfSizeHintFor(previewTarget.value) : null),
+  (hint) => {
+    if (hint) sizeHint.value = hint
+  }
+)
+
+/**
+ * A PDF coming back from a display. Its box kept the page the footer last drew,
+ * which is not the page the display was stepped to, so the renderer is asked for
+ * the shared page again now that this pane draws it once more.
+ */
+watch(
+  () => props.transferred === true,
+  (transferred) => {
+    if (transferred) return
+    const target = previewTarget.value
+    if (!target || target.kind !== 'pdf' || !settled.value) return
+    const token = (previewToken += 1)
+    void loadPdfPage(token, target)
   }
 )
 
@@ -857,11 +1006,18 @@ function onVideoMetadata(event: Event): void {
  * otherwise it starts and lands a letterbox away from the thumbnail it belongs
  * to. Null while the media's own size is not known.
  */
-function drawnRect(element: HTMLImageElement | HTMLVideoElement): DOMRect | null {
+function drawnRect(element: HTMLElement): DOMRect | null {
   const box = element.getBoundingClientRect()
+  if (box.width <= 0 || box.height <= 0) return null
+
+  // A PDF document's viewport draws in its whole box; a picture is letterboxed
+  // inside its element, so its own rectangle is worked out from the intrinsic
+  // size. Same gesture either way — the rectangle the media is *drawn* in.
+  if (!(element instanceof HTMLImageElement) && !(element instanceof HTMLVideoElement)) return box
+
   const width = element instanceof HTMLVideoElement ? element.videoWidth : element.naturalWidth
   const height = element instanceof HTMLVideoElement ? element.videoHeight : element.naturalHeight
-  if (width <= 0 || height <= 0 || box.width <= 0 || box.height <= 0) return null
+  if (width <= 0 || height <= 0) return null
 
   const scale = Math.min(box.width / width, box.height / height)
   const drawnWidth = width * scale
@@ -943,6 +1099,21 @@ function onImageError(): void {
 }
 
 /**
+ * A rendered page takes the box's own shape: the header's size is the *first*
+ * page's, and pages of a document can differ, so the picture that actually
+ * arrived is the one to trust. It is also what fills the gap when the header
+ * could not give a size at all.
+ */
+function onPdfFooterLoad(event: Event): void {
+  const image = event.target
+  if (image instanceof HTMLImageElement && image.naturalWidth > 0 && image.naturalHeight > 0) {
+    sizeHint.value = { width: image.naturalWidth, height: image.naturalHeight }
+  }
+  // The frame is on screen: whatever the box was waiting to show has arrived.
+  if (previewState.value !== 'failed') previewState.value = 'ready'
+}
+
+/**
  * How far the pane's own content is blurred while a display covers it. Enough
  * that the listing behind reads as a backdrop rather than as something to read,
  * with the media on top of it standing out.
@@ -998,12 +1169,25 @@ const showStageImage = computed(() => stageFrame.value !== null && stageState.va
 const showStageVideo = computed(
   () => stageVideoUrl.value !== null && stageState.value !== 'idle' && stageState.value !== 'failed'
 )
+/**
+ * The displayed PDF: a scrollable stack of pages rather than one raster. The
+ * document's own geometry is known from its header, so it can be laid out before
+ * a page is rendered; the pages near the viewport are the ones fetched.
+ */
+const showStagePdf = computed(
+  () => shownStage.value?.target.kind === 'pdf' && stageState.value !== 'failed'
+)
 
 /** The reveal already played for this entry into the mode, so a swap in place is not re-animated. */
 let stageAnimation = -1
 
-/** The element being displayed, for measuring the reveal and its reverse. */
-const stageMedia = ref<HTMLImageElement | HTMLVideoElement | null>(null)
+/**
+ * The element being displayed, for measuring the reveal and its reverse. A clip
+ * is a `<video>`, a still an `<img>`, and a PDF the box its pages are scrolled
+ * within — so the reveal, the travel between presentations and the wheel's own
+ * hit test work on whichever is up.
+ */
+const stageMedia = ref<HTMLElement | null>(null)
 
 /**
  * The window the display sits on when it is opened over everything; with the
@@ -1048,8 +1232,12 @@ const stageDuration = ref<number | null>(null)
 const stageClipLength = ref<number | null>(null)
 let stageClipLengthKey: string | null = null
 
-/** The displayed video's own aspect, which the bar's width follows. */
-const stageVideoAspect = ref<number | null>(null)
+/**
+ * The displayed media's own aspect, which the transport's width follows. A clip
+ * reveals it in its metadata, a PDF page in its rendered image; a still has no
+ * transport and so never sets it.
+ */
+const stageAspect = ref<number | null>(null)
 
 /**
  * Where the stream the display is *playing* was started, as opposed to where the
@@ -1119,7 +1307,7 @@ function clearStageClock(): void {
   stageScrub = null
   stageScrubbing.value = false
   stagePlaying.value = false
-  stageVideoAspect.value = null
+  stageAspect.value = null
 }
 
 /**
@@ -1322,7 +1510,7 @@ watch(
  */
 watch(
   () => props.stage,
-  (stage) => {
+  (stage, previous) => {
     if (stage) {
       stageDismissal?.cancel()
       stageDismissal = null
@@ -1331,6 +1519,21 @@ watch(
       stageBarFlight?.cancel()
       stageBarFlight = null
       shownStage.value = stage
+
+      // A request that names the *same* media is the same display, not a new one:
+      // the panes re-derive it whenever their listing is re-read (`previewTargetFor`
+      // builds a fresh target object every time), and reloading it would take the
+      // element down for nothing — which for a PDF page is the text layer a
+      // selection lives in, and for a clip is an element that would have to start
+      // fetching and playing again. A different kind or a changed `encode` is a
+      // different thing to show, and belongs to the load below.
+      const sameMedia =
+        previous != null &&
+        previous.target.kind === stage.target.kind &&
+        previous.target.encode === stage.target.encode &&
+        previewKeyFor(previous.target) === previewKeyFor(stage.target)
+      if (sameMedia) return
+
       // A clip main has to encode is asked for from where the mode began; a clip
       // Chromium plays is loaded as it is and moved to that position.
       stageFrom.value = stage.resumeAt ?? 0
@@ -1374,6 +1577,20 @@ async function loadStage(stage: StageRequest): Promise<void> {
   const token = (stageToken += 1)
   stageFrame.value = null
   stageState.value = key === null ? 'idle' : 'loading'
+
+  if (stage.target.kind === 'pdf') {
+    // A document is not one raster: its pages are stacked in a scroller, so
+    // nothing is read here — the layout comes from the header and the pages near
+    // the viewport are fetched as they are looked at.
+    pdfFrames.value = new Map()
+    pdfTexts.value = new Map()
+    pdfLoading.clear()
+    pdfTextLoading.clear()
+    pdfScrollTop.value = 0
+    await positionPdfStage(token, stage.target)
+    return
+  }
+
   if (stage.target.kind !== 'image') return
 
   const result = await api.fs.readImage(stage.target.path)
@@ -1381,6 +1598,596 @@ async function loadStage(stage: StageRequest): Promise<void> {
   if (result.ok) stageFrame.value = result.data.dataUrl
   else stageState.value = 'failed'
 }
+
+/* The PDF display: a stacked, scrollable document. ---------------------------- */
+
+/** Where the box is scrolled to, which is what decides the page in view. */
+const pdfScrollTop = ref(0)
+
+/** Rendered pages, by identity+page+width, so scrolling back is instant. */
+const pdfFrames = ref<Map<string, string>>(new Map())
+
+/**
+ * Pages' text, by identity+page, for the selection layer. A page that has none
+ * (a scan) is held as `null`, so it is asked for once rather than on every scroll.
+ */
+const pdfTexts = ref<Map<string, PdfPageText | null>>(new Map())
+
+/** Pages being rendered right now, so one in view is asked for only once. */
+const pdfLoading = new Set<string>()
+
+/** Pages whose text is being extracted right now, so one is asked for once. */
+const pdfTextLoading = new Set<string>()
+
+/** The document this pane is displaying, or null when it is not one. */
+const pdfDisplayTarget = computed<PreviewTarget | null>(() =>
+  shownStage.value?.target.kind === 'pdf' ? shownStage.value.target : null
+)
+
+/**
+ * The scroll box the pages live in, for reading and setting its scroll. It is the
+ * same element the display reveals from and measures, which the template binds as
+ * `stageMedia` — an element carries a single `ref`, so this is that one read back
+ * only while a PDF is what is up, rather than a second binding that cannot exist.
+ */
+const pdfScrollEl = computed<HTMLElement | null>(() =>
+  pdfDisplayTarget.value ? stageMedia.value : null
+)
+
+/**
+ * The scroll box's own inner size, which the document is laid out against, and
+ * its border-box height, which is what fit-page is measured against. The box is
+ * measured rather than derived from the media area because its width is what a
+ * page must fill; `boxHeight` is the *outer* height because a zoomed page that
+ * overflows sideways raises a horizontal scrollbar, which would otherwise shrink
+ * the height fit-page divides by and make the two chase each other.
+ */
+interface PdfViewport {
+  width: number
+  height: number
+  boxHeight: number
+}
+
+const pdfViewport = ref<PdfViewport | null>(null)
+
+let pdfScrollObserver: ResizeObserver | null = null
+
+function measurePdfScroll(element: HTMLElement | null): void {
+  pdfScrollObserver?.disconnect()
+  pdfScrollObserver = null
+  pdfViewport.value = null
+  if (!element) return
+
+  const measure = (): void => {
+    pdfViewport.value = {
+      width: element.clientWidth,
+      height: element.clientHeight,
+      boxHeight: element.offsetHeight
+    }
+  }
+  pdfScrollObserver = new ResizeObserver(measure)
+  pdfScrollObserver.observe(element)
+  measure()
+}
+
+watch(pdfScrollEl, measurePdfScroll)
+
+/**
+ * The width the page is measured against: the box's own inner width. It is the
+ * reference the magnification is read in — the thing on screen a reader can point
+ * at — which is what makes fitting the width exactly 100%.
+ */
+const pdfBoxWidth = computed(() => pdfViewport.value?.width ?? 640)
+
+/**
+ * How wide a page is drawn. A *fit* fills the box: `width` takes its width,
+ * `page` scales a whole page into it, so the page's own aspect sets the height that
+ * has to fit and the width follows from that. A magnification of the page's own is
+ * a fraction of the box's width, which is the same fraction whatever the pane does
+ * — a page wider than the box then scrolls sideways.
+ */
+const pdfBaseWidth = computed(() => {
+  const box = pdfBoxWidth.value
+  const view = pdfView.value
+
+  if (view.mode === 'free') return Math.max(120, box * view.scale)
+  if (view.mode === 'width') return Math.max(200, box)
+
+  const size = pdfSizeHintFor(pdfDisplayTarget.value)
+  const aspect = size && size.height > 0 ? size.width / size.height : 612 / 792
+  const boxHeight = pdfViewport.value?.boxHeight ?? 600
+  return Math.max(120, Math.min(box, boxHeight * aspect))
+})
+
+const pdfColumnWidth = computed(() => Math.round(pdfBaseWidth.value))
+
+/**
+ * The magnification as a reader reads it: the page's width against the box's, so
+ * 100% is the width exactly filled — what the fit-width button gives, to the pixel
+ * — and a fit-page percentage is how much of the width a page takes when its
+ * *height* is what was fitted. Above 100% the page is wider than the box and
+ * scrolls sideways.
+ */
+const pdfZoom = computed(() => {
+  const box = pdfViewport.value?.width ?? 0
+  if (box <= 0) return 1
+  return pdfColumnWidth.value / box
+})
+
+const pdfZoomLabel = computed(() => `${Math.round(pdfZoom.value * 100)}%`)
+
+/** Whether the magnification is at either end of the ladder, so a button greys out. */
+const pdfZoomAtMin = computed(() => pdfZoom.value <= PDF_MIN_SCALE + 1e-6)
+const pdfZoomAtMax = computed(() => pdfZoom.value >= PDF_MAX_SCALE - 1e-6)
+
+/**
+ * Step the magnification to the next rung of the ladder, from whatever the
+ * display is showing *now*: a fitted page's own percentage counts as the step it is
+ * between, so `+` from a page fitted at 80% is 100% rather than 80% of a rung. It
+ * leaves the fit behind (`free`), which is the point — a percentage chosen by hand
+ * is the reader's, and it stays that fraction of the pane however the pane is
+ * resized.
+ */
+async function stepPdfZoom(direction: 1 | -1): Promise<void> {
+  const target = nextPdfZoom(pdfZoom.value, direction)
+  if (Math.abs(target - pdfZoom.value) < 1e-6) return
+  await setPdfZoom(target)
+}
+
+/** The width the pages are rasterized at, in device pixels, on a stable step. */
+const pdfRenderWidth = computed(() => {
+  const dpr = window.devicePixelRatio || 1
+  const stepped = Math.round((pdfColumnWidth.value * dpr) / PDF_RENDER_STEP) * PDF_RENDER_STEP
+  return Math.min(PDF_RENDER_MAX, Math.max(PDF_RENDER_MIN, stepped))
+})
+
+/** The stacked document's geometry, or null until its header has answered. */
+const pdfLayout = computed(() =>
+  pdfLayoutFor(pdfDisplayTarget.value, pdfColumnWidth.value, PDF_PAGE_GAP, PDF_PAGE_PAD)
+)
+
+/** How tall the scroll box is, which is how much of the document is in view. */
+const pdfViewportHeight = computed(() => Math.max(1, pdfViewport.value?.height ?? 600))
+
+/** The pages to keep in the document, from where the box is scrolled to. */
+const pdfWindow = computed(() => {
+  const layout = pdfLayout.value
+  if (!layout) return { first: 0, last: 0 }
+
+  const boxes = layout.boxes
+  const top = pdfScrollTop.value
+  const bottom = top + pdfViewportHeight.value
+
+  let first = 0
+  while (first < boxes.length && boxes[first]!.top + boxes[first]!.height <= top) first += 1
+  first = Math.max(0, first - PDF_WINDOW_OVERSCAN)
+
+  let last = first
+  while (last < boxes.length && boxes[last]!.top < bottom) last += 1
+  last = Math.min(boxes.length, last + PDF_WINDOW_OVERSCAN)
+  return { first, last }
+})
+
+const pdfVisiblePages = computed(() => {
+  const layout = pdfLayout.value
+  if (!layout) return []
+  const { first, last } = pdfWindow.value
+  const pages: { page: number; top: number; height: number }[] = []
+  for (let i = first; i < last; i += 1) {
+    const box = layout.boxes[i]!
+    pages.push({ page: i + 1, top: box.top, height: box.height })
+  }
+  return pages
+})
+
+/** The room the pages above the window stand in for, and the pages below it. */
+const pdfTopPad = computed(() => {
+  const layout = pdfLayout.value
+  return layout ? (layout.boxes[pdfWindow.value.first]?.top ?? 0) : 0
+})
+
+const pdfBottomPad = computed(() => {
+  const layout = pdfLayout.value
+  if (!layout) return 0
+  const { last } = pdfWindow.value
+  // The last page rendered keeps the document's own trailing padding, so the
+  // scroll height does not change by a gap as the end comes into view.
+  if (last >= layout.boxes.length) return PDF_PAGE_PAD
+  return Math.max(0, layout.total - (layout.boxes[last]?.top ?? layout.total))
+})
+
+/** The page a scroll position is on: the last page whose top has reached it. */
+function pdfPageAtScroll(top: number): number {
+  const layout = pdfLayout.value
+  if (!layout) return 1
+  let page = 1
+  for (let i = 0; i < layout.boxes.length; i += 1) {
+    if (layout.boxes[i]!.top <= top + 4) page = i + 1
+    else break
+  }
+  return page
+}
+
+/** The box was scrolled: read the page from it, so the footer and the bar follow. */
+function onPdfScroll(): void {
+  const el = pdfScrollEl.value
+  if (!el) return
+  pdfScrollTop.value = el.scrollTop
+  const target = pdfDisplayTarget.value
+  if (target) setPdfPage(target, pdfPageAtScroll(el.scrollTop))
+}
+
+/** Scroll the document so `page` is at its top, and make that the current page. */
+function scrollToPdfPage(page: number): void {
+  const target = pdfDisplayTarget.value
+  const layout = pdfLayout.value
+  if (!target || !layout) return
+  setPdfPage(target, page)
+
+  const box = layout.boxes[pdfPageFor(target) - 1]
+  const el = pdfScrollEl.value
+  if (!box || !el) return
+  el.scrollTop = box.top
+  pdfScrollTop.value = el.scrollTop
+}
+
+/**
+ * Lay a freshly opened document out: wait for its header, put the top of the
+ * shared page at the top of the box, and reveal the display. A page shared with
+ * the footer — where the cursor stepped through the thumbnail, or a display was
+ * dismissed on — is picked up here rather than starting at the first page.
+ */
+async function positionPdfStage(token: number, target: PreviewTarget): Promise<void> {
+  const info = await ensurePdfInfo(target, api)
+  if (token !== stageToken) return
+  if (!info) {
+    stageState.value = 'failed'
+    return
+  }
+  await nextTick()
+  if (token !== stageToken) return
+  scrollToPdfPage(pdfPageFor(target))
+  onStageShown()
+}
+
+/** A rendered page's cache key, so identity, page and width all have a say. */
+function pdfFrameKey(page: number): string {
+  const key = previewKeyFor(pdfDisplayTarget.value)
+  return key === null ? '' : `${key}\u0000${page}\u0000${pdfRenderWidth.value}`
+}
+
+/** The raster for a page, or null while it is still on its way. */
+function pdfFrameFor(page: number): string | null {
+  const key = pdfFrameKey(page)
+  return key === '' ? null : (pdfFrames.value.get(key) ?? null)
+}
+
+/**
+ * A page's text key. It carries no width: a text layer is the page's own words
+ * with their own boxes, and the scale that lays them over the raster is worked
+ * out when they are drawn, so a zoom does not need the text asked for again.
+ */
+function pdfTextKey(page: number): string {
+  const key = previewKeyFor(pdfDisplayTarget.value)
+  return key === null ? '' : `${key}\u0000${page}`
+}
+
+/** The text of a page, or null while it is still on its way (or has none). */
+function pdfTextFor(page: number): PdfPageText | null {
+  const key = pdfTextKey(page)
+  return key === '' ? null : (pdfTexts.value.get(key) ?? null)
+}
+
+/** The words of a page, or none, for the text layer's spans. */
+function pdfWordsFor(page: number): PdfWord[] {
+  return pdfTextFor(page)?.words ?? []
+}
+
+/**
+ * Select a word in a text layer, by putting the document selection over its span.
+ * Word spans are keyed by their index in the page's `words`, so the DOM order and
+ * the text order agree and a range can be built from the two by index.
+ */
+function selectPdfRange(
+  from: { layer: HTMLElement; index: number },
+  to: { layer: HTMLElement; index: number }
+): void {
+  const start = from.layer.children[from.index]?.firstChild
+  const end = to.layer.children[to.index]?.firstChild
+  if (!start || !end) return
+
+  const range = document.createRange()
+  range.setStart(start, 0)
+  range.setEnd(end, end.textContent?.length ?? 0)
+  const selection = document.getSelection()
+  selection?.removeAllRanges()
+  selection?.addRange(range)
+}
+
+/** The first and last word of the text block (the paragraph) a word sits in. */
+function pdfBlockBounds(text: PdfPageText, index: number): { first: number; last: number } {
+  const block = text.words[index]?.block
+  let first = index
+  while (first > 0 && text.words[first - 1]!.block === block) first -= 1
+  let last = index
+  while (last < text.words.length - 1 && text.words[last + 1]!.block === block) last += 1
+  return { first, last }
+}
+
+/**
+ * The paragraph a triple-click drag is anchored to, and the button that started it.
+ * A triple-click selects the paragraph under the pointer, and holding the button
+ * and dragging extends the selection a *paragraph* at a time — the gesture a
+ * reader expects of a triple-click, which the browser cannot give here: its own
+ * paragraph is the word (a word span has to be a block to sit at its box), so the
+ * paragraphs come from poppler's blocks and the extending is ours.
+ */
+let paragraphDrag: { layer: HTMLElement; page: number; first: number; last: number } | null = null
+
+/**
+ * The word nearest a point, in the page's own points — worked out from the word
+ * boxes rather than from the DOM, so a point between two words (there are gaps
+ * between the boxes, and the layer's own background fills them) still names the
+ * word it is nearest: the nearest line first, then the nearest word on it.
+ */
+function pdfWordIndexAt(layer: HTMLElement, page: number, clientX: number, clientY: number): number | null {
+  const text = pdfTextFor(page)
+  if (!text || text.width <= 0 || text.words.length === 0) return null
+
+  const box = layer.getBoundingClientRect()
+  if (box.width <= 0) return null
+  const scale = box.width / text.width
+  const x = (clientX - box.left) / scale
+  const y = (clientY - box.top) / scale
+
+  let best = 0
+  let bestDistance = Infinity
+  for (let i = 0; i < text.words.length; i += 1) {
+    const word = text.words[i]!
+    if (x >= word.x && x <= word.x + word.width && y >= word.y && y <= word.y + word.height) return i
+
+    const dy = y < word.y ? word.y - y : y > word.y + word.height ? y - (word.y + word.height) : 0
+    const dx = x < word.x ? word.x - x : x > word.x + word.width ? x - (word.x + word.width) : 0
+    // A line's distance counts for far more than a word's along it, so the word
+    // chosen is the nearest one on the nearest line.
+    const distance = dy * 1000 + dx
+    if (distance < bestDistance) {
+      bestDistance = distance
+      best = i
+    }
+  }
+  return best
+}
+
+/**
+ * A triple-click selects the *paragraph*, which the browser cannot do here: a
+ * word span is a block of its own (it has to be, to sit at its box), so the
+ * browser's own paragraph is one word. The paragraph is the text block poppler
+ * grouped the word into, and the whole block is selected as one range. The press's
+ * own default is called off, since the one thing it would do is select the word
+ * again — and the drag that may follow is ours from here (`onPdfParagraphDrag`).
+ */
+function onPdfWordsMouseDown(event: MouseEvent): void {
+  if (event.button !== 0 || event.detail !== 3) return
+
+  const span = event.target
+  if (!(span instanceof HTMLElement)) return
+  const layer = span.parentElement
+  if (!layer || !layer.hasAttribute('data-pdf-text')) return
+
+  const index = Array.prototype.indexOf.call(layer.children, span)
+  const page = Number(layer.dataset.page ?? '1')
+  const text = pdfTextFor(page)
+  if (!text || !text.words[index]) return
+
+  event.preventDefault()
+
+  const { first, last } = pdfBlockBounds(text, index)
+  paragraphDrag = { layer, page, first, last }
+  selectPdfRange({ layer, index: first }, { layer, index: last })
+}
+
+/**
+ * The drag that follows a triple-click: whole paragraphs at a time, from the one
+ * that was clicked to the one under the pointer. Which side the pointer is on
+ * decides which end grows, and the far end of the anchor's paragraph is always
+ * kept, so dragging back and forth never loses the paragraph the gesture began
+ * on. A pointer off the pages — over the transport, or outside the pane — leaves
+ * the selection where it was.
+ */
+function onPdfParagraphDragMove(event: MouseEvent): void {
+  const drag = paragraphDrag
+  if (drag === null) return
+
+  const target = document.elementFromPoint(event.clientX, event.clientY)
+  const layer = target instanceof Element ? target.closest<HTMLElement>('[data-pdf-text]') : null
+  if (layer === null) return
+
+  const page = Number(layer.dataset.page ?? '1')
+  const index = pdfWordIndexAt(layer, page, event.clientX, event.clientY)
+  const text = pdfTextFor(page)
+  if (index === null || !text) return
+
+  const anchor = pdfTextFor(drag.page)
+  if (!anchor) return
+
+  // Is the word under the pointer past the anchor paragraph? Across pages the
+  // layers' own order answers it; within one page the index does.
+  const after =
+    layer === drag.layer
+      ? index >= drag.first
+      : (drag.layer.compareDocumentPosition(layer) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
+
+  if (after) {
+    selectPdfRange(
+      { layer: drag.layer, index: drag.first },
+      { layer, index: pdfBlockBounds(text, index).last }
+    )
+    return
+  }
+
+  selectPdfRange(
+    { layer, index: pdfBlockBounds(text, index).first },
+    { layer: drag.layer, index: drag.last }
+  )
+}
+
+function onPdfParagraphDragEnd(): void {
+  paragraphDrag = null
+}
+
+/** The pan a middle-button drag is making: where the pointer went down, and where
+ *  the box was scrolled to then. */
+let pdfPan: { x: number; y: number; left: number; top: number } | null = null
+
+/**
+ * A middle-button drag pans the document — the gesture a reader brings from every
+ * other viewer. It is the box's own scroll that moves, both ways, since a magnified
+ * page can be wider than the box as well as taller, and it starts anywhere in the
+ * display because the box is the whole of it. The press's default is called off, or
+ * the middle button's paste (and, where a browser offers it, its autoscroll) would
+ * be reading the same gesture.
+ */
+function onPdfPanStart(event: MouseEvent): void {
+  if (event.button !== 1) return
+  const el = pdfScrollEl.value
+  if (el === null) return
+
+  event.preventDefault()
+  pdfPan = { x: event.clientX, y: event.clientY, left: el.scrollLeft, top: el.scrollTop }
+  // The pointer leaves the box while it pans, so the cursor is the window's for
+  // the length of the gesture — as the split's own drag does.
+  document.body.style.cursor = 'grabbing'
+}
+
+function onPdfPanMove(event: MouseEvent): void {
+  const pan = pdfPan
+  if (pan === null) return
+  const el = pdfScrollEl.value
+  if (el === null) return
+
+  el.scrollLeft = pan.left - (event.clientX - pan.x)
+  el.scrollTop = pan.top - (event.clientY - pan.y)
+  // Nothing else has to be told: the box's own scroll event carries the page in
+  // view and the window of pages to keep in the document.
+}
+
+function onPdfPanEnd(): void {
+  if (pdfPan === null) return
+  pdfPan = null
+  document.body.style.cursor = ''
+}
+
+/**
+ * Where a word's span sits over the rendered page. The page is drawn at
+ * `pdfColumnWidth` for a page whose own width is `text.width` points, so one
+ * uniform scale maps the word's box — and the same scale is what keeps a zoomed
+ * page's selection on its glyphs. The font size is the box's height, so the
+ * transparent glyphs are the size of the ones beneath them, and the box clips
+ * whatever the substitute font draws wider than the word really is.
+ */
+function pdfWordStyle(page: number, word: PdfWord): Record<string, string> | undefined {
+  const text = pdfTextFor(page)
+  if (!text || text.width <= 0) return undefined
+
+  const scale = pdfColumnWidth.value / text.width
+  const height = Math.max(1, word.height * scale)
+  return {
+    left: `${(word.x * scale).toFixed(2)}px`,
+    top: `${(word.y * scale).toFixed(2)}px`,
+    width: `${Math.max(1, word.width * scale).toFixed(2)}px`,
+    height: `${height.toFixed(2)}px`,
+    fontSize: `${height.toFixed(2)}px`,
+    lineHeight: `${height.toFixed(2)}px`
+  }
+}
+
+/** A cache map held to `max` entries, least-recently-inserted first. */
+function boundPdfCache<T>(map: Map<string, T>, max: number): Map<string, T> {
+  while (map.size > max) {
+    const oldest = map.keys().next()
+    if (oldest.done) break
+    map.delete(oldest.value)
+  }
+  return map
+}
+
+/**
+ * Fetch what the pages in view need: their rasters, and their text for the
+ * selection layer. Each is asked for once (a raster by identity+page+width, a
+ * text by identity+page), the answers are kept in the renderer for scrolling
+ * back, and a page whose key has changed under a slow answer is dropped rather
+ * than drawn against the wrong page. Fetches are kept to a few at a time and the
+ * pump is re-run as each lands, so a fast scroll starts a run for the pages it
+ * settles on rather than for every page it crossed.
+ */
+function pumpPdfContent(): void {
+  const target = pdfDisplayTarget.value
+  if (!target) return
+  const width = pdfRenderWidth.value
+
+  for (const item of pdfVisiblePages.value) {
+    if (pdfLoading.size + pdfTextLoading.size >= PDF_MAX_INFLIGHT * 2) break
+
+    const frameKey = pdfFrameKey(item.page)
+    if (frameKey !== '' && !pdfFrames.value.has(frameKey) && !pdfLoading.has(frameKey)) {
+      pdfLoading.add(frameKey)
+      void api.fs
+        .pdfPage(target.path, item.page, width)
+        .then((result) => {
+          pdfLoading.delete(frameKey)
+          if (!result.ok || frameKey !== pdfFrameKey(item.page)) return
+          const next = new Map(pdfFrames.value)
+          next.set(frameKey, result.data.dataUrl)
+          pdfFrames.value = boundPdfCache(next, PDF_FRAME_CACHE_MAX)
+        })
+        .catch(() => pdfLoading.delete(frameKey))
+        .finally(pumpPdfContent)
+    }
+
+    const textKey = pdfTextKey(item.page)
+    if (textKey !== '' && !pdfTexts.value.has(textKey) && !pdfTextLoading.has(textKey)) {
+      pdfTextLoading.add(textKey)
+      void api.fs
+        .pdfText(target.path, item.page)
+        .then((result) => {
+          pdfTextLoading.delete(textKey)
+          if (textKey !== pdfTextKey(item.page)) return
+          const next = new Map(pdfTexts.value)
+          // A page whose text could not be read is remembered as having none, so
+          // it is asked for once rather than on every scroll.
+          next.set(textKey, result.ok ? result.data : null)
+          pdfTexts.value = boundPdfCache(next, PDF_TEXT_CACHE_MAX)
+        })
+        .catch(() => pdfTextLoading.delete(textKey))
+        .finally(pumpPdfContent)
+    }
+  }
+}
+
+// The guard keeps the getter off the layout until a display actually exists:
+// before that there is no document and nothing to measure.
+watch(
+  () => (shownStage.value === null ? [] : ([pdfVisiblePages.value, pdfRenderWidth.value] as const)),
+  pumpPdfContent
+)
+
+/**
+ * A document re-laid out because its box was resized: the column width changed,
+ * so the pages are taller or shorter and the scroll offset would otherwise point
+ * at a different page. It is put back on the page it was showing. A presentation
+ * change between the pane and the window resizes the box too, and this is what
+ * keeps the page under the top through it as well — the travel animates the
+ * media's transform, not its scroll, so the two do not fight.
+ */
+watch(
+  () => (pdfDisplayTarget.value ? pdfColumnWidth.value : 0),
+  () => {
+    const target = pdfDisplayTarget.value
+    if (!target || stageState.value === 'loading') return
+    void nextTick(() => scrollToPdfPage(pdfPageFor(target)))
+  }
+)
 
 /**
  * Ramp a clip's volume towards `to`, so its sound arrives with the picture it
@@ -1620,7 +2427,7 @@ function resumeStage(event: Event): void {
   stageStreamOrigin.value = stageFrom.value
   stageSeekPending = false
   if (element.videoWidth > 0 && element.videoHeight > 0) {
-    stageVideoAspect.value = element.videoWidth / element.videoHeight
+    stageAspect.value = element.videoWidth / element.videoHeight
   }
   pickUpAt(element, previewKeyFor(stage.target), stage.resumeAt)
 }
@@ -1671,7 +2478,7 @@ let osdSeq = 0
  * forward. Nothing is flashed for an action on an image, which has none of this.
  */
 function flashOsd(
-  element: HTMLVideoElement | HTMLImageElement | null,
+  element: HTMLElement | null,
   kind: OsdFlash['kind'],
   delta = 0
 ): void {
@@ -1682,7 +2489,7 @@ function flashOsd(
 }
 
 /** Pause or resume one video, answering whether there was one to toggle. */
-function togglePlayback(element: HTMLImageElement | HTMLVideoElement | null): boolean {
+function togglePlayback(element: HTMLElement | null): boolean {
   if (!(element instanceof HTMLVideoElement)) return false
   const resuming = element.paused
   if (resuming) void element.play().catch(() => {})
@@ -1895,6 +2702,29 @@ const showPlayBar = computed(
 )
 
 /**
+ * The footer's own page readout for a PDF: which page of how many is on screen.
+ * It is the clip's play bar in the same place — the footer says where in the
+ * media the box is — but a page is a step rather than a position, so there is no
+ * clock to follow and the answer is the shared page both this box and a display
+ * read. It is shown whether or not this pane still draws the page itself, so a
+ * display taking the thumbnail over leaves the readout where it was.
+ */
+const showPageBar = computed(
+  () => previewTarget.value?.kind === 'pdf' && (props.transferred === true || showPdf.value)
+)
+
+const pdfPageCount = computed(() => pdfPageCountFor(previewTarget.value))
+const pdfPageNumber = computed(() => pdfPageFor(previewTarget.value))
+
+/** How far through the document the page is, for the little bar beside it. */
+const pdfPageProgress = computed(() => {
+  const count = pdfPageCount.value
+  if (count === null || count <= 1) return '0%'
+  const ratio = (pdfPageNumber.value - 1) / (count - 1)
+  return `${(Math.min(Math.max(ratio, 0), 1) * 100).toFixed(2)}%`
+})
+
+/**
  * A position an element has to pick up at, held with the clip it belongs to so
  * that it can never be applied to a different one. Two things put one there: a
  * display handing the clip back, and a seek that had to replace the element —
@@ -2006,7 +2836,7 @@ function previewPosition(): { key: string; time: number } | null {
  * more; stepping past its end does not, so the end of a clip is the end of it
  * and not quietly the beginning again.
  */
-function seek(element: HTMLVideoElement | HTMLImageElement | null, delta: number): void {
+function seek(element: HTMLElement | null, delta: number): void {
   if (!(element instanceof HTMLVideoElement)) return
 
   const duration = element.duration
@@ -2069,10 +2899,26 @@ function canMoveWithin(element: HTMLVideoElement, at: number): boolean {
 }
 
 function seekPreview(delta: number): void {
+  // A PDF has no playhead to move: its position is a page, so a step key turns
+  // one. While a display has the file, the page is the display's to turn — the
+  // same reason a clip being displayed is stepped there rather than here — so
+  // this acts only while the thumbnail is the only thing showing it.
+  const target = previewTarget.value
+  if (target?.kind === 'pdf') {
+    if (props.transferred !== true) stepPdfPage(target, delta < 0 ? -1 : 1)
+    return
+  }
   seek(previewVideo.value, delta)
 }
 
 function seekStage(delta: number): void {
+  const target = shownStage.value?.target
+  if (target?.kind === 'pdf') {
+    // A displayed PDF is a document: a step scrolls it a page rather than
+    // swapping a raster, so the motion reads as the document moving.
+    scrollToPdfPage(pdfPageFor(target) + (delta < 0 ? -1 : 1))
+    return
+  }
   seek(stageMedia.value, delta)
 }
 
@@ -2095,6 +2941,41 @@ const stageProgress = computed(() => {
 const stageThumbLeft = computed(
   () => `clamp(6px, ${stageProgress.value}, calc(100% - 6px))`
 )
+
+/**
+ * The page transport of a displayed PDF. Its "position" is the shared page, or
+ * the one a drag in flight is asking for; its "length" is the page count. Both
+ * numbers come from the document rather than from the element, since a page has
+ * no clock of its own.
+ */
+const stagePdfPages = computed(() => pdfPageCountFor(shownStage.value?.target ?? null))
+const stagePdfPage = computed(() =>
+  pdfScrubPage.value ?? pdfPageFor(shownStage.value?.target ?? null)
+)
+
+const stagePdfProgress = computed(() => {
+  const pages = stagePdfPages.value
+  const page = stagePdfPage.value
+  if (pages === null || pages <= 1) return '0%'
+  const ratio = (page - 1) / (pages - 1)
+  return `${(Math.min(Math.max(ratio, 0), 1) * 100).toFixed(2)}%`
+})
+
+const stagePdfThumbLeft = computed(
+  () => `clamp(6px, ${stagePdfProgress.value}, calc(100% - 6px))`
+)
+
+/** Turn the displayed PDF's page from the transport's own buttons. */
+function stepStagePdfPage(delta: number): void {
+  const target = shownStage.value?.target
+  if (target?.kind === 'pdf') scrollToPdfPage(pdfPageFor(target) + delta)
+}
+
+const canPdfPrev = computed(() => stagePdfPage.value > 1)
+const canPdfNext = computed(() => {
+  const pages = stagePdfPages.value
+  return pages === null || stagePdfPage.value < pages
+})
 
 /**
  * The media area and the video's own box. The bar under a clip has to be as wide
@@ -2145,12 +3026,13 @@ watch(stageArea, measureStageArea)
 watch(stageBarEl, measureStageBar)
 
 /**
- * The video's box: its aspect fitted into the media area with room kept for the
- * bar, so the bar beneath it is exactly as wide as the picture.
+ * The media's box with its transport: its aspect fitted into the media area with
+ * room kept for the bar, so the transport beneath it is exactly as wide as the
+ * picture. A clip and a PDF page both have a bar; a still has none.
  */
-const stageVideoSize = computed(() => {
+const stageMediaSize = computed(() => {
   const area = stageAreaSize.value
-  const aspect = stageVideoAspect.value
+  const aspect = stageAspect.value
   if (area === null || aspect === null || aspect <= 0) return null
 
   const height = Math.max(1, area.height - stageBarHeight.value - STAGE_BAR_GAP)
@@ -2159,12 +3041,12 @@ const stageVideoSize = computed(() => {
 })
 
 const stageColumnStyle = computed(() => {
-  const size = stageVideoSize.value
+  const size = stageMediaSize.value
   return size === null ? { width: '100%' } : { width: `${Math.round(size.width)}px` }
 })
 
-const stageVideoStyle = computed(() => {
-  const size = stageVideoSize.value
+const stageMediaStyle = computed(() => {
+  const size = stageMediaSize.value
   return size === null ? { height: '100%' } : { height: `${Math.round(size.height)}px` }
 })
 
@@ -2262,6 +3144,75 @@ function onStageBarPointerUp(event: PointerEvent): void {
 }
 
 /**
+ * Dragging across the page transport. A page is a step, not a frame, so the
+ * label follows the pointer while the drag is in flight but nothing is rendered
+ * until it is let go: crossing a hundred pages must not ask main for a hundred
+ * rasters. The page the pointer names is what is committed on release.
+ */
+let pdfScrub: { pages: number; page: number } | null = null
+
+/** Where the drag is, for the label, while the pointer owns it. */
+const pdfScrubPage = ref<number | null>(null)
+
+/** Whether the page transport is being dragged, so its handle stays visible. */
+const pdfScrubbing = ref(false)
+
+/** The page a pointer on the transport is asking for, from where it sits. */
+function pdfPageAt(event: PointerEvent): number {
+  const bar = event.currentTarget
+  if (!(bar instanceof HTMLElement)) return 1
+  const rect = bar.getBoundingClientRect()
+  if (rect.width <= 0) return 1
+
+  const pages = pdfScrub?.pages ?? pdfPageCountFor(shownStage.value?.target ?? null) ?? 1
+  if (pages <= 1) return 1
+  const ratio = Math.min(Math.max((event.clientX - rect.left) / rect.width, 0), 1)
+  return Math.round(ratio * (pages - 1)) + 1
+}
+
+function onPdfBarPointerDown(event: PointerEvent): void {
+  if (event.button !== 0) return
+  const target = shownStage.value?.target
+  const pages = pdfPageCountFor(target ?? null)
+  if (!target || target.kind !== 'pdf' || pages === null) return
+
+  event.preventDefault()
+  event.stopPropagation()
+
+  const bar = event.currentTarget
+  if (bar instanceof HTMLElement) bar.setPointerCapture(event.pointerId)
+
+  pdfScrub = { pages, page: pdfPageAt(event) }
+  pdfScrubPage.value = pdfScrub.page
+  pdfScrubbing.value = true
+  scrollToPdfPage(pdfScrub.page)
+}
+
+function onPdfBarPointerMove(event: PointerEvent): void {
+  if (pdfScrub === null) return
+  pdfScrub.page = pdfPageAt(event)
+  pdfScrubPage.value = pdfScrub.page
+  // The document follows the pointer while it is dragged: moving a slider over
+  // the pages is scrolling, so what is on screen should be what is under it.
+  scrollToPdfPage(pdfScrub.page)
+}
+
+function onPdfBarPointerUp(event: PointerEvent): void {
+  const scrub = pdfScrub
+  if (scrub === null) return
+  pdfScrub = null
+  pdfScrubbing.value = false
+  pdfScrubPage.value = null
+
+  const bar = event.currentTarget
+  if (bar instanceof HTMLElement && bar.hasPointerCapture(event.pointerId)) {
+    bar.releasePointerCapture(event.pointerId)
+  }
+
+  scrollToPdfPage(scrub.page)
+}
+
+/**
  * The wheel's steps. A plain wheel matches the ten-second arrows and the two
  * modifiers match the Ctrl keys: the left button a minute, the right button ten.
  */
@@ -2279,10 +3230,7 @@ const WHEEL_STEP_TEN_MINUTES = 600
  * over the listing still scrolls the listing, and a box with no clip leaves the
  * event alone so nothing is swallowed on its account.
  */
-function wheelScrub(
-  event: WheelEvent,
-  element: HTMLVideoElement | HTMLImageElement | null
-): boolean {
+function wheelScrub(event: WheelEvent, element: HTMLElement | null): boolean {
   if (!(element instanceof HTMLVideoElement) || event.deltaY === 0) return false
 
   const step =
@@ -2299,6 +3247,8 @@ function wheelScrub(
 }
 
 function onFooterWheel(event: WheelEvent): void {
+  // A footer thumbnail is not a document to scroll: a wheel over a PDF's page
+  // leaves the pages where they are, and only a clip's own wheel scrubs it.
   wheelScrub(event, previewVideo.value)
 }
 
@@ -2364,6 +3314,15 @@ function overStageMedia(event: WheelEvent): boolean {
  * either.
  */
 function onStageWheel(event: WheelEvent): void {
+  // A displayed PDF is a document: the wheel scrolls the page stack natively, so
+  // it is left to the browser rather than turned into a folder step or a page
+  // flip. The press is still noted, so a scroll with a button held does not read
+  // as a click that leaves the mode.
+  if (shownStage.value?.target.kind === 'pdf') {
+    noteWheelPress(event)
+    return
+  }
+
   if (overStageMedia(event) && wheelScrub(event, stageMedia.value)) {
     noteWheelPress(event)
     return
@@ -2475,7 +3434,8 @@ defineExpose({
   togglePreviewPlayback,
   cursorMenuAnchor,
   openColumnPicker,
-  addColumnAtFocus
+  addColumnAtFocus,
+  stepPdfZoom
 })
 
 // Kept out of the <ul> on purpose: the row list must contain exactly the
@@ -2910,6 +3870,16 @@ onMounted(() => {
   measurePageRows()
   window.addEventListener('mouseup', endPointerDrag)
   window.addEventListener('mousemove', onHoldMove)
+  // The drag that follows a triple-click on a PDF page's paragraph is watched
+  // window-wide, like the hold: the pointer leaves the word it started on at once.
+  window.addEventListener('mousemove', onPdfParagraphDragMove)
+  window.addEventListener('mouseup', onPdfParagraphDragEnd)
+  // A middle-button pan is watched the same way — the pointer leaves the box as
+  // soon as it is dragged to an edge — and abandoned if the window loses focus
+  // with the button still down, since no release is coming that this will hear.
+  window.addEventListener('mousemove', onPdfPanMove)
+  window.addEventListener('mouseup', onPdfPanEnd)
+  window.addEventListener('blur', onPdfPanEnd)
   // A hold outlives the window's focus if the user leaves mid-press: the release
   // then happens somewhere this one will never hear about.
   window.addEventListener('blur', cancelHold)
@@ -2922,11 +3892,18 @@ onBeforeUnmount(() => {
   stageAreaObserver = null
   stageBarObserver?.disconnect()
   stageBarObserver = null
+  pdfScrollObserver?.disconnect()
+  pdfScrollObserver = null
   releaseStageSeek()
   cancelPreviewRead()
   cancelAnimationFrame(scrollAnimation)
   window.removeEventListener('mouseup', endPointerDrag)
   window.removeEventListener('mousemove', onHoldMove)
+  window.removeEventListener('mousemove', onPdfParagraphDragMove)
+  window.removeEventListener('mouseup', onPdfParagraphDragEnd)
+  window.removeEventListener('mousemove', onPdfPanMove)
+  window.removeEventListener('mouseup', onPdfPanEnd)
+  window.removeEventListener('blur', onPdfPanEnd)
   window.removeEventListener('blur', cancelHold)
   clearHold()
 })
@@ -3922,6 +4899,19 @@ function onRenameBlur(): void {
               @load="onImageLoad"
               @error="onImageError"
             />
+            <!-- One page of a PDF, rasterized by main. It is the shared page, so
+                 stepping it here and in a display keeps the two in agreement; a
+                 display that has taken the file over is the one rendering it, so
+                 this box keeps its space and draws nothing. -->
+            <img
+              v-else-if="showPdf && !transferred"
+              :src="pdfFrame ?? undefined"
+              alt=""
+              draggable="false"
+              class="h-full w-full object-contain"
+              @load="onPdfFooterLoad"
+              @error="onImageError"
+            />
             <!-- Muted and played once, never looped: a preview is a look at the
                  clip, not a viewing session, and a looping 4K file would decode
                  for as long as the cursor happens to rest on the row. -->
@@ -3981,6 +4971,26 @@ function onRenameBlur(): void {
               />
             </span>
             <span v-if="playLength !== null">{{ formatDuration(playLength) }}</span>
+          </span>
+
+          <!-- Which page of a PDF is in the box: the page, a bar for how far
+               through the document that is, and the page count. The same answer
+               a display shows, read from the one place both keep it. -->
+          <span
+            v-if="showPageBar"
+            class="flex shrink-0 items-center gap-2 tabular-nums text-ui-sm text-fg-dim"
+          >
+            <span>{{ pdfPageNumber }}</span>
+            <span
+              v-if="pdfPageCount !== null"
+              class="h-1 w-20 overflow-hidden rounded-full bg-border"
+            >
+              <span
+                class="block h-full rounded-full bg-accent-strong"
+                :style="{ width: pdfPageProgress }"
+              />
+            </span>
+            <span v-if="pdfPageCount !== null">{{ pdfPageCount }}</span>
           </span>
 
           <span v-if="quickCdMode" class="shrink-0 tabular-nums">
@@ -4088,7 +5098,7 @@ function onRenameBlur(): void {
               autoplay
               class="w-full min-h-0 origin-top-left object-contain"
               :class="stageState === 'ready' ? '' : 'invisible'"
-              :style="stageVideoStyle"
+              :style="stageMediaStyle"
               @loadedmetadata="resumeStage"
               @loadeddata="onStageShown"
               @timeupdate="readStageClock"
@@ -4164,6 +5174,277 @@ function onRenameBlur(): void {
                 <span class="shrink-0">
                   {{ stagePlayLength !== null ? formatDuration(stagePlayLength) : '--:--' }}
                 </span>
+              </div>
+            </div>
+          </div>
+
+          <!-- A displayed PDF is a document, not a picture: its pages are
+               stacked and scrolled through, with the transport turning and
+               jumping between them and the page a scroll position lands on being
+               what the footer's counter says. Only the pages near the viewport
+               are in the document (spacers stand in for the rest), so a long
+               file is never all in the DOM at once. -->
+          <div v-else-if="showStagePdf" class="flex min-h-0 w-full grow flex-col self-stretch">
+            <div
+              ref="stageMedia"
+              tabindex="-1"
+              data-pdf-scroll
+              class="pane-scrollbar relative min-h-0 grow origin-top-left overflow-x-auto overflow-y-auto outline-none [scrollbar-gutter:stable]"
+              :class="stageState === 'ready' ? '' : 'invisible'"
+              @scroll="onPdfScroll"
+              @mousedown="onPdfPanStart"
+            >
+              <div class="mx-auto flex flex-col" :style="{ width: `${pdfColumnWidth}px` }">
+                <div
+                  v-if="pdfTopPad > 0"
+                  :style="{ height: `${pdfTopPad}px` }"
+                  aria-hidden="true"
+                />
+                <div
+                  v-for="item in pdfVisiblePages"
+                  :key="item.page"
+                  v-memo="[
+                    item.page,
+                    item.height,
+                    pdfColumnWidth,
+                    pdfFrameFor(item.page),
+                    pdfTextFor(item.page)
+                  ]"
+                  class="relative shrink-0 overflow-hidden bg-surface-2"
+                  :style="{ height: `${item.height}px`, marginBottom: `${PDF_PAGE_GAP}px` }"
+                >
+                  <img
+                    v-if="pdfFrameFor(item.page)"
+                    :src="pdfFrameFor(item.page) ?? undefined"
+                    alt=""
+                    draggable="false"
+                    class="h-full w-full object-contain"
+                  />
+
+                  <!-- The page's own text, drawn over the raster invisibly: what
+                       is seen is the picture, and what is selected is this. Each
+                       word is a span at the box `pdftotext` gave it, scaled to the
+                       width the page is drawn at, so a drag lands on the glyphs
+                       whatever the zoom — and `select-text` is what lets a
+                       selection start inside a pane that is otherwise
+                       `select-none`. The separating space is *in the expression*
+                       on purpose: the template compiler's whitespace condensing
+                       drops a trailing space written as template text, which
+                       would run every word of the copied page together. -->
+                  <div
+                    v-if="pdfTextFor(item.page)"
+                    data-pdf-text
+                    :data-page="item.page"
+                    class="absolute inset-0 select-text"
+                    @mousedown="onPdfWordsMouseDown"
+                  >
+                    <span
+                      v-for="(word, index) in pdfWordsFor(item.page)"
+                      :key="index"
+                      class="absolute cursor-text overflow-hidden whitespace-pre text-transparent"
+                      :style="pdfWordStyle(item.page, word)"
+                      >{{ word.text + ' ' }}</span
+                    >
+                  </div>
+                </div>
+                <div
+                  v-if="pdfBottomPad > 0"
+                  :style="{ height: `${pdfBottomPad}px` }"
+                  aria-hidden="true"
+                />
+              </div>
+            </div>
+
+            <!-- The page transport: back a page, the page, a track over the
+                 pages, the count and forward a page. It is the clip's bar in the
+                 same place, but its position is the page the document has been
+                 scrolled to rather than a playhead, so it follows the scroll as
+                 much as it drives it. -->
+            <div
+              ref="stageBarEl"
+              class="shrink-0 origin-top-left border-t border-border-subtle bg-surface px-2 py-2"
+              :class="stageState === 'ready' ? '' : 'invisible'"
+            >
+              <div class="flex select-none items-center gap-2 tabular-nums text-ui-sm text-fg-dim">
+                <button
+                  type="button"
+                  class="flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim transition-colors hover:bg-hover hover:text-fg disabled:cursor-default disabled:opacity-30 disabled:hover:bg-transparent"
+                  :disabled="!canPdfPrev"
+                  aria-label="Previous page"
+                  @click="stepStagePdfPage(-1)"
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    class="h-3.5 w-3.5"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="m15 6-6 6 6 6" />
+                  </svg>
+                </button>
+                <span class="shrink-0">{{ stagePdfPage }}</span>
+                <div
+                  class="group relative flex h-6 min-w-0 flex-1 cursor-pointer touch-none items-center"
+                  role="slider"
+                  aria-label="Page"
+                  :aria-valuemin="1"
+                  :aria-valuemax="stagePdfPages ?? 1"
+                  :aria-valuenow="stagePdfPage"
+                  @pointerdown="onPdfBarPointerDown"
+                  @pointermove="onPdfBarPointerMove"
+                  @pointerup="onPdfBarPointerUp"
+                  @pointercancel="onPdfBarPointerUp"
+                >
+                  <span class="h-1.5 w-full overflow-hidden rounded-full bg-border">
+                    <span
+                      class="block h-full rounded-full bg-accent-strong"
+                      :style="{ width: stagePdfProgress }"
+                    />
+                  </span>
+                  <span
+                    class="pointer-events-none absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border border-surface bg-accent-strong transition-opacity"
+                    :class="pdfScrubbing ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'"
+                    :style="{ left: stagePdfThumbLeft }"
+                  />
+                </div>
+                <span class="shrink-0">{{ stagePdfPages !== null ? stagePdfPages : '?' }}</span>
+                <button
+                  type="button"
+                  class="flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim transition-colors hover:bg-hover hover:text-fg disabled:cursor-default disabled:opacity-30 disabled:hover:bg-transparent"
+                  :disabled="!canPdfNext"
+                  aria-label="Next page"
+                  @click="stepStagePdfPage(1)"
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    class="h-3.5 w-3.5"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="m9 6 6 6-6 6" />
+                  </svg>
+                </button>
+
+                <!-- How the document is fitted: the box's width, or a whole page
+                     scaled into it. The choice is the app's and is remembered, so
+                     it reads the same here as in the other pane's display. -->
+                <span class="mx-0.5 h-4 w-px shrink-0 bg-border" aria-hidden="true" />
+                <button
+                  type="button"
+                  class="flex h-6 w-6 shrink-0 items-center justify-center rounded transition-colors"
+                  :class="
+                    pdfView.mode === 'width'
+                      ? 'bg-accent-strong text-fg-bright'
+                      : 'text-fg-dim hover:bg-hover hover:text-fg'
+                  "
+                  :title="`Fit width — 100% (${PDF_FIT_WIDTH_KEY})`"
+                  aria-label="Fit width"
+                  :aria-pressed="pdfView.mode === 'width'"
+                  @click="setPdfFit('width')"
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    class="h-3.5 w-3.5"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <rect x="3" y="4" width="18" height="16" rx="2" />
+                    <path d="M7.5 12h9" />
+                    <path d="m10 9.5-2.5 2.5 2.5 2.5" />
+                    <path d="m14 9.5 2.5 2.5-2.5 2.5" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  class="flex h-6 w-6 shrink-0 items-center justify-center rounded transition-colors"
+                  :class="
+                    pdfView.mode === 'page'
+                      ? 'bg-accent-strong text-fg-bright'
+                      : 'text-fg-dim hover:bg-hover hover:text-fg'
+                  "
+                  :title="`Fit page — the whole page in the pane (${PDF_FIT_PAGE_KEY})`"
+                  aria-label="Fit page"
+                  :aria-pressed="pdfView.mode === 'page'"
+                  @click="setPdfFit('page')"
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    class="h-3.5 w-3.5"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <rect x="3" y="3" width="18" height="18" rx="2" />
+                    <rect x="9" y="7" width="6" height="10" rx="1" />
+                  </svg>
+                </button>
+
+                <!-- Magnification on top of the fit: `-` and `+` step the ladder
+                     and the label is that step as a percentage of what the fit
+                     chose. Past 100% a page is wider than the box and scrolls
+                     sideways. -->
+                <span class="mx-0.5 h-4 w-px shrink-0 bg-border" aria-hidden="true" />
+                <button
+                  type="button"
+                  class="flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim transition-colors hover:bg-hover hover:text-fg disabled:cursor-default disabled:opacity-30 disabled:hover:bg-transparent"
+                  :disabled="pdfZoomAtMin"
+                  :title="`Zoom out (${PDF_ZOOM_OUT_KEY})`"
+                  aria-label="Zoom out"
+                  @click="stepPdfZoom(-1)"
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    class="h-3.5 w-3.5"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M5 12h14" />
+                  </svg>
+                </button>
+                <span
+                  class="w-9 shrink-0 text-center tabular-nums"
+                  :title="PDF_ZOOM_TOOLTIP"
+                  >{{ pdfZoomLabel }}</span
+                >
+                <button
+                  type="button"
+                  class="flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim transition-colors hover:bg-hover hover:text-fg disabled:cursor-default disabled:opacity-30 disabled:hover:bg-transparent"
+                  :disabled="pdfZoomAtMax"
+                  :title="`Zoom in (${PDF_ZOOM_IN_KEY})`"
+                  aria-label="Zoom in"
+                  @click="stepPdfZoom(1)"
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    class="h-3.5 w-3.5"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M12 5v14" />
+                    <path d="M5 12h14" />
+                  </svg>
+                </button>
               </div>
             </div>
           </div>
