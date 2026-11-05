@@ -144,7 +144,11 @@ pointer. While the wall is up the header is hidden (there are no columns to head
 and the arrows move the cursor by a cell: `←`/`→` step one entry and `↑`/`↓` a
 whole row, rather than the clip's ten-second seek they are in the listing — the
 clip's own seek stays with the display, the footer's transport and the coarser
-Ctrl steps. `Alt+E` in the wall brings the listing back and opens the column
+Ctrl steps. `Ctrl+=` and `Ctrl+-` make the tiles larger or smaller and `Ctrl+0`
+puts them back at their ordinary size: a few rungs of a ladder, animated, the model
+tiles growing with their boxes (Ctrl being the chord every application uses for
+zoom — a PDF *page*'s own fit and magnification stay on Alt+W/Alt+P/Alt+=/Alt+-).
+`Alt+E` in the wall brings the listing back and opens the column
 editor, since the columns it builds are the listing's,
 
 `Alt+C` puts the quick cd directories in the pane in place of its listing — a list

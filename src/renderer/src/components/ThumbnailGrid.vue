@@ -5,6 +5,8 @@ import { isRunnable } from '@renderer/lib/executable'
 import { dotStyle, markTitle, rowMarkFor, type GitRowMark } from '@renderer/lib/gitMark'
 import { previewKindFor, type PreviewKind } from '@renderer/lib/preview'
 import { injectTargetApi } from '@renderer/lib/targetContext'
+import { morphing, whenNotMorphing } from '@renderer/lib/viewTransition'
+import { VIEW_ENTER_MAX, VIEW_ENTER_STEP_MS, thumbScaleFor } from '@shared/viewMode'
 import FileIcon from '@renderer/components/FileIcon.vue'
 
 /**
@@ -44,6 +46,18 @@ interface Cell {
 const props = defineProps<{
   controller: PaneController
   active: boolean
+  /**
+   * Whether these tiles are arriving from a view switch and should rise in a step
+   * behind one another (`styles/view.css`). True only for the moment of the
+   * switch, so a tile the viewport reveals later — a scroll — is simply there.
+   */
+  enter?: boolean
+  /**
+   * The `view-transition-name` an entry carries (the pane's own assignment), so a
+   * mode morph can match the tile a row became. The pane owns the names because
+   * they must be unique across both its layouts — and across both panes.
+   */
+  nameFor: (path: string) => string
 }>()
 
 const emit = defineEmits<{
@@ -58,13 +72,14 @@ const emit = defineEmits<{
 const api = injectTargetApi()
 
 /**
- * One cell's height, name included, which is the whole of the grid's pitch: the
- * cells carry their own spacing as padding, so no gap is counted twice.
+ * One cell's height at the ladder's own size, name included — the whole of the
+ * grid's pitch, since the cells carry their spacing as padding and no gap is
+ * counted twice. The size shown is this times the zoom's step (`cellHeight`).
  */
-const CELL_HEIGHT = 100
+const BASE_CELL_HEIGHT = 100
 
-/** The narrowest a cell may be before one fewer fits across. */
-const CELL_MIN_WIDTH = 104
+/** The narrowest a cell may be, at that same size, before one fewer fits across. */
+const BASE_CELL_MIN_WIDTH = 104
 
 /** The gutter the grid keeps at its own left and right edges. */
 const GRID_GUTTER = 8
@@ -76,16 +91,38 @@ const GRID_GUTTER = 8
  */
 const OVERSCAN_ROWS = 4
 
-/** The longest side a tile's picture is asked for at. */
-const TILE_MAX_DIM = 256
+/**
+ * The longest side a tile's picture is asked for at. It is read once per file and
+ * kept, so it is sized for the largest tile the zoom can make (a 200px cell at
+ * twice the device ratio) rather than re-read as the wall grows.
+ */
+const TILE_MAX_DIM = 400
 
 /** How many tiles are read at once, so a wall does not open sixty decodes. */
 const LOAD_LIMIT = 4
+
+/** How long a step of the tile zoom takes to travel, and how sharply. */
+const ZOOM_MS = 200
 
 const listEl = ref<HTMLUListElement | null>(null)
 const scrollTop = ref(0)
 const viewportHeight = ref(0)
 const columns = ref(1)
+
+/**
+ * How large the tiles are drawn, as a factor of the ladder's own size. It is the
+ * *animated* value: a zoom step moves it to the next rung over `ZOOM_MS` rather
+ * than jumping, so the wall grows into its new size — and the model wall, which
+ * measures each tile's box every frame, draws the turning models at the size the
+ * boxes have at that moment, so they grow with it.
+ */
+const scale = ref(thumbScaleFor(props.controller.state.thumbStep))
+
+/** One cell's height, at the size the wall is being drawn at just now. */
+const cellHeight = computed(() => Math.max(24, Math.round(BASE_CELL_HEIGHT * scale.value)))
+
+/** The narrowest a cell may be at that size, which is what decides the columns. */
+const cellMinWidth = computed(() => Math.max(28, Math.round(BASE_CELL_MIN_WIDTH * scale.value)))
 
 const entries = computed<PaneEntry[]>(() => props.controller.state.entries)
 const totalRows = computed(() => Math.ceil(entries.value.length / columns.value))
@@ -111,9 +148,10 @@ const visibleCells = computed<Cell[]>(() => {
   const all = entries.value
   if (all.length === 0) return []
   const cols = columns.value
-  const height = viewportHeight.value || CELL_HEIGHT * 12
-  const firstRow = Math.max(0, Math.floor(scrollTop.value / CELL_HEIGHT) - OVERSCAN_ROWS)
-  const lastRow = Math.ceil((scrollTop.value + height) / CELL_HEIGHT) + OVERSCAN_ROWS
+  const pitch = cellHeight.value
+  const height = viewportHeight.value || pitch * 12
+  const firstRow = Math.max(0, Math.floor(scrollTop.value / pitch) - OVERSCAN_ROWS)
+  const lastRow = Math.ceil((scrollTop.value + height) / pitch) + OVERSCAN_ROWS
   const first = Math.min(firstRow * cols, Math.max(all.length - 1, 0))
   const last = Math.min(Math.max(lastRow * cols, first + 1), all.length)
   const cells: Cell[] = []
@@ -136,7 +174,7 @@ const visibleCells = computed<Cell[]>(() => {
 const padTop = computed(() => {
   const first = visibleCells.value[0]
   if (!first) return 0
-  return Math.floor(first.index / columns.value) * CELL_HEIGHT
+  return Math.floor(first.index / columns.value) * cellHeight.value
 })
 
 /** The band of cells hidden below the window, as padding of its exact height. */
@@ -145,12 +183,12 @@ const padBottom = computed(() => {
   const last = cells[cells.length - 1]
   if (!last) return 0
   const lastRow = Math.floor(last.index / columns.value) + 1
-  return Math.max(0, totalRows.value - lastRow) * CELL_HEIGHT
+  return Math.max(0, totalRows.value - lastRow) * cellHeight.value
 })
 
 const gridStyle = computed(() => ({
   gridTemplateColumns: `repeat(${columns.value}, minmax(0, 1fr))`,
-  gridAutoRows: `${CELL_HEIGHT}px`,
+  gridAutoRows: `${cellHeight.value}px`,
   paddingTop: `${padTop.value}px`,
   paddingBottom: `${padBottom.value}px`,
   paddingLeft: `${GRID_GUTTER}px`,
@@ -218,9 +256,12 @@ function pump(): void {
     running += 1
     const startedFor = epoch
     void readTile(next.entry)
-      .then((url) => {
+      .then(async (url) => {
         // A read that lands after the pane has left is not shown: the rows it
-        // belonged to are gone, and the cache was cleared with them.
+        // belonged to are gone, and the cache was cleared with them. A read that
+        // lands during a mode morph waits for it: an image decoded into the DOM is
+        // work on frames the flight is using.
+        await whenNotMorphing()
         if (startedFor === epoch) tiles.set(next.key, url)
       })
       .finally(() => {
@@ -232,6 +273,12 @@ function pump(): void {
 }
 
 function requestVisible(cells: Cell[]): void {
+  // The wall is not on screen while a mode morph flies (a transition shows
+  // snapshots), so no tile is read during one: the decodes would be work on frames
+  // nobody sees, on the thread the flight needs. The moment it lands, the window
+  // is asked for again.
+  if (morphing.value) return
+
   wanted = []
   wantedKeys.clear()
   for (const cell of cells) {
@@ -274,6 +321,11 @@ async function readTile(entry: PaneEntry): Promise<string | null> {
 
 /** Read what the window now covers, so scrolling fills the cells it reveals. */
 watch(visibleCells, requestVisible, { immediate: true, flush: 'post' })
+
+/** The morph has landed: whatever the window covers now is read. */
+watch(morphing, (on) => {
+  if (!on) requestVisible(visibleCells.value)
+})
 
 /**
  * A tile key as a DOM attribute value. The key is `<path>\0<size>:<mtime>` —
@@ -321,7 +373,7 @@ function measure(): void {
   viewportHeight.value = element.clientHeight
 
   const usable = element.clientWidth - GRID_GUTTER * 2
-  const cols = Math.max(1, Math.floor(usable / CELL_MIN_WIDTH))
+  const cols = Math.max(1, Math.floor(usable / cellMinWidth.value))
   const changed = cols !== columns.value
   columns.value = cols
 
@@ -329,7 +381,7 @@ function measure(): void {
   // and an up/down arrow steps a whole row. Kept on the controller because the
   // cursor moves are the controller's, not this view's.
   props.controller.state.cellsPerRow = cols
-  props.controller.state.pageRows = Math.max(1, Math.floor(element.clientHeight / CELL_HEIGHT)) * cols
+  props.controller.state.pageRows = Math.max(1, Math.floor(element.clientHeight / cellHeight.value)) * cols
 
   // Only a re-laid-out grid — a different number of columns — is followed here.
   // A height change is not, and that is deliberate: the footer's preview strip
@@ -373,8 +425,8 @@ function scrollCellIntoView(index: number, align: 'nearest' | 'start' | 'end', a
   const element = listEl.value
   if (!element) return
 
-  const rowTop = Math.floor(index / columns.value) * CELL_HEIGHT
-  const rowBottom = rowTop + CELL_HEIGHT
+  const rowTop = Math.floor(index / columns.value) * cellHeight.value
+  const rowBottom = rowTop + cellHeight.value
   const viewTop = element.scrollTop
   const viewBottom = viewTop + element.clientHeight
 
@@ -386,6 +438,39 @@ function scrollCellIntoView(index: number, align: 'nearest' | 'start' | 'end', a
   else if (rowBottom > viewBottom) setScrollTop(element, rowBottom - element.clientHeight, animated)
   else if (animated) setScrollTop(element, viewTop, false)
 }
+
+/**
+ * The zoom's own flight: a step moves `scale` to the next rung over `ZOOM_MS`
+ * rather than jumping to it, so the wall grows into its new size. Each frame is
+ * re-measured, because the size is the whole geometry — the columns that fit,
+ * the pitch the rows are placed at, the page arithmetic — and it is re-revealed
+ * on the cursor, so what the user is looking at stays put while everything
+ * around it changes size. The model wall needs no telling: it measures each
+ * tile's box every frame, so the turning models grow with the boxes.
+ */
+let zoomFrame = 0
+
+function animateScaleTo(target: number): void {
+  cancelAnimationFrame(zoomFrame)
+  const from = scale.value
+  if (from === target) return
+
+  const start = performance.now()
+  const step = (now: number): void => {
+    const t = Math.min((now - start) / ZOOM_MS, 1)
+    scale.value = t < 1 ? from + (target - from) * (1 - Math.pow(1 - t, 3)) : target
+    measure()
+    scrollCellIntoView(props.controller.state.cursor, 'nearest')
+    if (t < 1) zoomFrame = requestAnimationFrame(step)
+  }
+  zoomFrame = requestAnimationFrame(step)
+}
+
+/** A step of the size ladder (Ctrl+= / Ctrl+- / Ctrl+0) is a resize, animated. */
+watch(
+  () => props.controller.state.thumbStep,
+  (step) => animateScaleTo(thumbScaleFor(step))
+)
 
 /**
  * Follow the cursor to its cell — on a move, a page jump, and on arriving in a
@@ -417,8 +502,11 @@ watch(
 
 let observer: ResizeObserver | null = null
 
-onMounted(async () => {
-  await nextTick()
+onMounted(() => {
+  // Measured synchronously, before this flush ends, so the first layout the pane
+  // can see is the measured one: a mode morph snapshots the page at the next
+  // frame, and a grid still on one column for a microtask would be captured — and
+  // flown to — at the wrong shape.
   measure()
   if (listEl.value) {
     observer = new ResizeObserver(measure)
@@ -431,6 +519,7 @@ onBeforeUnmount(() => {
   observer?.disconnect()
   observer = null
   cancelAnimationFrame(scrollAnimation)
+  cancelAnimationFrame(zoomFrame)
 })
 
 /**
@@ -453,7 +542,20 @@ function cellRect(): DOMRect | null {
   return rect.width > 0 && rect.height > 0 ? rect : null
 }
 
-defineExpose({ cellRect })
+/**
+ * Hide the model tiles' canvas, for the moment a mode morph is captured. The
+ * canvas is not part of any named tile — it lies over them — so a live one is the
+ * one thing the flight cannot carry: it would be copied whole into the morph, and
+ * left floating in the root snapshot while the named tile boxes flew out from
+ * under it. The pane is leaving the wall whenever this is called, so nothing has
+ * to be shown again.
+ */
+function hideModels(): void {
+  const canvasEl = listEl.value?.parentElement?.querySelector('canvas')
+  if (canvasEl instanceof HTMLElement) canvasEl.style.visibility = 'hidden'
+}
+
+defineExpose({ cellRect, hideModels })
 
 // --- Drawing ---------------------------------------------------------------
 
@@ -480,6 +582,17 @@ function nameClass(index: number): string {
   if (!entry) return ''
   return isRunnable(entry) ? 'text-runnable' : ''
 }
+
+/** The entrance class a tile at `order` in the window carries, or none. */
+function enterClass(order: number): string {
+  return props.enter === true && order < VIEW_ENTER_MAX ? 'view-entry' : ''
+}
+
+/** Its step, so the tiles arrive one behind another rather than together. */
+function enterStyle(order: number): { animationDelay: string } | null {
+  if (props.enter !== true || order >= VIEW_ENTER_MAX) return null
+  return { animationDelay: `${order * VIEW_ENTER_STEP_MS}ms` }
+}
 </script>
 
 <template>
@@ -491,11 +604,12 @@ function nameClass(index: number): string {
       @scroll="onScroll"
     >
       <li
-        v-for="cell in visibleCells"
+        v-for="(cell, order) in visibleCells"
         :key="cell.entry.path"
         :data-path="cell.entry.path"
         class="relative flex min-w-0 cursor-default flex-col items-center gap-1 rounded p-1"
-        :class="cellClass(cell.index)"
+        :style="[enterStyle(order), { viewTransitionName: nameFor(cell.entry.path) }]"
+        :class="[cellClass(cell.index), enterClass(order)]"
         @mousedown.left="emit('left-down', cell.index)"
         @mousedown.right="emit('right-down', cell.index, $event)"
         @mouseenter="emit('enter', cell.index)"

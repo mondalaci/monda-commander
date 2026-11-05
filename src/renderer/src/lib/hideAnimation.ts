@@ -77,6 +77,9 @@ export function playHideAnimation({ list, rowHeight, before, after, leaving }: H
 
   for (const { el, index } of leaving) {
     el.classList.add('hide-ghost')
+    // A copy is not an entry: it must not carry the name a mode morph would match
+    // its live row by, or the two would share it and the morph would be skipped.
+    el.style.viewTransitionName = ''
     el.style.top = `${index * rowHeight}px`
     list.appendChild(el)
     el.animate(

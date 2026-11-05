@@ -2504,7 +2504,11 @@ function onKeydown(event: KeyboardEvent): void {
 
   if (isViewModeToggle) {
     consume(event)
-    activePane.value.toggleViewMode()
+    // The pane owns the switch: it hides the model wall's canvas first — the one
+    // thing the morph cannot carry — and runs the change inside a view transition
+    // where the browser can make one (`FilePanel.toggleView`).
+    const panel = activeSide.value === 'left' ? leftPanel.value : rightPanel.value
+    panel?.toggleView()
     return
   }
 
@@ -2552,6 +2556,32 @@ function onKeydown(event: KeyboardEvent): void {
       const showing = stageSide.value === 'left' ? leftPanel : rightPanel
       void showing.value?.stepPdfZoom(event.code === 'Equal' ? 1 : -1)
     }
+    return
+  }
+
+  // The wall's tiles are sized with the chord every app uses for zoom — Ctrl with
+  // `=`, `-` and `0` — rather than the display's own Alt+W/Alt+P/Alt+=/Alt+-, which
+  // are a *PDF page's* fit and magnification. A step, not a free scale: the ladder
+  // is in `shared/viewMode.ts` and the grid animates toward the rung. The panes'
+  // own key, claimed only where there is a wall to size — in the listing Ctrl+= is
+  // left alone.
+  const isTileZoomKey =
+    event.ctrlKey &&
+    !event.altKey &&
+    !event.metaKey &&
+    (event.code === 'Equal' ||
+      event.code === 'NumpadAdd' ||
+      event.code === 'Minus' ||
+      event.code === 'NumpadSubtract' ||
+      event.code === 'Digit0' ||
+      event.code === 'Numpad0')
+
+  if (isTileZoomKey && activePane.value.state.viewMode === 'thumbnails') {
+    consume(event)
+    if (event.code === 'Digit0' || event.code === 'Numpad0') activePane.value.resetTileScale()
+    else if (event.code === 'Minus' || event.code === 'NumpadSubtract') {
+      activePane.value.stepTileScale(-1)
+    } else activePane.value.stepTileScale(1)
     return
   }
 

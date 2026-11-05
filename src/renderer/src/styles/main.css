@@ -13,6 +13,7 @@
 @import './search.css';
 @import './size.css';
 @import './swap.css';
+@import './view.css';
 @import './viewer.css';
 
 /* The mono font is bundled rather than hoped for: the terminal and the code

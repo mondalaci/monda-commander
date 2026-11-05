@@ -405,6 +405,63 @@ listing back, because where the editor is, the columns are.
 The mode deliberately does not persist: it is per pane, per session, like the
 sort. A remembered default is a small addition if it is wanted.
 
+The tiles can be sized, `Ctrl+=` and `Ctrl+-` walking a ladder of factors
+(`THUMB_SCALE_STEPS` in `shared/viewMode.ts`) with `Ctrl+0` back to the middle
+rung. It is a *step* rather than a free scale, as a PDF display's magnifications
+are, and the rung is the pane's own state (`thumbStep`); the grid reads it and
+animates its own `scale` toward it, a frame at a time, re-measuring as it goes —
+so the columns that fit and the pitch the rows are placed at follow the size, and
+the cursor's tile is revealed each frame so whatever is being looked at stays put.
+Nothing has to tell the model wall: it measures each tile's box every frame, so
+the turning models grow and shrink inside the boxes they are drawn in. That is
+also why the zoom is not a view morph like the mode switch: a morph shows
+snapshots, which would freeze the models where they stood while the boxes grew
+around them.
+
+A switch between the modes is a *morph*. Each visible entry carries a
+`view-transition-name` in both layouts (`entryName` in `FilePanel.vue`, assigned
+rather than derived — the names must be unique in the document, so they are
+numbered per pane and prefixed with its side), and `withViewTransition`
+(`lib/viewTransition.ts`) runs the state change inside the View Transitions API's
+`startViewTransition`: the browser snapshots the page before and after and flies
+every named entry from the box it had as a row to the box it has as a tile —
+moving and resizing it — while the unnamed chrome cross-fades underneath. The
+callback awaits a tick *inside* itself, because the "after" snapshot has to be of
+the layout Vue has built by then. Two consequences of the same timing: the grid
+measures itself synchronously on mount (a wall still laid out at one column would
+be captured, and flown to, at the wrong shape), and the hide mode's row copies
+drop the name (`lib/hideAnimation.ts`) so a copy and its live row cannot share one
+and have the transition skipped.
+
+The flight is also why the panes hold their expensive work back while it runs
+(`morphing` in `lib/viewTransition.ts`). The content is not on screen for those
+frames — a view transition shows snapshots — so a thumbnail decoded or a model
+parsed into a fresh WebGL context is work on something nobody can see, on the same
+main thread the flight needs to stay smooth. The grid defers its reads and the
+model wall defers taking its context and parsing until `morphing` is false again,
+so the wall appears once the entries have settled into their places rather than
+competing with the animation. The same holds on the way out: a mode morph unmounts
+the wall at the very start of its flight — the leave animation — so giving the
+context back and disposing every geometry is held until the flight lands too. Work
+already in flight when the switch began (a tile read that lands, a file about to
+be parsed) waits on `whenNotMorphing()` rather than running in the flight's frames.
+
+Leaving the wall has one more cost, and a visible one. Its canvas is not inside any
+named tile — it lies *over* them — so a live one is both copied whole into the
+morph and left behind in the root snapshot: the models float in place while the
+named boxes fly out from under them. So the pane hides the canvas before the old
+state is captured (`ThumbnailGrid.hideModels`, called from `FilePanel.toggleView`)
+and the tiles travel as the boxes they are. Nothing has to be shown again, the pane
+being on its way out of the wall.
+
+Where an engine has no view transition, the switch falls back to the entries
+rising in a step behind one another (`styles/view.css`, the `VIEW_ENTER_*` numbers
+both the pane and the grid read from `shared/viewMode.ts`), gated by a flag the
+pane raises for the length of the gesture so a row the viewport reveals later, by
+a scroll or a resize, is simply there. A model tile is animated like any other;
+its model is drawn by the wall's canvas once it has loaded, and the canvas is part
+of the snapshot for the length of the flight.
+
 A tile carries the row's git dot as well: the mark a row shows is a property of
 the entry and the status, not of how the row is drawn, so `rowMarkFor` and
 `dotStyle` moved to `lib/gitMark.ts` and both the listing and the wall read them

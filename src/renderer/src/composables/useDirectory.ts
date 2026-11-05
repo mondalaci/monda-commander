@@ -9,7 +9,7 @@ import { archiveSupported } from '@renderer/lib/archive'
 import { hideMode } from '@renderer/composables/useHideMode'
 import { quickCdDirs, homeDir, quickCdLabel } from '@renderer/composables/useQuickCd'
 import { buildGitView, type GitView } from '@renderer/lib/gitMark'
-import { nextViewMode, type ViewMode } from '@shared/viewMode'
+import { nextViewMode, stepThumbScale, THUMB_SCALE_DEFAULT_STEP, type ViewMode } from '@shared/viewMode'
 import type { TargetApi } from '@renderer/lib/targetApi'
 import { shouldExecute } from '@renderer/lib/executable'
 import type { DirEntry, PanelSide } from '@shared/types'
@@ -134,6 +134,14 @@ export interface PaneState {
    */
   cellsPerRow: number
   /**
+   * Which rung of the tile-size ladder a wall is drawn at — `Ctrl+=` and `Ctrl+-`
+   * walk it, `Ctrl+0` returns to the middle. It is a *step* rather than a size, so
+   * the sizes are the ladder's and not a free scale, exactly as a PDF display's
+   * magnifications are; the grid animates toward the rung rather than jumping to
+   * it. Per pane, like the sort, and read only by the wall.
+   */
+  thumbStep: number
+  /**
    * Whether the move that just happened should be shown as a quick scroll
    * rather than a jump. Only a page or an end-to-end jump asks for it — a
    * one-row move must stay instant, or holding an arrow key would animate
@@ -234,6 +242,10 @@ export interface PaneController {
   setViewMode(mode: ViewMode): void
   /** Cycle the pane's view — Alt+T, and the title bar's own button. */
   toggleViewMode(): void
+  /** One rung up or down the wall's tile-size ladder (Ctrl+= / Ctrl+-). */
+  stepTileScale(delta: 1 | -1): void
+  /** Back to the size a wall is drawn at by default (Ctrl+0). */
+  resetTileScale(): void
   /**
    * Switch the pane between its own directory and the quick cd list (Alt+C).
    * Entering replaces the rows with the bookmarks; leaving restores the listing
@@ -627,6 +639,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     columnFocus: 0,
     viewMode: 'details',
     cellsPerRow: 1,
+    thumbStep: THUMB_SCALE_DEFAULT_STEP,
     animateScroll: false,
     searchActive: false,
     searchQuery: '',
@@ -1380,6 +1393,21 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
   }
 
   /**
+   * One rung up or down the wall's tile-size ladder. The pane only says where the
+   * size is going; the grid watches the rung and animates its own scale toward it,
+   * so the pane's own state stays a few discrete rungs like a PDF display's
+   * magnifications rather than a continuously moving number.
+   */
+  function stepTileScale(delta: 1 | -1): void {
+    state.thumbStep = stepThumbScale(state.thumbStep, delta)
+  }
+
+  /** Back to the middle of the ladder — the size a wall is drawn at by default. */
+  function resetTileScale(): void {
+    state.thumbStep = THUMB_SCALE_DEFAULT_STEP
+  }
+
+  /**
    * The quick cd list, as the pane's rows: ordinary `PaneEntry`s of kind
    * `directory`, so every existing cursor move, page jump, scroll and row lookup
    * works on the list unchanged. The name is the directory's own path — a
@@ -2081,6 +2109,8 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     toggleColumnEdit,
     setViewMode,
     toggleViewMode,
+    stepTileScale,
+    resetTileScale,
     toggleQuickCd,
     setColumnType,
     addColumn,

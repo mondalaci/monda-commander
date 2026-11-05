@@ -72,7 +72,8 @@ src/shared/model.ts      the two model families by extension: mesh formats the
 src/shared/video.ts      video MIME map, ffmpeg-only extensions, decodable codecs, scheme name
 src/shared/hide.ts       the `.mchide` name, the toggle key, the two tooltips
 src/shared/viewMode.ts   the pane's two view modes (details/thumbnails), the cycle
-                         key and the button's tooltip
+                         key and the button's tooltip, the tile-size ladder, and the
+                         fallback entrance's pacing numbers
 src/main/thumbnail.ts    tiles and clip posters read from main: an image decoded
                          and shrunk to a tile, one frame of a video through ffmpeg,
                          LRU-cached; fs:thumbnail (local only)
@@ -141,12 +142,15 @@ src/renderer/src/lib/hideAnimation.ts how a change to what the hide mode covers 
 src/renderer/src/lib/swapAnimation.ts how a Ctrl+U exchange is shown: copies of
                                       both panes travelling to the other column,
                                       carrying the display's blur (styles/swap.css)
+src/renderer/src/lib/viewTransition.ts  the mode switch as a morph: run the change in
+                                      a View Transitions `startViewTransition` so
+                                      the named entries fly to their new boxes
 src/renderer/src/lib/paneMenu.ts      the context menu's model
 ```
 
 Styles are referenced inline below: `styles/mark.css`, `hold.css`, `notice.css`,
-`flash.css`, `hide.css`, `osd.css`, `swap.css`, `viewer.css`, `diff.css`,
-`columns.css`, all under `src/renderer/src/`.
+`flash.css`, `hide.css`, `osd.css`, `swap.css`, `view.css`, `viewer.css`,
+`diff.css`, `columns.css`, all under `src/renderer/src/`.
 
 ## Gotchas
 
@@ -286,7 +290,23 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   `cellsPerRow`, which the view measures, is what lets App.vue move the cursor a
   whole row on the up/down arrows; `←`/`→` step a cell rather than seeking the clip
   in the wall. The header (and the column editor) belongs to the details listing
-  and is hidden with the wall; `Alt+E` brings the listing back first. A tile's
+  and is hidden with the wall; `Alt+E` brings the listing back first. A switch
+  between the modes is a *morph*: every visible entry is named in both layouts and
+  the change runs in a View Transitions `startViewTransition`
+  (`lib/viewTransition.ts`), so the entries fly and resize from the row they were
+  to the tile they become; the staggered rise in `styles/view.css` is the fallback
+  for an engine without one. Nothing expensive runs during the flight: the tile
+  reads and the model wall (its WebGL context, its parses — and, on the way out,
+  its teardown) are held back until `morphing` is false, so the wall appears once
+  the entries have settled. Leaving the wall also hides its canvas before the old
+  state is captured (`ThumbnailGrid.hideModels`): the canvas is not part of any
+  named tile, so a live one is copied whole into the morph and left floating in
+  the root while the boxes fly out from under it. The tiles are sized with `Ctrl+=`
+  / `Ctrl+-` / `Ctrl+0` (`THUMB_SCALE_STEPS`, per pane as `thumbStep`): the grid
+  animates its own scale a frame at a time and re-measures, so the model wall —
+  which measures each tile's box every frame — grows the models inside their boxes.
+  A view morph is deliberately *not* used for the zoom, a snapshot being exactly
+  what would freeze them. A tile's
   picture is read from main as a *tile* (`fs:thumbnail` decodes and shrinks with
   `nativeImage`; a clip is one ffmpeg frame), never as the whole file — the
   status-bar preview handing a ≤16 MiB file over whole would be ruinous sixty

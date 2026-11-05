@@ -4,6 +4,7 @@ import type { ComponentPublicInstance } from 'vue'
 import type { PaneController, PaneEntry, ScrollAlign, SortKey } from '@renderer/composables/useDirectory'
 import { COLUMN_TYPES } from '@renderer/composables/useDirectory'
 import { isRunnable } from '@renderer/lib/executable'
+import { canMorphView, withViewTransition } from '@renderer/lib/viewTransition'
 import { playHideAnimation } from '@renderer/lib/hideAnimation'
 import {
   formatDuration,
@@ -54,7 +55,12 @@ import { pdfView, setPdfFit, setPdfZoom } from '@renderer/composables/usePdfView
 import { archiveDisplay } from '@shared/archive'
 import { HIDE_MODE_OFF_TOOLTIP, HIDE_MODE_TOOLTIP } from '@shared/hide'
 import { QUICK_CD_LEAVE_TOOLTIP, QUICK_CD_TOOLTIP } from '@shared/quickCd'
-import { VIEW_MODE_TOOLTIP } from '@shared/viewMode'
+import {
+  VIEW_ENTER_MAX,
+  VIEW_ENTER_MS,
+  VIEW_ENTER_STEP_MS,
+  VIEW_MODE_TOOLTIP
+} from '@shared/viewMode'
 import {
   nextPdfZoom,
   PDF_FIT_PAGE_KEY,
@@ -274,6 +280,90 @@ const quickCdMode = computed(() => props.controller.state.quickCd)
 const thumbnails = computed(
   () => props.controller.state.viewMode === 'thumbnails' && !quickCdMode.value
 )
+
+/**
+ * Whether a view switch is being shown as its entries arriving. It is raised when
+ * the mode changes and dropped once the staggered entrance is over, so only the
+ * layout the switch put on screen animates: an entry the viewport reveals later —
+ * a scroll, a resize — is simply there (`styles/view.css`). The same flag drives
+ * the listing's rows and, through the `enter` prop, the grid's tiles.
+ */
+const viewEnter = ref(false)
+let viewEnterTimer = 0
+
+watch(
+  () => props.controller.state.viewMode,
+  () => {
+    // Where the browser can morph the switch — the entries flying to their new
+    // place (`lib/viewTransition.ts`) — that *is* the switch's animation, and a
+    // staggered fade on top of it would fight the snapshot. The fade is the
+    // fallback for an engine without a view transition.
+    if (canMorphView()) return
+    viewEnter.value = true
+    window.clearTimeout(viewEnterTimer)
+    viewEnterTimer = window.setTimeout(() => {
+      viewEnter.value = false
+    }, VIEW_ENTER_MS)
+  }
+)
+
+/**
+ * The `view-transition-name` an entry carries, so a morph can match the row it
+ * was to the tile it becomes. Names must be unique in the document, so they are
+ * assigned in first-seen order and prefixed with the pane's side rather than
+ * derived from the path — two panes can show one folder.
+ */
+const entryNames = new Map<string, string>()
+let entryNameSeq = 0
+
+function entryName(path: string): string {
+  // Only the pane being switched carries names: the other pane's entries would be
+  // captured for a morph that does not involve them, each at the price of its own
+  // snapshot group and for no motion at all. `none` is the CSS way to stay out of
+  // the transition, and the pane that is switched is the active one.
+  if (!props.active) return 'none'
+
+  let name = entryNames.get(path)
+  if (name === undefined) {
+    entryNameSeq += 1
+    name = `entry-${props.controller.state.side}-${entryNameSeq}`
+    entryNames.set(path, name)
+  }
+  return name
+}
+
+/**
+ * Switch this pane's view. The change runs inside a view transition where there
+ * is one, so the entries morph from the layout being left to the one arriving
+ * rather than the two exchanging in a single frame.
+ */
+function toggleView(): void {
+  // Leaving the wall, its canvas goes before the old state is captured. A live
+  // WebGL canvas is the one thing the flight cannot carry: it is not part of any
+  // named tile — it lies *over* them — so it would be copied whole into the morph
+  // and left floating in the root snapshot while the named boxes flew out from
+  // under it. Hidden, the tiles travel as the boxes they are, and the fleet of
+  // models costs the flight nothing.
+  if (thumbnails.value) gridEl.value?.hideModels()
+
+  withViewTransition(async () => {
+    props.controller.toggleViewMode()
+    // The API waits for this promise, so the tick that lets Vue build the new
+    // layout has to be inside it — the "after" snapshot must be of that layout.
+    await nextTick()
+  })
+}
+
+/** The entrance class an entry at `order` in the window carries, or none. */
+function viewEnterClass(order: number): string {
+  return viewEnter.value && order < VIEW_ENTER_MAX ? 'view-entry' : ''
+}
+
+/** Its step, so the entries arrive one behind another rather than together. */
+function viewEnterStyle(order: number): { animationDelay: string } | null {
+  if (!viewEnter.value || order >= VIEW_ENTER_MAX) return null
+  return { animationDelay: `${order * VIEW_ENTER_STEP_MS}ms` }
+}
 
 /**
  * The columns a row draws. The quick cd list shows only the directory's path —
@@ -3709,7 +3799,8 @@ defineExpose({
   cursorMenuAnchor,
   openColumnPicker,
   addColumnAtFocus,
-  stepPdfZoom
+  stepPdfZoom,
+  toggleView
 })
 
 // Kept out of the <ul> on purpose: the row list must contain exactly the
@@ -4155,6 +4246,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   listObserver?.disconnect()
   listObserver = null
+  window.clearTimeout(viewEnterTimer)
   stageAreaObserver?.disconnect()
   stageAreaObserver = null
   stageBarObserver?.disconnect()
@@ -4787,7 +4879,7 @@ function onRenameBlur(): void {
           "
           :title="VIEW_MODE_TOOLTIP"
           aria-label="View mode"
-          @click.stop="controller.toggleViewMode()"
+          @click.stop="toggleView()"
         >
           <svg
             v-if="controller.state.viewMode === 'thumbnails'"
@@ -5125,6 +5217,8 @@ function onRenameBlur(): void {
         ref="gridEl"
         :controller="controller"
         :active="active"
+        :enter="viewEnter"
+        :name-for="entryName"
         @left-down="onRowLeftDown"
         @right-down="onRowRightDown"
         @enter="onRowEnter"
@@ -5150,12 +5244,16 @@ function onRenameBlur(): void {
           :style="{ height: `${topPad}px` }"
         />
         <li
-          v-for="row in visibleRows"
+          v-for="(row, order) in visibleRows"
           :key="row.entry.path"
           :data-path="row.entry.path"
           class="flex cursor-default items-center gap-1.5 px-3 text-ui"
-          :style="{ height: `${ROW_HEIGHT}px` }"
-          :class="rowClass(row.index)"
+          :style="[
+            { height: `${ROW_HEIGHT}px` },
+            { viewTransitionName: entryName(row.entry.path) },
+            viewEnterStyle(order)
+          ]"
+          :class="[rowClass(row.index), viewEnterClass(order)]"
           @mousedown.left="onRowLeftDown(row.index)"
           @mousedown.right="onRowRightDown(row.index, $event)"
           @mouseenter="onRowEnter(row.index)"

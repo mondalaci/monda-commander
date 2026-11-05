@@ -3,6 +3,7 @@ import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as THREE from 'three'
 import { parseModel } from '@renderer/lib/model'
 import { injectTargetApi } from '@renderer/lib/targetContext'
+import { morphing, whenNotMorphing } from '@renderer/lib/viewTransition'
 
 /**
  * Every 3D tile of a thumbnail wall, drawn by one renderer.
@@ -154,6 +155,12 @@ async function load(key: string, path: string): Promise<void> {
     emit('status', key, 'error')
     return
   }
+  // A parse is synchronous and can be heavy, so it does not run inside a morph's
+  // frames: a file already in flight when the switch began waits for the flight to
+  // land first.
+  await whenNotMorphing()
+  if (disposed) return
+
   try {
     const result = await api.fs.readModel(path)
     if (disposed) return
@@ -206,33 +213,50 @@ function run(): void {
  * Read the files the wall is asking for, a few at a time. The queue is rebuilt
  * from what is on screen rather than appended to, so a fast scroll past a folder
  * of models does not queue a parse for every one it passed.
- *
- * The watch is immediate and its callback runs *before* the declarations below
- * it in a plain setup would be reached — which is why `wanted` and `running` sit
- * above it rather than beside the pump: reading them from the callback while
- * they are still in their temporal dead zone throws, and a thrown immediate
- * watch is a wall that silently never loads a model.
  */
+function requestCells(cells: { key: string; path: string }[]): void {
+  if (unavailable) {
+    for (const cell of cells) emit('status', cell.key, 'error')
+    return
+  }
+  const queue: { key: string; path: string }[] = []
+  const seen = new Set<string>()
+  for (const cell of cells) {
+    if (models.has(cell.key) || failed.has(cell.key) || loading.has(cell.key) || seen.has(cell.key)) {
+      continue
+    }
+    seen.add(cell.key)
+    queue.push(cell)
+  }
+  pump(queue)
+}
+
+/**
+ * Whether the wall has taken its context and begun. It is held back until a mode
+ * morph has landed: a wall that builds itself inside the flight — a WebGL context
+ * taken, files read and parsed — is work on frames that are not even on screen,
+ * on the same thread the flight needs to stay smooth. The wall appears when the
+ * entries have settled into their places.
+ */
+let started = false
+
 watch(
   () => props.cells,
   (cells) => {
-    if (unavailable) {
-      for (const cell of cells) emit('status', cell.key, 'error')
-      return
-    }
-    const queue: { key: string; path: string }[] = []
-    const seen = new Set<string>()
-    for (const cell of cells) {
-      if (models.has(cell.key) || failed.has(cell.key) || loading.has(cell.key) || seen.has(cell.key)) {
-        continue
-      }
-      seen.add(cell.key)
-      queue.push(cell)
-    }
-    pump(queue)
+    // Before the morph lands nothing is read; `start` asks for the cells it can
+    // see the moment the flight is over.
+    if (!started || morphing.value) return
+    requestCells(cells)
   },
   { immediate: true }
 )
+
+// The flight is over: begin, or pick up whatever is on screen now.
+watch(morphing, (on) => {
+  if (on || disposed) return
+  if (started) requestCells(props.cells)
+  else start()
+})
 
 // --- Drawing ---------------------------------------------------------------
 
@@ -259,6 +283,9 @@ function draw(dt: number): void {
   const viewport = props.viewport
   const rendererRef = renderer
   if (!rendererRef || !el || !viewport) return
+  // Nothing of this is on screen while a morph flies — the transition shows
+  // snapshots — so there is no drawing to do until it lands.
+  if (morphing.value) return
 
   const width = el.clientWidth
   const height = el.clientHeight
@@ -311,28 +338,37 @@ function tick(now: number): void {
   draw(elapsed)
 }
 
-onMounted(() => {
+/**
+ * Take the context and begin drawing, once it is the right moment to: held back
+ * until a mode morph has landed (`morphing`), since a WebGL context taken and
+ * files parsed mid-flight are work on frames that are not even on screen — and on
+ * the same thread the flight is trying to keep smooth.
+ */
+function start(): void {
+  if (started || disposed) return
   const el = canvas.value
   if (!el) return
+  started = true
+
   try {
     renderer = new THREE.WebGLRenderer({ canvas: el, antialias: true, alpha: true })
   } catch {
     // No WebGL to draw with: every tile keeps its type icon rather than spinning.
     unavailable = true
-    for (const cell of props.cells) emit('status', cell.key, 'error')
+    requestCells(props.cells)
     return
   }
   renderer.setClearColor(0x000000, 0)
   // The canvas fills its wrapper by CSS, so its drawing buffer has to be kept the
-  // same size in step with layout — not only on the next 40fps tick, or the frame
-  // is a stretched bitmap whenever the box changes (the footer's strip animating
-  // is the common case, and a stretch there is a model that trembles with it).
-  // A ResizeObserver runs before paint, so the buffer is right for the frame that
+  // same size in step with layout — not only on the next tick, or the frame is a
+  // stretched bitmap whenever the box changes (the footer's strip animating is the
+  // common case, and a stretch there is a model that trembles with it). A
+  // ResizeObserver runs before paint, so the buffer is right for the frame that
   // shows it.
   //
-  // Resizing a WebGL buffer blanks it, and the next 40fps tick is a frame or two
-  // away — long enough to see as a flicker through the strip's animation — so the
-  // frame is drawn again right here, still before the paint.
+  // Resizing a WebGL buffer blanks it, and the next tick is a frame away — long
+  // enough to see as a flicker through the strip's animation — so the frame is
+  // drawn again right here, still before the paint.
   canvasObserver = new ResizeObserver(() => {
     const current = canvas.value
     if (!current) return
@@ -341,19 +377,46 @@ onMounted(() => {
   })
   canvasObserver.observe(el)
   frame = requestAnimationFrame(tick)
+  requestCells(props.cells)
+}
+
+onMounted(() => {
+  if (!morphing.value) start()
+  // Else the `morphing` watcher above starts it the moment the flight lands.
 })
 
-onBeforeUnmount(() => {
-  disposed = true
-  cancelAnimationFrame(frame)
-  canvasObserver?.disconnect()
-  canvasObserver = null
+/** Let go of everything the wall holds: its models and its one context. */
+function teardown(): void {
   for (const model of models.values()) disposeModel(model)
   models.clear()
   renderer?.dispose()
   // Give the one context back rather than leaving it to the next folder's wall.
   renderer?.forceContextLoss()
   renderer = null
+}
+
+onBeforeUnmount(() => {
+  disposed = true
+  cancelAnimationFrame(frame)
+  canvasObserver?.disconnect()
+  canvasObserver = null
+
+  // Giving a context and every geometry back is main-thread work, and a mode morph
+  // unmounts this wall at the very start of its flight — that is the leave
+  // animation, and the teardown is what made it choppy. So it is held until the
+  // flight lands, and the wall is simply gone from the screen in the meantime.
+  if (!morphing.value) {
+    teardown()
+    return
+  }
+  const wait = (): void => {
+    if (morphing.value) {
+      requestAnimationFrame(wait)
+      return
+    }
+    teardown()
+  }
+  requestAnimationFrame(wait)
 })
 </script>
 
