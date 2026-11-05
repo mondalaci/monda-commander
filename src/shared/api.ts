@@ -73,6 +73,14 @@ export interface McFsApi {
    */
   imageSize(target: string): Promise<PixelSize | null>
   /**
+   * A small tile of a file for a pane's thumbnail view, as a `data:` URL: an
+   * image decoded and shrunk to `max` on its longest side, or a single frame of
+   * a clip. A format with no thumbnail — a model, a clip with no ffmpeg to cut a
+   * frame, anything on a remote target — comes back as an error, and the tile
+   * draws the entry's own icon instead. Only the local machine answers.
+   */
+  thumbnail(target: string, max: number): Promise<Result<ImagePreview>>
+  /**
    * Whether main can transcode a clip Chromium has no decoder for or no
    * demuxer for (an old camcorder AVI, a WMV, the HEVC of a phone's `.mp4`).
    * False without ffmpeg on the machine, in which case those files are not

@@ -132,6 +132,21 @@ after it, `Delete` drops it, and `Alt+Left`/`Alt+Right` re-order it. A type a
 column already shows is greyed out in every other picker, since a column is shown
 once; `Alt+E`, the icon, or `Escape` leaves the mode,
 
+`Alt+T` cycles the active pane's view — the detail listing, a wall of thumbnails,
+and back to the listing. The mode is the pane's own, like its sort and its
+columns: it changes how the rows are drawn and nothing about which rows they are,
+so the cursor, the marks, the transfers, the search and the row menu all go on
+working. The wall draws each entry from its own picture where one can be had — an
+image shrunk to a tile, a frame of a clip, a PDF's first page — and from its type
+icon otherwise (a folder, a text file, a 3D model, a clip with no ffmpeg, anything
+on a remote target). The pane title bar's own button is the same gesture by
+pointer. While the wall is up the header is hidden (there are no columns to head)
+and the arrows move the cursor by a cell: `←`/`→` step one entry and `↑`/`↓` a
+whole row, rather than the clip's ten-second seek they are in the listing — the
+clip's own seek stays with the display, the footer's transport and the coarser
+Ctrl steps. `Alt+E` in the wall brings the listing back and opens the column
+editor, since the columns it builds are the listing's,
+
 `Alt+C` puts the quick cd directories in the pane in place of its listing — a list
 of bookmarked folders, one path per row, with an incremental search opened with it
 so the folders can be filtered by typing. The pane title bar's star button is the
@@ -205,10 +220,12 @@ room to be seen in, so they are all handed to whatever is running in it.
 
 Midnight commander is what makes that matter, since the gesture and the program
 want the same key: `Alt+S` (Search), `Alt+A` (PutCurrentPath), `Alt+Enter`
-(PutCurrentSelected), `Alt+O` (PanelOtherCd), `Ctrl+R` (Reread) and `Alt+.`
+(PutCurrentSelected), `Alt+O` (PanelOtherCd), `Alt+T` (ChangeListingFormat),
+`Ctrl+R` (Reread) and `Alt+.`
 (ShowHidden) are pane
 gestures of ours *and* of mc's, and a plain shell's readline has `Ctrl+R`,
-`Alt+.` and `Alt+C` (capitalize-word) of its own. Above that line is only the
+`Alt+.`, `Alt+T` (transpose-words) and `Alt+C` (capitalize-word) of its own.
+Above that line is only the
 app's own chrome — the overlays,
 `Ctrl+O`, the tab keys, and the `Escape` of a display that covers the whole
 window.

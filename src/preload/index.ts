@@ -44,6 +44,8 @@ const api: McApi = {
       ipcRenderer.invoke('fs:read-image', target),
     imageSize: (target: string): Promise<PixelSize | null> =>
       ipcRenderer.invoke('fs:image-size', target),
+    thumbnail: (target: string, max: number): Promise<Result<ImagePreview>> =>
+      ipcRenderer.invoke('fs:thumbnail', target, max),
     canTranscode: (): Promise<boolean> => ipcRenderer.invoke('fs:can-transcode'),
     canArchive: (): Promise<boolean> => ipcRenderer.invoke('fs:can-archive'),
     videoCodec: (target: string): Promise<string | null> =>

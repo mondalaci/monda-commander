@@ -375,6 +375,86 @@ A click on a capsule puts the same focus there, so the pointer is just another w
 of saying which column is "this one"; a search box, whose input owns the caret,
 keeps its keys.
 
+## View modes
+
+### A pane's rows can be a wall of thumbnails
+
+The detail listing answers "what is in this folder" with names, sizes and dates,
+which is the right answer for code, archives and text. For a folder of pictures,
+clips, pages and models it is the wrong one: there the file *is* its picture, and
+a name says almost nothing about it. So a pane has a view mode — `details` or
+`thumbnails`, cycled by `Alt+T` — and the wall draws the same rows each as a tile,
+from the entry's own thumbnail where one can be read and from its type icon where
+none can.
+
+It is a property of the pane, like its sort and its columns, and it is the *same
+rows*: `state.entries`, with the same cursor, marks, filter, order and watcher.
+That is the whole design — nothing about the cursor moves, the transfers, the
+search or the row menu changes with the mode, because the mode changes only how
+the rows are drawn. The listing's fixed row height is the one thing that cannot
+carry over: a wall is a variable number of cells across, so `ThumbnailGrid` does
+its own windowing, page arithmetic and scroll-into-view on a cell pitch, and the
+pane's `cellsPerRow` (measured by the view) is what lets `App.vue` move the cursor
+a whole row on the up and down arrows. In the wall the left and right arrows move
+a cell rather than seeking the previewed clip, because a horizontal arrow that
+could not reach the cell beside it would be the one key the grid could not answer.
+The header — and so the column editor, the header sort and the drag — belongs to
+the detail listing and is hidden with the wall; `Alt+E` in the wall brings the
+listing back, because where the editor is, the columns are.
+
+The mode deliberately does not persist: it is per pane, per session, like the
+sort. A remembered default is a small addition if it is wanted.
+
+A tile carries the row's git dot as well: the mark a row shows is a property of
+the entry and the status, not of how the row is drawn, so `rowMarkFor` and
+`dotStyle` moved to `lib/gitMark.ts` and both the listing and the wall read them
+from there — one reader, one dot, whichever way the row is laid out. In the wall
+the dot sits in the picture box's bottom-right corner, over the model wall's
+canvas: a model is framed inside a sphere with margin (`buildModel`), so its
+silhouette never reaches the corner, and the canvas is transparent there — the dot
+reads whether the tile is a picture, a type icon or a turning model.
+
+A tile's picture is read from main, not the renderer — a file has no URL — but *as
+a tile*, not as the file: the status-bar preview hands a small file over whole,
+which is right for one 64px box and ruinous for a wall of sixty, so `fs:thumbnail`
+always decodes and shrinks to a fixed longest side (`nativeImage` does the resize,
+off the fs thread pool). Images travel this way, PDFs through the same
+`fs:pdf-page` the display uses at a tile's width, and a clip as one frame cut by
+ffmpeg — gated by the same probe that decides whether the clip is previewable at
+all, so no ffmpeg means the clip keeps its icon.
+
+A 3D model is the exception that shaped the rest, and the reason the wall has a
+renderer at all. One WebGL context per tile would exhaust what a browser allows in
+a single screenful — the limit `ModelViewer` is built around — so `ModelWall`
+draws *every* model with one context: a transparent canvas over the grid, into
+which each model is painted through a scissor box the size and place of its tile,
+so all of them turn at once rather than only the one under the pointer. The
+canvas is `pointer-events-none` and only ever paints inside a tile's box, so the
+tiles beneath keep their own clicks, hover and tooltips. The models are fetched
+(`fs:read-model`, so a CAD document is meshed by main first) and parsed there, in
+an async chunk of its own — three.js is loaded only where the folder could hold a
+model, never for a folder of pictures. A tile whose model will not read or parse
+falls back to its type icon. Only the local machine answers `fs:thumbnail` and
+`fs:read-model`: a remote relay has no resize step and no CAD mesher, so a remote
+pane draws icons.
+
+In the wall the footer keeps no preview of the cursor's *model* — the tile is the
+preview already, and a footer viewer would mount a second WebGL context and read
+and parse the file again on every step between two models, which is exactly the
+per-step work the wall's own rotation stutters on. What is not lost with it is the
+reveal: a display grows out of the cursor's tile rather than the footer's box, so
+`Enter` still enlarges the picture *out of the picture* (`ThumbnailGrid.cellRect`,
+which `previewRect`/`previewBarRect` reach for in the wall — and the transport
+grows out from under the tile the same way).
+
+The tiles are read for the cells the window covers, four at a time, and the list
+of what still wants reading is *rebuilt* from the window on every scroll rather
+than appended to — so a fast flick down a folder of thousands drops the cells it
+has left behind instead of queueing a decode for every one of them. The key is the
+file's content (path, size, mtime), so a rewrite is a different tile, and the
+renderer's own map is cleared on navigation, with reads that land after it dropped
+by an epoch — the same shape the size walks use.
+
 ## Quick cd
 
 A quick cd directory is a folder the user has bookmarked, and `Alt+C` puts the

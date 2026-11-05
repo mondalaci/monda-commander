@@ -26,6 +26,7 @@ import {
   registerMediaProtocol,
   registerMediaScheme
 } from './media'
+import { killAllThumbnails, registerThumbnailHandlers } from './thumbnail'
 
 // The hardware video decoder hands its frames to the compositor as DMA-BUFs,
 // and a Linux session that cannot import those (a VM, a driver without a working
@@ -109,6 +110,7 @@ registerRemoteHandlers()
 registerPdfHandlers()
 registerPdfViewHandlers()
 registerModelHandlers()
+registerThumbnailHandlers()
 
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
@@ -142,6 +144,7 @@ if (!gotLock) {
     killAllTranscodes()
     killAllPdfRenders()
     killAllModelConversions()
+    killAllThumbnails()
     targetRegistry.closeAll()
   })
 }

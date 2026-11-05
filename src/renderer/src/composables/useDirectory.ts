@@ -9,6 +9,7 @@ import { archiveSupported } from '@renderer/lib/archive'
 import { hideMode } from '@renderer/composables/useHideMode'
 import { quickCdDirs, homeDir, quickCdLabel } from '@renderer/composables/useQuickCd'
 import { buildGitView, type GitView } from '@renderer/lib/gitMark'
+import { nextViewMode, type ViewMode } from '@shared/viewMode'
 import type { TargetApi } from '@renderer/lib/targetApi'
 import { shouldExecute } from '@renderer/lib/executable'
 import type { DirEntry, PanelSide } from '@shared/types'
@@ -118,6 +119,21 @@ export interface PaneState {
    */
   columnFocus: number
   /**
+   * How the pane draws its own rows: the ordinary detail listing, or a wall of
+   * thumbnails. A property of the pane like its sort and its columns — it
+   * changes the drawing and not the rows, so the cursor, the marks, the search
+   * and the transfers are all untouched by it. Alt+T cycles it (see
+   * `shared/viewMode.ts`).
+   */
+  viewMode: ViewMode
+  /**
+   * How many cells a thumbnail row holds, measured by the view that draws it.
+   * It is what lets the up/down arrows move by a whole row rather than one
+   * entry (see App.vue), exactly as `pageRows` lets a page move do the same. The
+   * detail listing never reads it.
+   */
+  cellsPerRow: number
+  /**
    * Whether the move that just happened should be shown as a quick scroll
    * rather than a jump. Only a page or an end-to-end jump asks for it — a
    * one-row move must stay instant, or holding an arrow key would animate
@@ -214,6 +230,10 @@ export interface PaneController {
   moveColumn(from: SortKey, toIndex: number): void
   /** Toggle the pane's column edit mode — the header's icon, or Alt+E. */
   toggleColumnEdit(): void
+  /** How the pane's own rows are drawn — the detail listing or a thumbnail wall. */
+  setViewMode(mode: ViewMode): void
+  /** Cycle the pane's view — Alt+T, and the title bar's own button. */
+  toggleViewMode(): void
   /**
    * Switch the pane between its own directory and the quick cd list (Alt+C).
    * Entering replaces the rows with the bookmarks; leaving restores the listing
@@ -605,6 +625,8 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     columnOrder: ['name', 'size', 'modified'],
     columnEdit: false,
     columnFocus: 0,
+    viewMode: 'details',
+    cellsPerRow: 1,
     animateScroll: false,
     searchActive: false,
     searchQuery: '',
@@ -1330,8 +1352,31 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     // list has only a name column and no header, so there is nothing to build
     // while it is up.
     if (state.quickCd) return
+    // A thumbnail wall has no header either, and the columns it would build are
+    // the detail listing's, so the gesture brings the listing back rather than
+    // doing nothing: where the editor is, the columns are.
+    if (state.viewMode !== 'details') state.viewMode = 'details'
     state.columnEdit = !state.columnEdit
     if (state.columnEdit) clampColumnFocus()
+  }
+
+  /**
+   * How the pane's own rows are drawn. The columns the detail listing is built
+   * from, the sort and the cursor are all left as they are, so switching back
+   * shows the pane exactly as it was; only the drawing changes. Leaving the
+   * column editor is part of it, since a thumbnail wall has no header for it to
+   * draw on.
+   */
+  function setViewMode(mode: ViewMode): void {
+    if (state.viewMode === mode) return
+    state.viewMode = mode
+    state.columnEdit = false
+    state.scrollAlign = 'nearest'
+    state.animateScroll = false
+  }
+
+  function toggleViewMode(): void {
+    setViewMode(nextViewMode(state.viewMode))
   }
 
   /**
@@ -2034,6 +2079,8 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     sortBy,
     moveColumn,
     toggleColumnEdit,
+    setViewMode,
+    toggleViewMode,
     toggleQuickCd,
     setColumnType,
     addColumn,

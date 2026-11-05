@@ -71,6 +71,11 @@ src/shared/model.ts      the two model families by extension: mesh formats the
                          main meshes through FreeCAD (step/iges/fcstd)
 src/shared/video.ts      video MIME map, ffmpeg-only extensions, decodable codecs, scheme name
 src/shared/hide.ts       the `.mchide` name, the toggle key, the two tooltips
+src/shared/viewMode.ts   the pane's two view modes (details/thumbnails), the cycle
+                         key and the button's tooltip
+src/main/thumbnail.ts    tiles and clip posters read from main: an image decoded
+                         and shrunk to a tile, one frame of a video through ffmpeg,
+                         LRU-cached; fs:thumbnail (local only)
 src/shared/quickCd.ts    the quick cd key and the two tooltips the title-bar
                          button is spoken with
 src/shared/archive.ts    the archive location model: the NUL-joined
@@ -84,6 +89,8 @@ src/renderer/src/components/TitleBar.vue       frameless title bar + window cont
                                                hosts the workspace tab strip
 src/renderer/src/components/WorkspaceTabs.vue  the tab strip
 src/renderer/src/components/FilePanel.vue      one pane: path bar, list, footer, display
+src/renderer/src/components/ThumbnailGrid.vue  a pane's rows as a windowed wall of
+                                               tiles, when its view mode is thumbnails
 src/renderer/src/components/DiskUsage.vue      the pane title's disk-occupancy widget:
                                                `used / total` inside a progress bar,
                                                with the mount point in its tooltip
@@ -91,6 +98,9 @@ src/renderer/src/components/TerminalPane.vue   xterm: collapsed strip / full ter
 src/renderer/src/components/ModelViewer.vue    three.js canvas for a 3D model: the
                                                footer thumbnail (auto-turning) and
                                                the display (orbit + wheel zoom)
+src/renderer/src/components/ModelWall.vue     the thumbnail wall's 3D tiles: one
+                                               WebGL renderer painting every model
+                                               through a scissor box (all turning)
 src/renderer/src/components/FileViewer.vue     Monaco overlay: read-only (F3) or edit (F4)
 src/renderer/src/components/PaneContextMenu.vue  a row's menu
 src/renderer/src/components/HoldRing.vue       the ring on a held right press
@@ -267,6 +277,35 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
 - **The pane's row list must contain only entries.** The status notice is a
   sibling of the `<ul>`, never an `<li>` (an extra `<li>` shifts every index). The
   notice travels (`styles/notice.css`) and is keyed by its text.
+- **A pane can draw its rows as a wall of thumbnails, cycled by `Alt+T`.** The
+  mode is the pane's own (`state.viewMode` in `useDirectory`), like its sort and
+  columns, and it is the *same rows*: the cursor, marks, filter, order, watcher,
+  transfers and row menu are untouched — only the drawing changes. `ThumbnailGrid`
+  does its own windowing, page arithmetic and scroll-into-view on a cell pitch
+  (the listing's `ROW_HEIGHT` geometry does not carry over), and the pane's
+  `cellsPerRow`, which the view measures, is what lets App.vue move the cursor a
+  whole row on the up/down arrows; `←`/`→` step a cell rather than seeking the clip
+  in the wall. The header (and the column editor) belongs to the details listing
+  and is hidden with the wall; `Alt+E` brings the listing back first. A tile's
+  picture is read from main as a *tile* (`fs:thumbnail` decodes and shrinks with
+  `nativeImage`; a clip is one ffmpeg frame), never as the whole file — the
+  status-bar preview handing a ≤16 MiB file over whole would be ruinous sixty
+  times over. A tile carries the row's git dot too — `rowMarkFor`/`dotStyle` live
+  in `lib/gitMark.ts` and both the listing and the wall read them, so the dot is
+  one reader's answer whichever way the row is drawn — in the wall it rides the
+  picture box's bottom-right corner (a model is framed with margin, so the
+  transparent canvas there never hides it). 3D tiles turn
+  too, by *one* shared renderer (`ModelWall`): one WebGL context per tile would
+  exhaust the browser's contexts (`ModelViewer` gives its own back on unmount for
+  the same reason), so every model is painted through a scissor box the size of
+  its tile, in an async chunk fetched only where the folder could hold a model. A
+  model that will not read or parse falls back to its icon, and a remote target
+  draws icons too (the relay has no resize step and no CAD mesher). In the wall
+  the footer keeps no preview of a model (a second WebGL context and a re-read per
+  cursor step is what stutters the rotation), so a display is revealed out of the
+  cursor's *tile* instead — `ThumbnailGrid.cellRect`, reached from
+  `previewRect`/`previewBarRect`. Reasoning in
+  [`docs/design.md`](docs/design.md).
 
 ### The hide mode
 

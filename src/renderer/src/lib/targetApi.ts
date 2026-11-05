@@ -99,6 +99,13 @@ function remoteFs(target: Target): McFsApi {
       const response = await request(id, 'fs:imageSize', { path })
       return response.ok ? ((response.data as PixelSize | null) ?? null) : null
     },
+    thumbnail: async () => ({
+      // A remote relay has no resize step, so a tile cannot be cut there. The
+      // pane draws the entry's icon instead, which is a smaller loss than
+      // shipping whole pictures over the wire for every cell of a wall.
+      ok: false,
+      error: { code: 'ENOTSUP', message: 'Thumbnails are drawn on the local machine only' }
+    }),
     canTranscode: async () => {
       const response = await request(id, 'fs:canTranscode', {})
       return response.ok ? Boolean(response.data) : false

@@ -35,13 +35,15 @@ import {
 import { injectTargetApi } from '@renderer/lib/targetContext'
 import type { PaneMenuRequest } from '@renderer/lib/paneMenu'
 import {
+  dotStyle,
   markSummary,
   markTitle,
+  rowMarkFor,
   sideColor,
-  untrackedAbove,
-  type GitMark
+  type GitRowMark
 } from '@renderer/lib/gitMark'
 import FileIcon from '@renderer/components/FileIcon.vue'
+import ThumbnailGrid from '@renderer/components/ThumbnailGrid.vue'
 import DiskUsage from '@renderer/components/DiskUsage.vue'
 import ColumnAddButton from '@renderer/components/ColumnAddButton.vue'
 import ColumnDropMarker from '@renderer/components/ColumnDropMarker.vue'
@@ -52,6 +54,7 @@ import { pdfView, setPdfFit, setPdfZoom } from '@renderer/composables/usePdfView
 import { archiveDisplay } from '@shared/archive'
 import { HIDE_MODE_OFF_TOOLTIP, HIDE_MODE_TOOLTIP } from '@shared/hide'
 import { QUICK_CD_LEAVE_TOOLTIP, QUICK_CD_TOOLTIP } from '@shared/quickCd'
+import { VIEW_MODE_TOOLTIP } from '@shared/viewMode'
 import {
   nextPdfZoom,
   PDF_FIT_PAGE_KEY,
@@ -178,6 +181,13 @@ watch(
 const listEl = ref<HTMLUListElement | null>(null)
 const footerEl = ref<HTMLElement | null>(null)
 const searchInput = ref<HTMLInputElement | null>(null)
+/**
+ * The wall, when the pane is drawing one. A display is revealed out of the
+ * cursor's *tile* rather than the footer's little box, which the wall does not
+ * have for a model — so the pane reaches into the grid for the rectangle to grow
+ * from.
+ */
+const gridEl = ref<InstanceType<typeof ThumbnailGrid> | null>(null)
 
 /**
  * The listing is windowed rather than rendered whole: a directory can hold tens
@@ -255,6 +265,15 @@ const columnOrder = computed(() => props.controller.state.columnOrder)
 
 /** Whether the pane is showing the quick cd list instead of its directory. */
 const quickCdMode = computed(() => props.controller.state.quickCd)
+
+/**
+ * Whether the pane is drawing its rows as a wall of thumbnails. The quick cd
+ * list forces the detail listing (its rows are paths and nothing else), so the
+ * mode stands aside while it is up.
+ */
+const thumbnails = computed(
+  () => props.controller.state.viewMode === 'thumbnails' && !quickCdMode.value
+)
 
 /**
  * The columns a row draws. The quick cd list shows only the directory's path —
@@ -613,6 +632,12 @@ const previewTarget = computed(() => {
   // target that stream would serve a same-named local file. Images are read
   // through the target's own API, so they preview safely; a clip does not.
   if (target && target.kind !== 'image' && api.target.kind !== 'local') return null
+  // The wall already draws the cursor's model in its own tile, with the one
+  // renderer it holds. A footer viewer would mount a *second* WebGL context and
+  // read and parse the file again on every step between two models — and that
+  // per-step work is exactly what the wall's own rotation stutters on. So in the
+  // wall a model keeps no footer preview; Enter and Ctrl+Enter still enlarge it.
+  if (target && target.kind === 'model' && thumbnails.value) return null
   return target
 })
 
@@ -3008,6 +3033,14 @@ function contentEl(): HTMLElement | null {
 }
 
 function previewRect(): DOMRect | null {
+  // In the wall a display is revealed out of the cursor's own *tile* — the
+  // picture the user is looking at — rather than the footer's little box, which
+  // the wall does not even draw for a model.
+  if (thumbnails.value) {
+    const tile = gridEl.value?.cellRect()
+    if (tile) return tile
+  }
+
   const element = previewEl.value
   if (!element || element.offsetParent === null) return null
   return element.getBoundingClientRect()
@@ -3018,9 +3051,16 @@ function previewRect(): DOMRect | null {
  * dropped to its own bottom edge — directly below the small preview, so the bar
  * travels hugging the picture all the way rather than from wherever the strip's
  * own little bar happens to sit. Null when this pane has no thumbnail up, since
- * there is then nothing for a display to grow from.
+ * there is then nothing for a display to grow from. In the wall the same is done
+ * for the cursor's tile, so the transport comes out from under the picture being
+ * enlarged.
  */
 function previewBarRect(): DOMRect | null {
+  if (thumbnails.value) {
+    const tile = gridEl.value?.cellRect()
+    if (tile) return new DOMRect(tile.left, tile.bottom, tile.width, tile.height)
+  }
+
   const element = previewEl.value
   if (!element || element.offsetParent === null) return null
   const box = element.getBoundingClientRect()
@@ -3696,17 +3736,6 @@ const notice = computed(() => {
 })
 
 /**
- * A row's git mark, with the two things that make a folder's different from a
- * file's: how many entries put it there, and that it is a roll-up rather than
- * this row's own status.
- */
-interface GitRowMark {
-  mark: GitMark
-  count: number
-  rollup: boolean
-}
-
-/**
  * What git thinks of this pane's directory, when it is inside a work tree. Null
  * outside one and on a machine with no git to ask — the same nothing, and drawn
  * as nothing: no dot on any row, and no chip in the title bar.
@@ -3788,46 +3817,14 @@ const gitTitle = computed(() => {
 })
 
 /**
- * The mark a row shows: the entry's own status for a file, or a roll-up of
- * everything changed beneath the folder for a directory. The `..` row is never
- * marked — it names the directory above, and a dot on it would mark every way
- * out of a repository as though that folder were the one being looked at.
+ * The mark a row shows, read from the pane's own git view: the entry's own
+ * status, or a roll-up of what is under a folder — one shared reader, so the
+ * detail listing and the thumbnail wall draw the same dot (`rowMarkFor`). Quick
+ * cd's rows are paths rather than entries of a work tree, so they carry none.
  */
 function markAt(entry: PaneEntry): GitRowMark | null {
-  const view = gitView.value
-  if (!view || entry.isParent || props.controller.state.quickCd) return null
-
-  if (entry.kind === 'directory') {
-    const dir = view.dirs.get(entry.path)
-    if (dir) return { mark: dir.mark, count: dir.count, rollup: true }
-
-    // A folder below a directory git collapsed as untracked holds nothing but
-    // untracked files, and it is a place the user can be standing.
-    const above = untrackedAbove(view, entry.path)
-    return above ? { mark: above, count: 0, rollup: true } : null
-  }
-
-  const file = view.files.get(entry.path)
-  if (file) return { mark: file, count: 1, rollup: false }
-
-  const above = untrackedAbove(view, entry.path)
-  return above ? { mark: above, count: 1, rollup: false } : null
-}
-
-/**
- * How a git dot is drawn: the colour the status carries, filled for an entry
- * itself and hollow for a folder that only holds one, so "this file" and "inside
- * here" are told apart without reading anything beside it. The row's dot wants a
- * dark ring with it, because it sits over the icon rather than on a flat
- * background.
- */
-function dotStyle(found: GitRowMark, ring: boolean): Record<string, string> {
-  const color = sideColor(found.mark.letter)
-  return {
-    borderColor: color,
-    backgroundColor: found.rollup ? 'transparent' : color,
-    ...(ring ? { boxShadow: '0 0 0 1px #1e1e1e' } : {})
-  }
+  if (props.controller.state.quickCd) return null
+  return rowMarkFor(gitView.value, entry)
 }
 
 /**
@@ -3948,9 +3945,38 @@ function onListScroll(): void {
   if (element) scrollTop.value = element.scrollTop
 }
 
-let listObserver: ResizeObserver | null = null
+let listObserver: ResizeObserver | null = new ResizeObserver(() => onListResize())
 /** The footer's height at the last resize, to tell a strip move from the rest. */
 let lastFooterHeight: number | null = null
+
+/**
+ * The listing's own element comes and goes with the view mode: leaving
+ * thumbnails mounts a fresh `<ul>`, and the resize observer has to follow it or
+ * the pane stops re-windowing itself after one switch. Post-flush, so the
+ * element the reference names is already in the document when it is observed.
+ */
+watch(
+  listEl,
+  (element) => {
+    listObserver?.disconnect()
+    if (element) listObserver?.observe(element)
+    measurePageRows()
+  },
+  { flush: 'post' }
+)
+
+/**
+ * Coming back from a thumbnail wall, the detail listing is a fresh `<ul>` at its
+ * own top, while the cursor is wherever the wall left it — so the row it is on
+ * is revealed again rather than left scrolled out of sight. The other direction
+ * needs nothing here: the grid reveals the cursor's cell as it mounts.
+ */
+watch(thumbnails, async (on) => {
+  if (on) return
+  await nextTick()
+  measureListSlack()
+  scrollRowIntoView(props.controller.state.cursor, 'nearest')
+})
 
 function measurePageRows(): void {
   const element = listEl.value
@@ -4079,6 +4105,10 @@ function scrollRowIntoView(index: number, align: ScrollAlign, animated = false):
 watch(
   [() => props.controller.state.path, () => props.controller.state.cursor],
   async () => {
+    // The thumbnail wall is its own windowing: it reveals the cursor's cell
+    // from its own geometry, and this watcher's reset would take the page-jump
+    // alignment out from under it before it could read it.
+    if (thumbnails.value) return
     const { cursor, scrollAlign, animateScroll } = props.controller.state
     props.controller.state.scrollAlign = 'nearest'
     props.controller.state.animateScroll = false
@@ -4099,8 +4129,7 @@ watch(
 )
 
 onMounted(() => {
-  listObserver = new ResizeObserver(onListResize)
-  if (listEl.value) listObserver.observe(listEl.value)
+  if (listEl.value) listObserver?.observe(listEl.value)
   measurePageRows()
   window.addEventListener('mouseup', endPointerDrag)
   window.addEventListener('mousemove', onHoldMove)
@@ -4743,6 +4772,48 @@ function onRenameBlur(): void {
              state chips share the title's tail; the tooltip carries the exact
              sizes and the mount point. -->
         <DiskUsage :usage="diskUsage" :active="active" />
+        <!-- How the pane draws its own rows: the detail listing, or a wall of
+             thumbnails. It is the same kind of state as the star beside it — a
+             filled grid when the wall is up, an outline list when the rows are —
+             and keeps the title's color, so nothing up here competes with a
+             selection below. Alt+T is the key. -->
+        <button
+          type="button"
+          class="flex h-5 w-5 shrink-0 items-center justify-center rounded transition-colors hover:bg-hover"
+          :class="
+            controller.state.viewMode === 'thumbnails'
+              ? 'text-fg-bright'
+              : 'text-fg-dim hover:text-fg'
+          "
+          :title="VIEW_MODE_TOOLTIP"
+          aria-label="View mode"
+          @click.stop="controller.toggleViewMode()"
+        >
+          <svg
+            v-if="controller.state.viewMode === 'thumbnails'"
+            viewBox="0 0 24 24"
+            class="h-3.5 w-3.5"
+            fill="currentColor"
+            aria-hidden="true"
+          >
+            <rect x="3" y="3" width="7.5" height="7.5" rx="1.5" />
+            <rect x="13.5" y="3" width="7.5" height="7.5" rx="1.5" />
+            <rect x="3" y="13.5" width="7.5" height="7.5" rx="1.5" />
+            <rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.5" />
+          </svg>
+          <svg
+            v-else
+            viewBox="0 0 24 24"
+            class="h-3.5 w-3.5"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            aria-hidden="true"
+          >
+            <path d="M4 6h16M4 12h16M4 18h16" />
+          </svg>
+        </button>
         <!-- Quick cd is reached by Alt+C and by this button. Unlike the header's
              own controls, the title bar is still there while the mode is on, which
              is where the way *out* has to live. It is a state as much as a switch —
@@ -4818,7 +4889,7 @@ function onRenameBlur(): void {
       </div>
 
       <div
-        v-if="!quickCdMode"
+        v-if="!quickCdMode && !thumbnails"
         ref="headerEl"
         class="pane-header-gutter group relative flex h-6 shrink-0 items-center gap-1.5 border-b border-border-subtle pl-3 text-ui-sm text-fg-dim transition-colors"
         :class="columnEdit ? 'bg-surface-2' : 'bg-bg'"
@@ -5045,11 +5116,29 @@ function onRenameBlur(): void {
         </div>
       </div>
 
+      <!-- A wall of thumbnails, in place of the rows: the same entries, drawn
+           from their own pictures where one can be read. The listing's fixed-row
+           arithmetic is this component's own here, so the two never share the
+           scroll, the windowing or the page math. -->
+      <ThumbnailGrid
+        v-if="thumbnails"
+        ref="gridEl"
+        :controller="controller"
+        :active="active"
+        @left-down="onRowLeftDown"
+        @right-down="onRowRightDown"
+        @enter="onRowEnter"
+        @click="onRowClick"
+        @activate="onRowDblclick"
+        @name-click="onNameClick"
+      />
+
       <!-- Only the rows the viewport covers are in the document (see
            `visibleRows`); the rows hidden above and below stand in as spacers of
            their exact height, so the scrollbar, the page arithmetic and the
            scroll-into-view all measure the whole listing as if it were there. -->
       <ul
+        v-else
         ref="listEl"
         class="pane-scrollbar relative min-h-0 flex-1 overflow-y-auto"
         :style="listSlackStyle"

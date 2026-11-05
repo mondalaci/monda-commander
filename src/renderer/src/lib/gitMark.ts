@@ -1,4 +1,4 @@
-import type { GitStatus } from '@shared/types'
+import type { EntryKind, GitStatus } from '@shared/types'
 
 /**
  * How a row says what git thinks of it: a dot on the row's own icon, in the
@@ -395,4 +395,64 @@ export function markSummary(mark: GitMark, count: number, rollup: boolean): stri
   if (!rollup) return mark.short
   if (count <= 0) return `${mark.short} — whole folder`
   return count === 1 ? '1 change inside' : `${count} changes inside`
+}
+
+/**
+ * A row's git mark, with the two things that make a folder's different from a
+ * file's: how many entries put it there, and that it is a roll-up rather than
+ * this row's own status.
+ */
+export interface GitRowMark {
+  mark: GitMark
+  count: number
+  rollup: boolean
+}
+
+/**
+ * The mark a row shows: the entry's own status for a file, or a roll-up of
+ * everything changed beneath the folder for a directory. The `..` row is never
+ * marked — it names the directory above, and a dot on it would mark every way
+ * out of a repository as though that folder were the one being looked at.
+ *
+ * The entry is taken structurally rather than as a listing's `PaneEntry`, so
+ * this stays a leaf: both the detail listing and the thumbnail wall ask the same
+ * question of the same view and get the same dot.
+ */
+export function rowMarkFor(
+  view: GitView | null,
+  entry: { path: string; kind: EntryKind; isParent?: boolean }
+): GitRowMark | null {
+  if (!view || entry.isParent) return null
+
+  if (entry.kind === 'directory') {
+    const dir = view.dirs.get(entry.path)
+    if (dir) return { mark: dir.mark, count: dir.count, rollup: true }
+
+    // A folder below a directory git collapsed as untracked holds nothing but
+    // untracked files, and it is a place the user can be standing.
+    const above = untrackedAbove(view, entry.path)
+    return above ? { mark: above, count: 0, rollup: true } : null
+  }
+
+  const file = view.files.get(entry.path)
+  if (file) return { mark: file, count: 1, rollup: false }
+
+  const above = untrackedAbove(view, entry.path)
+  return above ? { mark: above, count: 1, rollup: false } : null
+}
+
+/**
+ * How a git dot is drawn: the colour the status carries, filled for an entry
+ * itself and hollow for a folder that only holds one, so "this file" and "inside
+ * here" are told apart without reading anything beside it. With `ring`, a dark
+ * ring around it, for a dot sitting over an icon — a row's or a tile's — rather
+ * than on a flat background.
+ */
+export function dotStyle(found: GitRowMark, ring: boolean): Record<string, string> {
+  const color = sideColor(found.mark.letter)
+  return {
+    borderColor: color,
+    backgroundColor: found.rollup ? 'transparent' : color,
+    ...(ring ? { boxShadow: '0 0 0 1px #1e1e1e' } : {})
+  }
 }

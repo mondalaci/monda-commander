@@ -2079,19 +2079,30 @@ function handlePaneKey(event: KeyboardEvent): void {
       // With nothing typed on the command line the arrows have no line to edit,
       // so they step through the clip being previewed instead — back or forward
       // by ten seconds. A typed line, or an open search box, takes them back:
-      // there they belong to the text, not to the clip.
+      // there they belong to the text, not to the clip. In a thumbnail wall they
+      // step the cursor a cell instead, as up and down step it a row: the wall is
+      // a grid, and a horizontal arrow that scrubbed a clip rather than reaching
+      // the cell beside it would be the one key that cannot move sideways. The
+      // clip's own seek stays with the display, the footer's transport and the
+      // coarser Ctrl steps.
       if (searching || hasInput) return
       consume(event)
-      seekPreview(event.key === 'ArrowLeft' ? -SEEK_SECONDS : SEEK_SECONDS)
+      if (pane.state.viewMode === 'thumbnails') {
+        pane.moveCursor(event.key === 'ArrowLeft' ? -1 : 1)
+      } else {
+        seekPreview(event.key === 'ArrowLeft' ? -SEEK_SECONDS : SEEK_SECONDS)
+      }
       break
     }
     case 'ArrowDown':
       consume(event)
-      pane.moveCursor(1)
+      pane.moveCursor(pane.state.viewMode === 'thumbnails' ? Math.max(1, pane.state.cellsPerRow) : 1)
       break
     case 'ArrowUp':
       consume(event)
-      pane.moveCursor(-1)
+      pane.moveCursor(
+        pane.state.viewMode === 'thumbnails' ? -Math.max(1, pane.state.cellsPerRow) : -1
+      )
       break
     case 'PageDown':
       consume(event)
@@ -2476,6 +2487,24 @@ function onKeydown(event: KeyboardEvent): void {
   if (isQuickCdToggle) {
     consume(event)
     activePane.value.toggleQuickCd()
+    return
+  }
+
+  // Alt+T cycles the pane's view: the detail listing, a wall of thumbnails, and
+  // back. It is mc's listing-format key (Alt+T walks Full, Brief, Long and User),
+  // which is the same idea — how the pane's own rows are drawn — and it is the
+  // panes' own in the same way Alt+S and Alt+. are: readline binds M-t to
+  // transpose-words, and a real terminal keeps it, exactly as it keeps those.
+  const isViewModeToggle =
+    event.altKey &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.shiftKey &&
+    event.code === 'KeyT'
+
+  if (isViewModeToggle) {
+    consume(event)
+    activePane.value.toggleViewMode()
     return
   }
 
