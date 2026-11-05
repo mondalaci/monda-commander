@@ -5,6 +5,8 @@ import type { DiskUsage } from '@shared/types'
 
 const props = defineProps<{
   usage: DiskUsage | null
+  /** Whether this is the focused pane, which sets the ordinary fill's hue. */
+  active: boolean
 }>()
 
 /**
@@ -27,10 +29,15 @@ function compact(bytes: number): string {
 }
 
 /**
- * The occupancy fills, as hex rather than theme tokens: a darker green than the
- * runnable one, so the white label reads on it, then archive gold, danger red.
+ * The ordinary fill takes the pane's own state rather than the runnable green:
+ * the accent blue on the focused pane, the inactive selection grey on the other
+ * — the same pair the cursor band is drawn in (`bg-accent` /
+ * `bg-selection-inactive`), so the chip reads as part of the title it sits in.
+ * The warning and full hues stay the app's traffic light (archive gold, danger
+ * red). Read as theme tokens, so the two travel with the palette.
  */
-const FILL_OK = '#47823a'
+const FILL_OK_ACTIVE = 'var(--color-accent)'
+const FILL_OK_INACTIVE = 'var(--color-selection-inactive)'
 const FILL_WARN = '#e2b93d'
 const FILL_FULL = '#f14c4c'
 
@@ -53,15 +60,14 @@ const totalLabel = computed(() => compact(total.value))
 const fillWidth = computed(() => `${fraction.value * 100}%`)
 
 /**
- * The fill's hue walks green → gold → red as the disk fills — the app's own
- * traffic light, runnable → archive → danger — so a full disk reads with the
- * same red the rest of the interface reserves for something that wants
- * attention.
+ * The fill's hue walks the pane's own blue/grey → gold → red as the disk fills,
+ * so a full disk reads with the same red the rest of the interface reserves for
+ * something that wants attention.
  */
 const fill = computed(() => {
   if (percent.value >= 90) return FILL_FULL
   if (percent.value >= 75) return FILL_WARN
-  return FILL_OK
+  return props.active ? FILL_OK_ACTIVE : FILL_OK_INACTIVE
 })
 
 /** The label is white, on a dark track, whichever fill it crosses. */

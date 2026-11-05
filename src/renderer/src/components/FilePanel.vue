@@ -4736,7 +4736,7 @@ function onRenameBlur(): void {
         <!-- How full this pane's filesystem is, left of the hide icon so the two
              state chips share the title's tail; the tooltip carries the exact
              sizes and the mount point. -->
-        <DiskUsage :usage="diskUsage" />
+        <DiskUsage :usage="diskUsage" :active="active" />
         <!-- Quick cd is reached by Alt+C and by this button. Unlike the header's
              own controls, the title bar is still there while the mode is on, which
              is where the way *out* has to live. It is a state as much as a switch —
