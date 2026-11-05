@@ -51,6 +51,7 @@ import { hideMode } from '@renderer/composables/useHideMode'
 import { pdfView, setPdfFit, setPdfZoom } from '@renderer/composables/usePdfView'
 import { archiveDisplay } from '@shared/archive'
 import { HIDE_MODE_OFF_TOOLTIP, HIDE_MODE_TOOLTIP } from '@shared/hide'
+import { QUICK_CD_LEAVE_TOOLTIP, QUICK_CD_TOOLTIP } from '@shared/quickCd'
 import {
   nextPdfZoom,
   PDF_FIT_PAGE_KEY,
@@ -4644,6 +4645,35 @@ function onRenameBlur(): void {
              state chips share the title's tail; the tooltip carries the exact
              sizes and the mount point. -->
         <DiskUsage :usage="diskUsage" />
+        <!-- Quick cd is reached by Alt+C and by this button. Unlike the header's
+             own controls, the title bar is still there while the mode is on, which
+             is where the way *out* has to live. It is a state as much as a switch —
+             a filled star for the mode on, an outline one for off — and it keeps
+             the title's own color rather than the gold a mark takes, so nothing up
+             here competes with a selection further down. -->
+        <button
+          type="button"
+          class="flex h-5 w-5 shrink-0 items-center justify-center rounded transition-colors hover:bg-hover"
+          :class="quickCdMode ? 'text-fg-bright' : 'text-fg-dim hover:text-fg'"
+          :title="quickCdMode ? QUICK_CD_LEAVE_TOOLTIP : QUICK_CD_TOOLTIP"
+          aria-label="Quick cd"
+          @click.stop="controller.toggleQuickCd()"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            class="h-3.5 w-3.5"
+            :fill="quickCdMode ? 'currentColor' : 'none'"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path
+              d="M12 3.5l2.6 5.27 5.82.85-4.21 4.1 1 5.78L12 16.78 6.79 19.5l1-5.78-4.21-4.1 5.82-.85z"
+            />
+          </svg>
+        </button>
         <!-- The mode is otherwise invisible: the rows it covers are simply not
              there, so nothing in the listing says they were left out on purpose.
              The icon is a state as much as a notice — the dim open eye is the

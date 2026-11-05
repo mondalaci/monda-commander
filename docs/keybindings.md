@@ -133,7 +133,10 @@ once; `Alt+E`, the icon, or `Escape` leaves the mode,
 
 `Alt+C` puts the quick cd directories in the pane in place of its listing — a list
 of bookmarked folders, one path per row, with an incremental search opened with it
-so the folders can be filtered by typing. The arrows/`PgUp`/`PgDn`/`Home`/`End`
+so the folders can be filtered by typing. The pane title bar's star button is the
+same gesture by pointer: it toggles the mode, and, unlike the header's own controls,
+it is still there while the mode is on, so it is also the way back. The
+arrows/`PgUp`/`PgDn`/`Home`/`End`
 move through what the filter leaves and `Enter` goes to it (the pane leaves the
 list and loads that directory); `Left`/`Right` edit the query. The row menu is how
 the list is built: on a folder row it offers `Add to quick cd` (and `Add this

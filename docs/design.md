@@ -413,6 +413,16 @@ on a row *of the list* it offers `Move up`/`Move down` and `Remove from quick cd
 — and an empty list is not a blank pane: the notice says so, because where the
 folders to put there come from is not something the pane otherwise makes visible.
 
+The mode's switch is offered by pointer as well as by `Alt+C`: a star button in the
+pane *title bar* rather than in the header, because the header is hidden with the
+listing the mode replaces, so a control there would vanish exactly when "leave" is
+needed, while the title bar stays and is where a mode's state already lives (the
+hide eye, the git chip). It is a state as much as a switch — a filled star for the
+mode on, an outline one for off — and it keeps the title's own color rather than
+the gold a mark takes, so nothing up there competes with a selection further down.
+Building the list stays the row menu's, which the button does not duplicate: putting
+a folder on the list is a decision about that folder, not a mode to switch.
+
 ## The hide mode (`.mchide`)
 
 ### A `.mchide` file puts a directory in hide mode

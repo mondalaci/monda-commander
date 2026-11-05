@@ -63,6 +63,8 @@ src/shared/image.ts      extension -> previewable image MIME map
 src/shared/pdf.ts        the one PDF extension the panes render in-app, and its MIME
 src/shared/video.ts      video MIME map, ffmpeg-only extensions, decodable codecs, scheme name
 src/shared/hide.ts       the `.mchide` name, the toggle key, the two tooltips
+src/shared/quickCd.ts    the quick cd key and the two tooltips the title-bar
+                         button is spoken with
 src/shared/archive.ts    the archive location model: the NUL-joined
                          `<archive>\0<inner>` string, its split/normalize/display
                          helpers, and the enterable-extension list
@@ -317,6 +319,12 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   is said in the pane's notice, and a write that fails is put back and said there
   too (`changeQuickCd`), so the rows never show an entry the next launch will not
   have.
+- **The mode has a pointer door.** A star button in the pane *title bar*
+  (`FilePanel.vue`, beside the hide eye) toggles it — not in the header, which the
+  mode hides, so the way out would vanish with it. It is a state as much as a
+  switch (filled for on, outline for off), keeps the title's own color rather than
+  the gold a mark takes, and reads `QUICK_CD_TOOLTIP`/`QUICK_CD_LEAVE_TOOLTIP` from
+  `shared/quickCd.ts`. Building the list stays the row menu's alone.
 
 ### Disk occupancy
 
