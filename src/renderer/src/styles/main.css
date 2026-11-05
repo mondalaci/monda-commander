@@ -48,7 +48,14 @@
   --color-border: #3c3c3c;
   --color-border-subtle: #2b2b2b;
   --color-fg: #cccccc;
-  --color-fg-dim: #8a8a8a;
+  /* The de-emphasized text: a hair below `--color-fg`, not a whisper. At
+     #8a8a8a it cleared AA on the background (4.8:1) but read as faint at the UI
+     sizes it is used at — the status bar, the pane columns, an inactive title
+     or tab, and the window buttons all live here. It sits just under a name
+     now (~9:1), so chrome reads as easily as a filename while the *active*
+     surfaces are still told apart by their background (`bg-accent`), not by
+     text brightness. */
+  --color-fg-dim: #c0c0c0;
   --color-fg-bright: #f0f0f0;
   --color-accent: #0e639c;
   --color-accent-strong: #1177bb;
