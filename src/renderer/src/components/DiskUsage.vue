@@ -27,29 +27,12 @@ function compact(bytes: number): string {
 }
 
 /**
- * The app's own occupancy fills, as hex rather than theme tokens, so their
- * brightness can be read in code and the label drawn against them rather than
- * guessed at: runnable green, archive gold, danger red.
+ * The occupancy fills, as hex rather than theme tokens: a darker green than the
+ * runnable one, so the white label reads on it, then archive gold, danger red.
  */
-const FILL_OK = '#98c379'
+const FILL_OK = '#47823a'
 const FILL_WARN = '#e2b93d'
 const FILL_FULL = '#f14c4c'
-
-function channel(hex: string, index: number): number {
-  const value = parseInt(hex.slice(1 + index * 2, 3 + index * 2), 16) / 255
-  return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4
-}
-
-/** WCAG relative luminance of a `#rrggbb` colour: 0 (black) to 1 (white). */
-function luminance(hex: string): number {
-  return 0.2126 * channel(hex, 0) + 0.7152 * channel(hex, 1) + 0.0722 * channel(hex, 2)
-}
-
-/**
- * The luminance at which black and white text contrast a background equally:
- * below it white wins, above it black does.
- */
-const CONTRAST_PIVOT = 0.179
 
 const total = computed(() => props.usage?.total ?? 0)
 const used = computed(() => props.usage?.used ?? 0)
@@ -81,22 +64,17 @@ const fill = computed(() => {
   return FILL_OK
 })
 
-/** Whether the fill is a dark colour, which is what turns the label light. */
-const fillIsDark = computed(() => luminance(fill.value) <= CONTRAST_PIVOT)
+/** The label is white, on a dark track, whichever fill it crosses. */
+const textColor = '#ffffff'
 
-/** The label's colour, chosen against the fill it is written on. */
-const textColor = computed(() => (fillIsDark.value ? '#ffffff' : '#141414'))
-
-/** A shadow of the opposite polarity, to lift the label where a fill ends on it. */
-const textShadow = computed(() =>
-  fillIsDark.value ? '0 1px 1px rgba(0, 0, 0, 0.55)' : '0 1px 1px rgba(255, 255, 255, 0.5)'
-)
+/** A dark shadow, to hold the white label where it rides over a bright fill. */
+const textShadow = '0 1px 2px rgba(0, 0, 0, 0.75)'
 
 /**
- * The empty track takes the label's polarity too, so the same label reads on the
- * empty stretch as on the fill and across the boundary between them.
+ * The empty track is dark, so the white label reads across the empty stretch and
+ * the fill — and the boundary between them — alike.
  */
-const track = computed(() => (fillIsDark.value ? 'rgba(0, 0, 0, 0.45)' : 'rgba(255, 255, 255, 0.5)'))
+const track = 'rgba(0, 0, 0, 0.45)'
 
 const fullTitle = computed(() => {
   const parts = [
@@ -110,17 +88,17 @@ const fullTitle = computed(() => {
 
 <template>
   <!-- The reading rides inside the bar, so it costs no width of its own, and the
-       bar sits on the passive pane background. The label's colour is read from
-       the fill rather than fixed. -->
+       bar sits on the passive pane background. The label is white, against a
+       dark track. -->
   <span
     v-if="usage"
-    class="flex shrink-0 items-center overflow-hidden rounded-[2px]"
+    class="flex shrink-0 items-center overflow-hidden rounded-[2px] border border-border"
     :style="{ background: 'var(--color-surface)' }"
     :title="fullTitle"
     aria-hidden="true"
   >
     <span
-      class="relative flex h-4 w-[4.5rem] items-center justify-center overflow-hidden rounded-[2px] text-2xs leading-none"
+      class="relative flex h-4 items-center justify-center overflow-hidden rounded-[2px] px-1.5 text-2xs leading-none whitespace-nowrap"
       :style="{ background: track }"
     >
       <span

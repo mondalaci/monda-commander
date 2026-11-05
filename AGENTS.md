@@ -328,9 +328,11 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   a slow answer for a directory already left cannot land, and its tooltip names
   the filesystem's mount point (`/proc/self/mountinfo`, longest match, so a nested
   mount answers with the inner one). `DiskUsage.vue` is one progress bar with
-  `used / total` (`2.1T / 4T`) written *inside* it, filled in the app's own green →
-  gold → red; the label's colour is *read from* the fill (WCAG luminance) rather
-  than fixed.
+  `used / total` (`2.1T / 4T`) written *inside* it, filled green → gold → red (a
+  darker green than the runnable hue, since the label is white); the label is
+  fixed white, on a dark track, so the same reading holds over the empty stretch
+  and the fill alike, and the bar is sized to its own numbers under a hairline
+  border.
 
 ### Git status
 
