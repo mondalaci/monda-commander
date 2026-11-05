@@ -77,6 +77,18 @@ shell) at the right of the tab strip, focused — `Ctrl+W` closes the active one
 next/previous workspace, `Shift+Ctrl+PageDown`/`Shift+Ctrl+PageUp` (or dragging a
 tab) move the active workspace right/left in the strip,
 
+`Ctrl+C` copies the *name* of the entry under the cursor to the clipboard, and
+`Ctrl+Shift+C` its full path — the file manager's own pair, the second on
+Explorer's "Copy as path". It is the panes' own while the panes are in front, and
+it is claimed outright there: interrupting is the *terminal's* — `Ctrl+O` expands
+it, and a `Ctrl+C` inside the expanded, focused terminal is still readline's own
+SIGINT — so a `Ctrl+C` with the panes showing is always the copy, whatever the
+command line is doing. A search box keeps the key, since it is a text field with
+a selection of its own. On the `..` row, or below the last one, there is nothing
+to copy and it does nothing. Inside an archive the path copy takes the readable
+form the pane title shows (`foo.zip/dir/file`), because nothing in there is a
+real path,
+
 `Ctrl+U` swaps the two panels (each keeps its cursor, marks and filter) — the
 panes change columns in one frame, since the two are reordered in the row rather
 than rebuilt, so the exchange is shown as copies of both of them travelling to

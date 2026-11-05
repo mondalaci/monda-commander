@@ -23,7 +23,7 @@ import {
   type StageRequest
 } from '@renderer/lib/preview'
 import type { PaneMenuChoice, PaneMenuItem, PaneMenuRequest } from '@renderer/lib/paneMenu'
-import { isArchivePath, splitArchivePath } from '@shared/archive'
+import { archiveDisplay, isArchivePath, splitArchivePath } from '@shared/archive'
 import { targetLabel, type Target } from '@shared/target'
 import { targetApiKey } from '@renderer/lib/targetContext'
 import { HIDE_MARKER } from '@shared/hide'
@@ -770,6 +770,42 @@ function pasteEntryPath(): void {
   const entry = activePane.value.current()
   if (!entry || entry.isParent) return
   shell.value.sendInput(shellQuote(closeDirectory(activePane.value.state.path)))
+}
+
+/**
+ * Ctrl+C's copy: the *name* of the entry under the cursor, or its path when
+ * `kind` is `'path'` (Ctrl+Shift+C) — the file manager's own pair, the second on
+ * Explorer's "Copy as path". The name is what the row shows, since a name is
+ * what a file is called where it sits; the path is the entry's own absolute one,
+ * which is what naming it from its pane gives. Inside an archive nothing is a
+ * real path, so the path copy takes the readable form the pane title draws — the
+ * archive, then the entry inside it — rather than the NUL-joined location the
+ * app uses internally, which is never handed out. On the `..` row, or below the
+ * last one, there is nothing to copy and it does nothing.
+ */
+function copyEntryChoice(kind: 'name' | 'path'): void {
+  const pane = activePane.value
+  // The quick cd rows are bookmarks whose name is the path shown with `~`; the
+  // mode's filter holds the keyboard, so the key never reaches here for them.
+  if (pane.state.quickCd) return
+  const entry = pane.current()
+  if (!entry || entry.isParent) return
+
+  let text = entry.name
+  if (kind === 'path') {
+    const display = archiveDisplay(entry.path)
+    text = display ? (display.inner ? `${display.full}/${display.inner}` : display.full) : entry.path
+  }
+
+  try {
+    void navigator.clipboard.writeText(text).catch(() => {
+      pane.state.error = 'Could not write to the clipboard'
+    })
+  } catch {
+    // No `navigator.clipboard` at all (an insecure context, say): say so rather
+    // than pretending the copy happened.
+    pane.state.error = 'Could not write to the clipboard'
+  }
 }
 
 /**
@@ -1807,6 +1843,20 @@ function handlePaneKey(event: KeyboardEvent): void {
   ) {
     consume(event)
     swapPanels()
+    return
+  }
+
+  // Ctrl+C copies the cursor entry's name and Ctrl+Shift+C its path. It is the
+  // panes' own while the panes are the thing in front, and it is claimed
+  // outright: the collapsed strip is a real command line whose Ctrl+C readline
+  // would read as the interrupt, but interrupting belongs to the *terminal* —
+  // Ctrl+O expands it, and an expanded, focused terminal never reaches this
+  // function — so a Ctrl+C with the panes in front is always the copy, whatever
+  // the shell is doing. A search box keeps the key, since it is a text field
+  // with a selection of its own.
+  if ((isPlainCtrl(event) || isCtrlShift(event)) && event.code === 'KeyC' && !searching) {
+    copyEntryChoice(event.shiftKey ? 'path' : 'name')
+    consume(event)
     return
   }
 

@@ -1662,6 +1662,25 @@ The command line holds focus whenever the terminal does not, so `focusPanes()`
 the other two focus targets. Navigation keys are intercepted in the window capture
 handler; editing keys are left to whichever input owns them.
 
+### `Ctrl+C` copies the name and `Ctrl+Shift+C` the path
+
+The pair is the file manager's own — `Ctrl+C` the cursor entry's name,
+`Ctrl+Shift+C` its path, on Explorer's "Copy as path" key — and it is claimed in
+`handlePaneKey`, where a gesture for a pane's own listing lives. That placement is
+the whole story of who *keeps* it: an expanded, focused terminal never reaches the
+function, the viewer, a dialog and the pane menu own the keyboard above it, and a
+search box (a text field with a selection of its own) is excluded by name. The
+collapsed strip being a real command line — where a `Ctrl+C` nobody consumes is
+readline's interrupt — is deliberately not a reason to withhold the key: a
+`Ctrl+C` with the panes in front is always the copy, whatever the shell is doing,
+and interrupting is what the *terminal* is for, reached with `Ctrl+O` (whose
+expanded, focused self keeps readline's key outright). On the `..` row, or below
+the last one, `copyEntryChoice` finds nothing and does nothing, and the key is
+still consumed so it reaches no shell. The write is `navigator.clipboard`, the
+renderer's own to reach, and a refusal is said in the pane's notice rather than
+swallowed. Inside an archive the path copy uses `archiveDisplay`'s readable form,
+since the NUL-joined location is internal and an entry is not a real path.
+
 ## Styling
 
 ### Tailwind v4 is configured CSS-first
