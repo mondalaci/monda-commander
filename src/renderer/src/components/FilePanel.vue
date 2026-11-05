@@ -4726,9 +4726,15 @@ function onRenameBlur(): void {
                answers for all of it, so this does too, and the breakdown the
                count cannot fit is in the chip's title. -->
           <span v-if="gitSummaryText" class="flex shrink-0 items-center gap-1 pl-1 opacity-80">
+            <!-- The dot is always filled here (the tree has something changed),
+                 so its outline is the pane's own background rather than the
+                 colour it holds — the same dark ring a row's dot wears, which is
+                 what keeps the mark's hue from bleeding into the title bar. It
+                 is a shadow rather than a border, so the ring sits *around* the
+                 dot instead of eating into its size. -->
             <span
               class="h-1.5 w-1.5 shrink-0 rounded-full"
-              :style="{ backgroundColor: gitSummaryColor }"
+              :style="{ backgroundColor: gitSummaryColor, boxShadow: '0 0 0 1px var(--color-bg)' }"
             />
             <span>{{ gitSummaryText }}</span>
           </span>
