@@ -149,6 +149,9 @@ Ctrl steps. `Ctrl+=` and `Ctrl+-` make the tiles larger or smaller and `Ctrl+0`
 puts them back at their ordinary size: a few rungs of a ladder, animated, the model
 tiles growing with their boxes (Ctrl being the chord every application uses for
 zoom — a PDF *page*'s own fit and magnification stay on Alt+W/Alt+P/Alt+=/Alt+-).
+The pane title bar's view button is the same gesture by wheel: while the wall is
+up, a wheel up over it grows the tiles as `Ctrl+=` does and a wheel down shrinks
+them as `Ctrl+-`.
 `Alt+E` in the wall brings the listing back and opens the column
 editor, since the columns it builds are the listing's,
 

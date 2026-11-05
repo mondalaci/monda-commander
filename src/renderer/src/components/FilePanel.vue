@@ -357,6 +357,21 @@ function toggleView(): void {
   })
 }
 
+/**
+ * The wheel on the view button sizes the wall, when there is a wall to size: a
+ * wheel-up is the `Ctrl+=` rung and a wheel-down `Ctrl+-`, so the button is the
+ * same zoom by pointer as the keys. Only the wall answers it — in the listing
+ * there is no tile to grow, and the wheel over the title is left to whatever is
+ * behind it — and only the vertical axis, which is the one every wheel has. The
+ * event is swallowed so the title bar's wheel does not scroll the pane's rows.
+ */
+function onViewButtonWheel(event: WheelEvent): void {
+  if (!thumbnails.value || event.deltaY === 0) return
+  event.preventDefault()
+  event.stopPropagation()
+  props.controller.stepTileScale(event.deltaY < 0 ? 1 : -1)
+}
+
 /** The entrance class an entry at `order` in the window carries, or none. */
 function viewEnterClass(order: number): string {
   return viewEnter.value && order < VIEW_ENTER_MAX ? 'view-entry' : ''
@@ -5002,6 +5017,7 @@ function onRenameBlur(): void {
           :title="VIEW_MODE_TOOLTIP"
           aria-label="View mode"
           @click.stop="toggleView()"
+          @wheel="onViewButtonWheel"
         >
           <svg
             v-if="controller.state.viewMode === 'thumbnails'"

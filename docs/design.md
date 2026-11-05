@@ -416,7 +416,10 @@ Nothing has to tell the model wall: it measures each tile's box every frame, so
 the turning models grow and shrink inside the boxes they are drawn in. That is
 also why the zoom is not a view morph like the mode switch: a morph shows
 snapshots, which would freeze the models where they stood while the boxes grew
-around them.
+around them. The same zoom reaches the pointer: the pane title bar's view button
+answers a wheel over it while the wall is up — up to grow the tiles as `Ctrl+=`
+does, down to shrink them as `Ctrl+-` — and swallows the event, so the title's
+wheel does not scroll the rows it sits above.
 
 A switch between the modes is a *morph*. Each visible entry carries a
 `view-transition-name` in both layouts (`entryName` in `FilePanel.vue`, assigned
