@@ -1514,14 +1514,21 @@ silhouette — the thumbnail by turning the model itself, the enlarged view thro
 `OrbitControls.autoRotate`. The two are drawn at different rates on purpose: the
 thumbnail is ambient, so it is throttled to a calm ~40fps, while the display is
 watched and handled and is drawn at every frame the compositor offers — the
-monitor's own rate — and only when `OrbitControls.update()` reports the camera
-moved, so a settled, non-spinning display draws nothing. The display also hands the
+monitor's own rate — and only when the camera actually moved, hung on the controls'
+`change` rather than on the tick's `update()` return: a wheel's dolly is applied by
+the controls *inside their event*, so a render keyed to the tick would skip it and
+show the accumulated zoom only when the next drag drew one — so a settled,
+non-spinning display draws nothing. The display also hands the
 pointer to `OrbitControls`,
 which take the turning over the moment they are grabbed (`autoRotate` is switched
 off on the controls' own `start` event), so from then on the drag turns the model
-and the wheel zooms it. The controls have **pan turned off**: the display's right
-button is already its own gesture (a quick right-click leaves the mode), so the
-model turns with the left button and zooms with the wheel, and the wheel is left to
+and the wheel zooms it, the **middle button panning** the model as the same drag
+pans a PDF document (the focus is held within the model's own size, so a drag moves
+it about without losing it; the middle press's default is called off, or a browser
+would start its own autoscroll on that button). The controls' own default puts pan on
+the *right* button, and that one is deliberately not theirs here: on the display the
+right button is its own gesture — a quick right-click leaves the mode — so it is left
+unbound. The wheel is left to
 the controls rather than turned into a folder step, exactly as a PDF's is left to
 the browser's scroll. A
 WebGL context is a scarce resource — a folder of models is stepped through quickly —
@@ -1784,7 +1791,8 @@ step.
 ### The full-screen mode is the display, presented over the whole window
 
 It is not a third thing to maintain: `Ctrl+Enter` (and a triple-click on a media
-file's name, which is the same gesture with the mouse) opens the display the arrow
+file's name — or, in the wall, anywhere on its tile, since a tile *is* its name and
+its picture — which is the same gesture with the mouse) opens the display the arrow
 keys already drive and asks the pane showing it to lay it out over everything
 instead of in its pane (`stageFullscreen` in `App.vue`, broadcast to both panes; the
 overlay in `FilePanel` becomes `fixed inset-0 z-50` — the pane row is `isolate` and
@@ -1797,6 +1805,26 @@ presentation's `Tab` and `Escape` are claimed with the panes' other keys — onl
 while the panes hold the keyboard — while the full-screen presentation, covering the
 window, owns the two wherever the keyboard is, as the viewer owns its `Escape`: a
 terminal nobody can see must not be the thing that answers them.
+
+The run of clicks is *counted*, not asked of the browser, and it is taken on the
+**scroller** rather than on a row. `event.detail === 3` looks like the whole
+gesture, and `onListClick` used it at first — but the second click starts the pane
+display, and the work that takes (a model read and parsed, a clip mounted) lands
+between the second click and the third. A count the browser takes from how the
+clicks are *handled* then runs out, and a quick triple-click stops at the
+double-click that displayed the file: the third click reads as the first of a new
+run. Taking it on the scroller is the other half. A press and the release that ends
+it do not always come up on the same element — building the display can replace the
+DOM under the pointer — and a `click` whose two ends share no row is dispatched to
+their nearest common ancestor instead, so a handler on the row never hears it,
+however it counts. Both scrollers feed the one place: the details `<ul>` by a `click`
+binding of its own, the wall's by forwarding `list-click`. The entry comes from
+`[data-path]`; a click that landed on no row at all *continues* the run on the
+cursor's entry rather than starting one, since with no run behind it it is a click
+on nothing. `countEntryClick` counts three on one entry within `TRIPLE_CLICK_MS`,
+measured from the events' own `timeStamp`s — stamped as the clicks arrive, not when
+the main thread gets round to them. The listing's gesture therefore covers a whole
+row rather than its name alone, which is what the wall's tile already was.
 
 The reveal still grows out of the footer thumbnail — the source pane is behind the
 overlay, not unmounted, so its footer is still measurable — and the reverse still

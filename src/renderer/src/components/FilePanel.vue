@@ -188,6 +188,8 @@ watch(
 const listEl = ref<HTMLUListElement | null>(null)
 const footerEl = ref<HTMLElement | null>(null)
 const searchInput = ref<HTMLInputElement | null>(null)
+/** The pane's own box, for telling a click that landed in it from one that did not. */
+const sectionEl = ref<HTMLElement | null>(null)
 /**
  * The wall, when the pane is drawing one. A display is revealed out of the
  * cursor's *tile* rather than the footer's little box, which the wall does not
@@ -4253,6 +4255,11 @@ onMounted(() => {
   measurePageRows()
   window.addEventListener('mouseup', endPointerDrag)
   window.addEventListener('mousemove', onHoldMove)
+  // The third press of a run can land outside this pane entirely — over the
+  // terminal, which stops the press on its way up, or the pane row — so the watch
+  // is in the *capture* phase, where it runs before any handler that stops it
+  // (`onWindowMouseDown`).
+  window.addEventListener('mousedown', onWindowMouseDown, true)
   // The drag that follows a triple-click on a PDF page's paragraph is watched
   // window-wide, like the hold: the pointer leaves the word it started on at once.
   window.addEventListener('mousemove', onPdfParagraphDragMove)
@@ -4287,6 +4294,7 @@ onBeforeUnmount(() => {
   cancelAnimationFrame(scrollAnimation)
   window.removeEventListener('mouseup', endPointerDrag)
   window.removeEventListener('mousemove', onHoldMove)
+  window.removeEventListener('mousedown', onWindowMouseDown, true)
   window.removeEventListener('mousemove', onPdfParagraphDragMove)
   window.removeEventListener('mouseup', onPdfParagraphDragEnd)
   window.removeEventListener('mousemove', onPdfPanMove)
@@ -4336,10 +4344,7 @@ function onPointerDown(event: MouseEvent): void {
   if (target instanceof HTMLElement && target.closest('[data-search]')) return
 
   emit('pointer-down')
-}
-
-function onRowClick(index: number): void {
-  props.controller.moveTo(index)
+  countPressRun(event)
 }
 
 /**
@@ -4354,17 +4359,104 @@ function onRowDblclick(): void {
 }
 
 /**
- * A third click on a media file's name is the mouse's Ctrl+Enter: open it in the
- * full-screen viewer. The click count the browser reports is the whole of the
- * gesture, and the double-click that came before it has already asked for the
- * pane display — so a triple-click reads as one escalation (row -> pane -> whole
- * window) rather than one gesture with a rule of its own. A name that is not
- * media, or a click count that never reaches three, is left to the row.
+ * A left press that did not land in this pane at all: the third of a run, when the
+ * layout the second press started has put the pointer over something else — the
+ * terminal strip, the row of panes, the window itself. It only ever *continues* a run
+ * (`countPressRun`): with none in progress there is nothing to count, so an ordinary
+ * press on chrome cannot escalate anything, and a press on another listing's row or
+ * tile is that pane's business — every listing carries `data-list`, and its own pane
+ * counts it.
+ *
+ * Watched in the capture phase, which is the point of it: the terminal *stops* a
+ * press on its way up (xterm handles its own), so a listener on the window in the
+ * bubbling phase never hears a press that landed on it — and a press that landed on
+ * it is exactly the case this exists for.
  */
-function onNameClick(index: number, event: MouseEvent): void {
-  if (event.detail !== 3) return
-  if (previewTargetFor(props.controller.state.entries[index]) === null) return
-  emit('fullscreen')
+function onWindowMouseDown(event: MouseEvent): void {
+  if (event.button !== 0) return
+  const target = event.target
+  if (!(target instanceof Node)) return
+  if (sectionEl.value?.contains(target)) return
+  if (target instanceof Element && target.closest('[data-list]') !== null) return
+  countPressRun(event)
+}
+
+/**
+ * The entry a click was about: the row or tile it landed on, or null when it landed
+ * on neither (the scroller's own background, the ground below the last one).
+ */
+function entryIndexAt(event: MouseEvent): number | null {
+  const target = event.target
+  const path =
+    target instanceof Element ? (target.closest('[data-path]')?.getAttribute('data-path') ?? null) : null
+  if (path === null) return null
+  const found = props.controller.state.entries.findIndex((entry) => entry.path === path)
+  return found >= 0 ? found : null
+}
+
+const TRIPLE_CLICK_MS = 600
+let clickRun = { index: -1, at: 0, count: 0 }
+
+/**
+ * A left press in the pane. The run of presses that opens a file over the whole
+ * window is counted here — *presses*, not clicks, and that is the whole of it. A
+ * `click` needs its press and its release to share a box, and the second press is
+ * what starts the pane display: the work that takes lands between them (a model read
+ * and parsed, a clip mounted, the strip it grows), so by the third press the layout
+ * has moved under the pointer and the press goes down on one element and comes up on
+ * another. The browser then hands that `click` to their nearest common ancestor —
+ * above the pane, sometimes above the document — and a handler there hears nothing at
+ * all. A `mousedown` is always dispatched, to whatever is under the pointer at that
+ * moment, so the gesture is built from those.
+ *
+ * A run already in progress continues on the entry it began on, wherever the next
+ * press lands: the layout moving is the display's doing, not the user pointing at
+ * something else. Only the press that starts a run takes the entry from the pointer.
+ */
+function countPressRun(event: MouseEvent): void {
+  if (event.button !== 0) return
+
+  const at = event.timeStamp
+  const within = clickRun.count > 0 && at - clickRun.at <= TRIPLE_CLICK_MS
+  const index = entryIndexAt(event)
+
+  // A press that landed on no row at all — the layout the second press started has
+  // put the pointer over the terminal, the divider, the pane row — *continues* the
+  // run on the entry the presses began on. That is not the user pointing somewhere
+  // else: it is the layout moving out from under them.
+  if (index === null) {
+    if (within) countEntryClick(clickRun.index, event)
+    return
+  }
+
+  // A press that landed on a row is that row's, and continues the run only when it is
+  // the *same* entry: a press on another item starts a new run however quickly it
+  // follows, or clicking down a folder would open one of them over the whole window.
+  countEntryClick(index, event)
+}
+
+/**
+ * The run itself: three presses on one entry, within `TRIPLE_CLICK_MS`, open it over
+ * the whole window — the mouse's `Ctrl+Enter`. It is counted rather than asked of the
+ * browser's `detail`, because the work the second press starts lands between it and
+ * the third, which outlasts a count the browser takes from how the presses are
+ * *handled* (and the third `click` may not be dispatched at all). The timing is the
+ * events' own `timeStamp`s — stamped as the presses arrive, not when the main thread
+ * gets round to them. A press on a row there is nothing to show for clears the run,
+ * so one cannot be carried from a folder onto the media beside it.
+ */
+function countEntryClick(index: number, event: MouseEvent): void {
+  if (previewTargetFor(props.controller.state.entries[index]) === null) {
+    clickRun = { index: -1, at: 0, count: 0 }
+    return
+  }
+
+  const previousAt = clickRun.at
+  const at = event.timeStamp
+  const count = index === clickRun.index && at - previousAt <= TRIPLE_CLICK_MS ? clickRun.count + 1 : 1
+  clickRun = { index, at, count }
+
+  if (count === 3) emit('fullscreen')
 }
 
 /**
@@ -4806,6 +4898,7 @@ function onRenameBlur(): void {
 
 <template>
   <section
+    ref="sectionEl"
     class="relative flex min-w-0 flex-1 flex-col border"
     :class="active ? 'border-accent' : 'border-transparent'"
     @mousedown="onPointerDown"
@@ -5251,9 +5344,7 @@ function onRenameBlur(): void {
         @left-down="onRowLeftDown"
         @right-down="onRowRightDown"
         @enter="onRowEnter"
-        @click="onRowClick"
         @activate="onRowDblclick"
-        @name-click="onNameClick"
       />
 
       <!-- Only the rows the viewport covers are in the document (see
@@ -5263,6 +5354,7 @@ function onRenameBlur(): void {
       <ul
         v-else
         ref="listEl"
+        data-list
         class="pane-scrollbar relative min-h-0 flex-1 overflow-y-auto"
         :style="listSlackStyle"
         @scroll="onListScroll"
@@ -5287,7 +5379,6 @@ function onRenameBlur(): void {
           @mousedown.right="onRowRightDown(row.index, $event)"
           @mouseenter="onRowEnter(row.index)"
           @contextmenu.prevent
-          @click="onRowClick(row.index)"
           @dblclick="onRowDblclick"
         >
           <template v-for="col in displayColumns" :key="col">
@@ -5327,7 +5418,6 @@ function onRenameBlur(): void {
                 <span
                   class="min-w-0 shrink truncate"
                   :class="nameClass(row.index)"
-                  @click="onNameClick(row.index, $event)"
                   >{{ row.entry.name }}</span
                 >
 

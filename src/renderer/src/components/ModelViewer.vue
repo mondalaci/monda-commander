@@ -77,6 +77,19 @@ function fit(object: THREE.Object3D): void {
   cam.updateProjectionMatrix()
 }
 
+/**
+ * A middle press on the canvas is a pan, and nothing else the browser reads into
+ * that button is wanted. On X11 it offers the primary-selection *paste*, which
+ * Chromium aims at whatever holds the keyboard — the command line, in this app — so
+ * a pan would type the selection into the shell. The press, the release and the
+ * click the release turns into are all called off, as the PDF's own middle drag
+ * does for its scroll box; the controls listen for *pointer* events, so none of it
+ * is the drag.
+ */
+function onCanvasMiddleButton(event: MouseEvent): void {
+  if (props.interactive && event.button === 1) event.preventDefault()
+}
+
 function resize(): void {
   const el = canvas.value
   if (!el || !renderer || !camera) return
@@ -122,11 +135,14 @@ function tick(now: number): void {
     // The display is watched and handled, so it is drawn at the rate the
     // compositor offers — the monitor's own, not a cap of ours — but only when
     // the camera actually moved: a drag, the damping settling, the slow turn.
-    // The elapsed time is capped so a frame the window was away for does not
-    // spin the model round in one step.
+    // What moves it is not necessarily this call: the controls apply a wheel's
+    // dolly inside their own event, so the render is hung on their `change` rather
+    // than on what this update returns (see `setup`). This is still what drives
+    // the slow turn and the damping. The elapsed time is capped so a frame the
+    // window was away for does not spin the model round in one step.
     const elapsed = lastTick === 0 ? 0 : Math.min((now - lastTick) / 1000, 0.1)
     lastTick = now
-    if (controls.update(elapsed)) render()
+    controls.update(elapsed)
     return
   }
 
@@ -186,10 +202,16 @@ async function setup(): Promise<void> {
     controls.dampingFactor = 0.08
     controls.rotateSpeed = 0.9
     controls.zoomSpeed = 0.9
-    // Panning is off on purpose: the display's right button is its own gesture —
-    // a quick right-click leaves the mode — so the model turns with the left
-    // button and zooms with the wheel rather than competing for the right one.
-    controls.enablePan = false
+    // Panning is the middle button's, exactly as it is for a PDF document — the
+    // same drag pans either. The controls' own default puts pan on the *right*
+    // button, which is not theirs to take here: on the display the right button is
+    // its own gesture (a quick right-click leaves the mode), so it is left unbound
+    // and the left button goes on turning the model. The focus is held within the
+    // model's own size, so a drag can move it about but not lose it off the edge of
+    // the box with no way back.
+    controls.enablePan = true
+    controls.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.PAN, RIGHT: null }
+    controls.maxTargetRadius = radius
     controls.minDistance = radius * 0.35
     controls.maxDistance = distance * 6
     controls.target.set(0, 0, 0)
@@ -202,6 +224,14 @@ async function setup(): Promise<void> {
     controls.addEventListener('start', () => {
       if (controls) controls.autoRotate = false
     })
+
+    // Whatever moves the camera is drawn. A drag's rotation is applied by the
+    // tick's own update, but a wheel's dolly is applied by the controls *inside
+    // their event*, so a render keyed to the tick's update return misses it: the
+    // camera dollies, the picture does not follow, and the accumulated zoom only
+    // appears when the next drag happens to draw it. The change is the one report
+    // both routes make.
+    controls.addEventListener('change', render)
 
     controls.update()
   }
@@ -244,5 +274,11 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <canvas ref="canvas" class="block h-full w-full" />
+  <canvas
+    ref="canvas"
+    class="block h-full w-full"
+    @mousedown="onCanvasMiddleButton"
+    @mouseup="onCanvasMiddleButton"
+    @auxclick="onCanvasMiddleButton"
+  />
 </template>

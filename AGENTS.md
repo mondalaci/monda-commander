@@ -730,7 +730,19 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   presentation owns `Tab` and `Escape` window-wide. A presentation change travels
   (`switchStagePresentation`, `stageTravelling` at `z-40`); the backdrop is
   `stageBackdrop` (faded, not switched); leaving latches `fullscreenPresentation`.
-  The pane row must be `isolate` **and** `relative z-10`.
+  The pane row must be `isolate` **and** `relative z-10`. **The click run is counted
+  in the pane, and taken on the scroller rather than on a row.** `event.detail === 3`
+  is deliberately unused: the second click starts the pane display, and the work that
+  takes lands between it and the third, so a count the browser takes from how clicks
+  are *handled* runs out and a quick triple-click stops at the double-click that
+  displayed the file. `onListClick` is fed by both scrollers — the details `<ul>` and
+  the wall's, which forwards `list-click` — and reads the entry from `[data-path]`; a
+  click that landed on no row at all *continues* the run on the cursor's entry
+  instead of starting one, because a press and its release can end up sharing no row
+  (the display the same clicks build replaces the DOM under the pointer), and the
+  browser then dispatches the click to their nearest common ancestor, where a handler
+  on the row would never hear it. `countEntryClick` counts three within
+  `TRIPLE_CLICK_MS`, from the events' own `timeStamp`s.
 
 ### Models
 
@@ -768,10 +780,20 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   own `start` event — so it reads as a solid until the pointer takes it over, at
   which point the drag turns it and the wheel zooms it. **The display is not
   throttled**: it is drawn every frame the compositor offers (the monitor's own
-  rate), and only when `OrbitControls.update()` reports the camera moved, so an
-  idle, settled, non-spinning display costs nothing. The display's controls have
-  **pan disabled**, because the display's right button is already its own gesture —
-  a quick right-click leaves the mode. `onStageWheel` hands a model's wheel to the
+  rate), and only when the camera actually moved — hung on the controls' own
+  `change`, not on what the tick's `update()` returns, because the wheel applies its
+  dolly *inside* the controls' event and a render keyed to the tick would miss it (the
+  camera dollies, the picture waits for the next drag to draw it) — so an
+  idle, settled, non-spinning display costs nothing. The display's controls pan on
+  the **middle button**, as a PDF document does — the same drag pans either — with
+  the focus held within the model's own size so a drag can move it about but not
+  lose it off the edge of the box. The right button is deliberately **left unbound**
+  by the controls: on the display it is its own gesture (a quick right-click leaves
+  the mode), so the left button goes on turning the model, and the middle press's
+  default is called off (`onCanvasMiddleButton`, on the press, the release and the
+  click the release turns into — the X11 primary-selection paste it offers would land
+  on the command line) because a browser would otherwise
+  start its own autoscroll on that button. `onStageWheel` hands a model's wheel to the
   controls rather than stepping the folder (as it does for a PDF's scroll), and
   `stageMedia` is the wrapper `div` the reveal measures and moves, the canvas inside
   it being what draws.

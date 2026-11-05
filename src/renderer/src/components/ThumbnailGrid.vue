@@ -64,9 +64,7 @@ const emit = defineEmits<{
   (event: 'left-down', index: number): void
   (event: 'right-down', index: number, native: MouseEvent): void
   (event: 'enter', index: number): void
-  (event: 'click', index: number): void
   (event: 'activate'): void
-  (event: 'name-click', index: number, native: MouseEvent): void
 }>()
 
 const api = injectTargetApi()
@@ -599,6 +597,7 @@ function enterStyle(order: number): { animationDelay: string } | null {
   <div class="relative flex min-h-0 flex-1">
     <ul
       ref="listEl"
+      data-list
       class="pane-scrollbar relative grid min-h-0 flex-1 overflow-y-auto"
       :style="gridStyle"
       @scroll="onScroll"
@@ -613,7 +612,6 @@ function enterStyle(order: number): { animationDelay: string } | null {
         @mousedown.left="emit('left-down', cell.index)"
         @mousedown.right="emit('right-down', cell.index, $event)"
         @mouseenter="emit('enter', cell.index)"
-        @click="emit('click', cell.index)"
         @dblclick="emit('activate')"
         @contextmenu.prevent
       >
@@ -665,7 +663,6 @@ function enterStyle(order: number): { animationDelay: string } | null {
           class="w-full shrink-0 truncate text-center text-ui-sm"
           :class="nameClass(cell.index)"
           :title="cell.entry.name"
-          @click="emit('name-click', cell.index, $event)"
         >
           {{ cell.entry.name }}
         </span>

@@ -55,8 +55,9 @@ displayed, a runnable file that would have been started in the shell, an archive
 have been walked into — while a folder still descends, since there is no default
 application to force,
 `Ctrl+Enter` opens that same media as a full-screen display over the whole window
-(a triple-click on the file's name is the mouse's half of the gesture; pressed
-again it gives the window back, and `Escape` leaves the mode),
+(a triple-click is the mouse's half of the gesture — on the row in the listing, on
+the tile in the wall, both being the file the pointer is over; pressed again it
+gives the window back, and `Escape` leaves the mode),
 
 `F3` opens a regular file read-only in the Monaco viewer, `F4` opens it for
 editing with Ctrl+S to save (a directory still descends on `F3`), and a file the
