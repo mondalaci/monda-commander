@@ -21,6 +21,7 @@ import {
   previewTargetFor,
   type OsdFlash,
   type PlaybackClock,
+  type PreviewKind,
   type PreviewTarget,
   type StageRequest
 } from '@renderer/lib/preview'
@@ -1187,15 +1188,33 @@ function onVideoMetadata(event: Event): void {
  * otherwise it starts and lands a letterbox away from the thumbnail it belongs
  * to. Null while the media's own size is not known.
  */
-function drawnRect(element: HTMLElement): DOMRect | null {
+function drawnRect(element: HTMLElement, kind?: PreviewKind | null): DOMRect | null {
   const box = element.getBoundingClientRect()
   if (box.width <= 0 || box.height <= 0) return null
 
   // A PDF document's viewport draws in its whole box; a picture is letterboxed
   // inside its element, so its own rectangle is worked out from the intrinsic
   // size. Same gesture either way — the rectangle the media is *drawn* in.
-  if (!(element instanceof HTMLImageElement) && !(element instanceof HTMLVideoElement)) return box
+  if (element instanceof HTMLImageElement || element instanceof HTMLVideoElement) {
+    return letterboxRect(element, box)
+  }
 
+  // A model is drawn by three.js into a canvas, and its camera fits the model to
+  // the box's *height* — the vertical field of view — with the width following the
+  // aspect. So what it is drawn in is a centred square of that height, not the box:
+  // the box's own width has nothing to do with how large the model looks, and the
+  // flights scale by width, so a box-shaped rectangle makes them start at the wrong
+  // size whenever the two boxes' aspects differ (a pane and the whole window).
+  if (kind === 'model') {
+    const side = box.height
+    return new DOMRect(box.left + (box.width - side) / 2, box.top, side, side)
+  }
+
+  return box
+}
+
+/** Where a letterboxed picture is actually drawn inside its element. */
+function letterboxRect(element: HTMLImageElement | HTMLVideoElement, box: DOMRect): DOMRect | null {
   const width = element instanceof HTMLVideoElement ? element.videoWidth : element.naturalWidth
   const height = element instanceof HTMLVideoElement ? element.videoHeight : element.naturalHeight
   if (width <= 0 || height <= 0) return null
@@ -1215,11 +1234,21 @@ function drawnRect(element: HTMLElement): DOMRect | null {
  * The transform that lays a media's own rectangle onto `target`, for an element
  * transformed about its own top-left corner — which is what a reveal and a
  * shrink are: the media, where it is drawn, moving onto (or off) the thumbnail.
+ *
+ * The scale is by width, so the horizontal is exact. `center` is what the media
+ * passes, so its rectangle is *centred* on the target rather than pinned by its
+ * top corner: the two rarely share an aspect — a picture letterboxed in a pane, a
+ * tile that is not the picture's shape, and above all a 3D model, whose drawn
+ * rectangle is the whole stage area — and a corner-pinned flight of those starts
+ * the media short of the middle and lands it beside the thumbnail it belongs to.
+ * The transport bar passes false: it grows out from *under* the thumbnail, so its
+ * top edge is the thing that has to sit on the target.
  */
-function handoffTransform(target: DOMRect, drawn: DOMRect, box: DOMRect): string {
+function handoffTransform(target: DOMRect, drawn: DOMRect, box: DOMRect, center = false): string {
   const scale = target.width / drawn.width
   const x = target.left - box.left - scale * (drawn.left - box.left)
-  const y = target.top - box.top - scale * (drawn.top - box.top)
+  const top = center ? target.top + (target.height - drawn.height * scale) / 2 : target.top
+  const y = top - box.top - scale * (drawn.top - box.top)
   return `translate(${x}px, ${y}px) scale(${scale})`
 }
 
@@ -1584,7 +1613,7 @@ async function switchStagePresentation(full: boolean): Promise<void> {
   const stage = shownStage.value
   // Where the gesture starts from is whatever is on screen now, a half-finished
   // motion included, so a second switch carries on from what the last one showed.
-  const from = element === null ? null : drawnRect(element)
+  const from = element === null ? null : drawnRect(element, stage?.target.kind)
   const fromBar = stageBarEl.value?.getBoundingClientRect() ?? null
 
   // Each flight measures the box it is about to leave, so both are called off
@@ -1617,14 +1646,14 @@ async function switchStagePresentation(full: boolean): Promise<void> {
   }
 
   const box = element.getBoundingClientRect()
-  const drawn = drawnRect(element)
+  const drawn = drawnRect(element, stage?.target.kind)
   if (drawn === null || box.width <= 0 || box.height <= 0) {
     settle()
     return
   }
 
   const flight = element.animate(
-    [{ transform: handoffTransform(from, drawn, box) }, { transform: 'none' }],
+    [{ transform: handoffTransform(from, drawn, box, true) }, { transform: 'none' }],
     { duration: STAGE_REVEAL_MS, easing: 'ease-out' }
   )
   stageMediaFlight = flight
@@ -2629,14 +2658,14 @@ function onStageShown(): void {
   void animateStageBar(stage.barFrom(), false)
 
   const from = stage.from()
-  const drawn = drawnRect(element)
+  const drawn = drawnRect(element, stage.target.kind)
   if (!from || !drawn) return
 
   // A presentation change replaces a reveal that is still running rather than
   // stacking a second motion on the same picture, so this is the flight it owns.
   stageMediaFlight?.cancel()
   stageMediaFlight = element.animate(
-    [{ transform: handoffTransform(from, drawn, element.getBoundingClientRect()) }, { transform: 'none' }],
+    [{ transform: handoffTransform(from, drawn, element.getBoundingClientRect(), true) }, { transform: 'none' }],
     { duration: STAGE_REVEAL_MS, easing: 'ease-out' }
   )
 }
@@ -2711,7 +2740,7 @@ async function runDismissal(): Promise<void> {
   }
 
   const to = stage.from()
-  const drawn = drawnRect(element)
+  const drawn = drawnRect(element, stage.target.kind)
 
   let moving: Promise<void> = Promise.resolve()
   let shrink: Animation | null = null
@@ -2719,7 +2748,7 @@ async function runDismissal(): Promise<void> {
     shrink = element.animate(
       [
         { transform: 'none' },
-        { transform: handoffTransform(to, drawn, element.getBoundingClientRect()) }
+        { transform: handoffTransform(to, drawn, element.getBoundingClientRect(), true) }
       ],
       { duration: STAGE_REVEAL_MS, easing: 'ease-in', fill: 'forwards' }
     )

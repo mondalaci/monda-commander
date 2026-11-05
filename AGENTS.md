@@ -637,7 +637,16 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   The scroll box *is* the display's media element (`stageMedia`), so
   it carries `origin-top-left` like the clip and the still do — `handoffTransform`
   scales about the element's top-left, and at the default centre origin the reveal
-  would start half a pane to the right of the thumbnail it grows out of. Its
+  would start half a pane to the right of the thumbnail it grows out of. That scale
+  is by width, and the media's own rectangle is *centred* on the target it flies to
+  (its fourth argument, which only the transport bar leaves off — the bar grows out
+  from *under* the thumbnail, so its top edge is what has to sit on the target):
+  the two rectangles rarely share an aspect — a letterboxed picture, a wall tile,
+  and above all a 3D model, whose drawn rectangle is a centred square of the box's
+  *height* (three.js fits the model to the vertical field of view; the box's width
+  says nothing about how large it looks) — and a
+  corner-pinned flight of those starts short of the middle and lands beside the
+  thumbnail it belongs to. Its
   transport carries the fit switch — fill the box's width, or scale a whole page
   into it (`pdfView.mode`, `Alt+W`/`Alt+P`) — and a magnification (`pdfView.scale`,
   `Alt+=`/`Alt+-`, a fixed ladder of steps in `shared/pdf.ts`), with the two fit

@@ -1680,7 +1680,18 @@ It is the media's *own* rectangle that is moved, not the element's — the eleme
 the whole pane with the media letterboxed inside it, so `drawnRect` works out where
 the picture actually is from the element's box and the media's intrinsic size, and
 `handoffTransform` lays that onto the thumbnail (`previewRect()` on the source
-pane). It plays once per *entry* into the mode, guarded by `stage.animation`, so
+pane). The model is the case that is not a letterbox: three.js fits it to the box's
+*height* (the vertical field of view), so `drawnRect` reads a model as a centred
+square of that height — the box's own width has nothing to do with how large it
+looks, and a flight that scaled the box would start at the wrong size. The scale is
+by width, so the flight is also *centred* on the target rather than pinned by a
+corner: the two rarely share an aspect — a picture letterboxed in a pane, a wall
+tile that is not the picture's shape, and above all a 3D model — and a
+corner-pinned flight of those starts the media short of the middle and lands it
+beside the thumbnail it belongs to. (The transport bar is the one that passes
+`false`: it grows out from under the thumbnail, so its top edge is what has to sit
+on the target.) It plays once per
+*entry* into the mode, guarded by `stage.animation`, so
 arrowing through a folder swaps the display in place rather than re-animating on
 every row — and a row whose thumbnail is not up yet has nothing to grow from, so it
 simply appears. The gesture is for entering the mode and leaving it, not for the
