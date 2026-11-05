@@ -1,0 +1,19 @@
+/* A PDF page's text layer carries no visible glyphs of its own — the glyphs on
+   screen are the raster beneath it — so the browser's own selection highlight,
+   which follows the *font's* line box, would be a picture of a substitute font: a
+   band a little taller than the words and sitting a little lower, with the width of
+   whatever the fallback font drew rather than of the word. So it is turned off, and
+   the highlight is drawn from the word boxes the text was read from
+   (`pdfHighlightRects` in `FilePanel.vue`), which are the boxes the raster's own
+   glyphs occupy. The selection itself is untouched: it is still what a drag, a
+   triple-click and `Ctrl+C` use. */
+[data-pdf-text] ::selection {
+  background: transparent;
+}
+
+/* One run of a selection: as wide as the words it covers and as tall as the line
+   they sit on. Translucent, because the page is a picture: an opaque band would
+   hide the very glyphs it is pointing at. */
+.pdf-selection {
+  background: color-mix(in srgb, var(--color-accent-strong) 45%, transparent);
+}

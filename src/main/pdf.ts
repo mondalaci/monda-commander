@@ -273,10 +273,11 @@ function decodeXmlEntities(text: string): string {
 }
 
 /**
- * A page's size and its words, in reading order, each tagged with the text block
- * it fell in. Null when the output carries no page at all — a `pdftotext` that
- * could not run, or a document it could not read — which is not an error the pane
- * has to report: it simply draws no layer.
+ * A page's size, its words in reading order — each tagged with the text block it
+ * fell in and the line it sits on — and each line's own band. Null when the output
+ * carries no page at all — a `pdftotext` that could not run, or a document it could
+ * not read — which is not an error the pane has to report: it simply draws no
+ * layer.
  */
 function parsePdfPageText(xhtml: string): PdfPageText | null {
   const page = /<page\s+width="([\d.]+)"\s+height="([\d.]+)"/.exec(xhtml)
@@ -286,31 +287,50 @@ function parsePdfPageText(xhtml: string): PdfPageText | null {
   const height = Number.parseFloat(page[2]!)
   if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null
 
-  // One pass over both tags, so a word is tagged with the block it is inside: the
-  // block openers are counted as they come and the words follow them in reading
-  // order. `-bbox-layout` is what wraps them: `flow` > `block` > `line` > `word`.
+  // One pass over the three tags, so a word is tagged with the block and the line
+  // it is inside: the openers are counted as they come and the words follow them in
+  // reading order. `-bbox-layout` is what wraps them: `flow` > `block` > `line` >
+  // `word`. The line's own band is kept because a highlight is drawn per line —
+  // a word's box is its ink, which is shorter for a word with no descender in it,
+  // and a band that changed height word by word would read as a fault.
   const words: PdfWord[] = []
+  const lines: { y: number; height: number }[] = []
   let block = 0
   const pattern =
-    /<block[\s>]|<word\s+xMin="([\d.eE+-]+)"\s+yMin="([\d.eE+-]+)"\s+xMax="([\d.eE+-]+)"\s+yMax="([\d.eE+-]+)">([\s\S]*?)<\/word>/g
+    /<line\s+xMin="([\d.eE+-]+)"\s+yMin="([\d.eE+-]+)"\s+xMax="([\d.eE+-]+)"\s+yMax="([\d.eE+-]+)"|<block[\s>]|<word\s+xMin="([\d.eE+-]+)"\s+yMin="([\d.eE+-]+)"\s+xMax="([\d.eE+-]+)"\s+yMax="([\d.eE+-]+)">([\s\S]*?)<\/word>/g
 
   for (const match of xhtml.matchAll(pattern)) {
-    if (match[0].startsWith('<block')) {
+    if (match[1] !== undefined) {
+      const top = Number.parseFloat(match[2]!)
+      const bottom = Number.parseFloat(match[4]!)
+      lines.push({ y: top, height: bottom - top })
+      continue
+    }
+
+    if (match[5] === undefined) {
       block += 1
       continue
     }
 
-    const xMin = Number.parseFloat(match[1]!)
-    const yMin = Number.parseFloat(match[2]!)
-    const xMax = Number.parseFloat(match[3]!)
-    const yMax = Number.parseFloat(match[4]!)
-    const text = decodeXmlEntities(match[5]!)
+    const xMin = Number.parseFloat(match[5]!)
+    const yMin = Number.parseFloat(match[6]!)
+    const xMax = Number.parseFloat(match[7]!)
+    const yMax = Number.parseFloat(match[8]!)
+    const text = decodeXmlEntities(match[9]!)
     if (text.length === 0) continue
     if (![xMin, yMin, xMax, yMax].every((value) => Number.isFinite(value))) continue
-    words.push({ text, x: xMin, y: yMin, width: xMax - xMin, height: yMax - yMin, block })
+    words.push({
+      text,
+      x: xMin,
+      y: yMin,
+      width: xMax - xMin,
+      height: yMax - yMin,
+      block,
+      line: Math.max(0, lines.length - 1)
+    })
   }
 
-  return { width, height, words }
+  return { width, height, words, lines }
 }
 
 const textCache = new Map<string, PdfPageText | null>()

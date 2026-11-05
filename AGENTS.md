@@ -580,20 +580,33 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   (`word.text + ' '`), never as template text: the template compiler's whitespace
   condensing drops a trailing space written between the interpolation and the close
   tag, and every word of the copy then runs into the next.
-  A word span is a block of its own, so the browser's paragraph *is* one word;
-  poppler's text blocks are kept as each word's `block` and a **triple-click
-  selects that block** — the paragraph — as one range. Holding the button and
-  dragging adds whole paragraphs from there (`paragraphDrag`), the word nearest the
-  pointer deciding which end grows and across pages the layers' own order deciding
-  the direction, so the paragraph the gesture began on is never lost. The nearest
-  word is worked out from the word boxes rather than by hit-testing, because the
+- **A PDF's selection highlight is drawn by the pane, not by the browser.**
+  `pdfHighlightRects` in `FilePanel.vue`, with the native one turned off
+  (`[data-pdf-text] ::selection` is transparent, `styles/pdf.css`): the browser's own
+  highlight follows the *substitute font's* line box — a band a little taller than
+  the words, a little low, and as wide as that font drew them rather than as wide as
+  the word — while what is on screen is the raster it should be pointing at. So a
+  translucent band is drawn per *run* of selected words on a line, from the word
+  boxes the text was read from, at the line's own band and not a word's ink (which is
+  shorter for a word with no descender in it, and a band that changed height word by
+  word would read as a fault). Which words are selected is read from the selection's
+  endpoints and their offsets, so the drawn highlight and what `Ctrl+C` copies cannot
+  disagree; the selection itself is untouched.
+- **The browser's paragraph is one word here, so a triple-click's is poppler's.**
+  A word span is a block of its own (it has to be, to sit at its box), so poppler's
+  text blocks are kept as each word's `block` and a **triple-click selects that
+  block** as one range. Holding the button and dragging adds whole paragraphs from
+  there (`paragraphDrag`), the word nearest the pointer deciding which end grows and
+  across pages the layers' own order deciding the direction, so the paragraph the
+  gesture began on is never lost. The nearest word is worked out from the word boxes
+  rather than by hit-testing, because the
   boxes have gaps between them that the layer's own background fills. That is also
   why a PDF display has **no double-click-to-enlarge** (a double-click on a page is
   a word selection, as in any text; `Ctrl+Enter` and the row's triple-click still
   enlarge), why the panes' `Ctrl+C` keeps the *selection's* text rather than the
   row's name (`pdfSelection` in `App.vue`; the row copy is what it stands aside
-  for), and why the focus model stands
-  down too: a press on the text layer must not have `restoreFocus` put the keyboard
+  for), and why the focus model stands down too: a press on the text layer must not
+  have `restoreFocus` put the keyboard
   back on the command line, which folds the selection away as it focuses. The
   scroll box is `tabindex="-1"` so a press inside it keeps the keyboard there
   rather than dropping it to `<body>`, and `selectingText` (a window-wide

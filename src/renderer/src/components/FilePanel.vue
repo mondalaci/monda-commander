@@ -1886,7 +1886,9 @@ function pdfWordsFor(page: number): PdfWord[] {
 /**
  * Select a word in a text layer, by putting the document selection over its span.
  * Word spans are keyed by their index in the page's `words`, so the DOM order and
- * the text order agree and a range can be built from the two by index.
+ * the text order agree and a range can be built from the two by index. The highlight
+ * is re-read from the selection here as well as from `selectionchange`, since a
+ * selection we made ourselves is not a *change* to anything the browser watches.
  */
 function selectPdfRange(
   from: { layer: HTMLElement; index: number },
@@ -1902,6 +1904,7 @@ function selectPdfRange(
   const selection = document.getSelection()
   selection?.removeAllRanges()
   selection?.addRange(range)
+  updatePdfSelections()
 }
 
 /** The first and last word of the text block (the paragraph) a word sits in. */
@@ -2079,18 +2082,156 @@ function onPdfPanEnd(): void {
 }
 
 /**
+ * The one scale that maps a page's own points onto the width it is drawn at. Every
+ * box in the text layer uses it — the words the browser selects and the highlight
+ * drawn over them — so the two can never drift apart.
+ */
+function pdfTextScale(page: number): number | null {
+  const text = pdfTextFor(page)
+  if (text === null || text.width <= 0 || pdfColumnWidth.value <= 0) return null
+  return pdfColumnWidth.value / text.width
+}
+
+/** One page's share of the document selection: the words it covers, and how much
+ *  of the first and the last of them. */
+interface PdfTextSelection {
+  first: number
+  last: number
+  startFraction: number
+  endFraction: number
+}
+
+/**
+ * What is selected, per page, read from the document selection but not *measured*
+ * by it. The browser's own highlight follows the substitute font's glyphs, and those
+ * glyphs are invisible here — what is drawn on the page is the raster — so the
+ * highlight is built from the word boxes the text was read from instead, and all
+ * this keeps is which words the selection covers.
+ */
+const pdfSelections = ref<Map<number, PdfTextSelection>>(new Map())
+
+/** The text layer a page is drawn in, or null while it is not in the document. */
+function pdfTextLayerFor(page: number): HTMLElement | null {
+  return (
+    pdfScrollEl.value?.querySelector<HTMLElement>(`[data-pdf-text][data-page="${page}"]`) ?? null
+  )
+}
+
+/** Where a selection endpoint sits: the layer, the word, and how far into it. */
+function pdfEndpointOf(
+  node: Node,
+  offset: number
+): { layer: HTMLElement; index: number; fraction: number } | null {
+  const element = node instanceof Element ? node : node.parentElement
+  const span = element?.closest('span')
+  const layer = span?.parentElement
+  if (!span || !layer || !layer.hasAttribute('data-pdf-text')) return null
+
+  const index = Array.prototype.indexOf.call(layer.children, span)
+  if (index < 0) return null
+
+  const length = span.textContent?.length ?? 0
+  const fraction = length > 0 ? Math.min(Math.max(offset / length, 0), 1) : 0
+  return { layer, index, fraction }
+}
+
+/** Read the document selection into word ranges, one per page it covers. */
+function updatePdfSelections(): void {
+  const selection = document.getSelection()
+  const range = selection !== null && !selection.isCollapsed ? selection.getRangeAt(0) : null
+  const start = range === null ? null : pdfEndpointOf(range.startContainer, range.startOffset)
+  const end = range === null ? null : pdfEndpointOf(range.endContainer, range.endOffset)
+
+  if (start === null || end === null) {
+    if (pdfSelections.value.size > 0) pdfSelections.value = new Map()
+    return
+  }
+
+  const next = new Map<number, PdfTextSelection>()
+  for (const item of pdfVisiblePages.value) {
+    const layer = pdfTextLayerFor(item.page)
+    const text = pdfTextFor(item.page)
+    if (layer === null || text === null || text.words.length === 0) continue
+
+    // A layer the selection runs through is covered whole; the two the endpoints
+    // are in take only their own part of it.
+    const afterStart =
+      layer === start.layer ||
+      (start.layer.compareDocumentPosition(layer) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
+    const beforeEnd =
+      layer === end.layer ||
+      (end.layer.compareDocumentPosition(layer) & Node.DOCUMENT_POSITION_PRECEDING) !== 0
+    if (!afterStart || !beforeEnd) continue
+
+    next.set(item.page, {
+      first: layer === start.layer ? start.index : 0,
+      last: layer === end.layer ? end.index : text.words.length - 1,
+      startFraction: layer === start.layer ? start.fraction : 0,
+      endFraction: layer === end.layer ? end.fraction : 1
+    })
+  }
+
+  pdfSelections.value = next
+}
+
+/**
+ * The bands the highlight is drawn as, in the box's own pixels: one per run of the
+ * selection on a line — a run being words that share a line, so a paragraph reads
+ * as a band per line rather than a box per word, with the spaces between them
+ * covered — from the first word's left edge to the last one's right, and as tall as
+ * the line the words sit on rather than as tall as their own ink. A word's box is
+ * its *ink*, which is shorter for a word with no descender in it; a band that
+ * changed height word by word would read as a fault rather than as a selection.
+ */
+function pdfHighlightRects(
+  page: number
+): { left: number; top: number; width: number; height: number }[] {
+  const selection = pdfSelections.value.get(page)
+  const text = pdfTextFor(page)
+  const scale = pdfTextScale(page)
+  if (selection === undefined || text === null || scale === null) return []
+
+  const rects: { left: number; top: number; width: number; height: number }[] = []
+  let runStart = selection.first
+
+  for (let index = selection.first; index <= selection.last; index += 1) {
+    const word = text.words[index]
+    if (word === undefined) break
+    if (index < selection.last && text.words[index + 1]?.line === word.line) continue
+
+    const first = text.words[runStart]!
+    const line = text.lines[word.line]
+    const left =
+      runStart === selection.first ? first.x + first.width * selection.startFraction : first.x
+    const right =
+      index === selection.last ? word.x + word.width * selection.endFraction : word.x + word.width
+
+    rects.push({
+      left: left * scale,
+      top: (line?.y ?? word.y) * scale,
+      width: Math.max(1, (right - left) * scale),
+      height: Math.max(1, (line?.height ?? word.height) * scale)
+    })
+    runStart = index + 1
+  }
+  return rects
+}
+
+/**
  * Where a word's span sits over the rendered page. The page is drawn at
  * `pdfColumnWidth` for a page whose own width is `text.width` points, so one
  * uniform scale maps the word's box — and the same scale is what keeps a zoomed
  * page's selection on its glyphs. The font size is the box's height, so the
  * transparent glyphs are the size of the ones beneath them, and the box clips
- * whatever the substitute font draws wider than the word really is.
+ * whatever the substitute font draws wider than the word really is. None of that
+ * geometry is *seen* — the span is transparent — it is what the pointer and the
+ * selection hit, and the visible highlight is drawn from the same boxes by
+ * `pdfHighlightRects`.
  */
 function pdfWordStyle(page: number, word: PdfWord): Record<string, string> | undefined {
-  const text = pdfTextFor(page)
-  if (!text || text.width <= 0) return undefined
+  const scale = pdfTextScale(page)
+  if (scale === null) return undefined
 
-  const scale = pdfColumnWidth.value / text.width
   const height = Math.max(1, word.height * scale)
   return {
     left: `${(word.x * scale).toFixed(2)}px`,
@@ -3880,6 +4021,10 @@ onMounted(() => {
   window.addEventListener('mousemove', onPdfPanMove)
   window.addEventListener('mouseup', onPdfPanEnd)
   window.addEventListener('blur', onPdfPanEnd)
+  // The selection itself is what the highlight is drawn from, and it changes
+  // without a key or a press of this pane's making: a drag, a triple-click, a
+  // shift-click. The document's own event is the one place that is all reported.
+  document.addEventListener('selectionchange', updatePdfSelections)
   // A hold outlives the window's focus if the user leaves mid-press: the release
   // then happens somewhere this one will never hear about.
   window.addEventListener('blur', cancelHold)
@@ -3904,6 +4049,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('mousemove', onPdfPanMove)
   window.removeEventListener('mouseup', onPdfPanEnd)
   window.removeEventListener('blur', onPdfPanEnd)
+  document.removeEventListener('selectionchange', updatePdfSelections)
   window.removeEventListener('blur', cancelHold)
   clearHold()
 })
@@ -5208,7 +5354,8 @@ function onRenameBlur(): void {
                     item.height,
                     pdfColumnWidth,
                     pdfFrameFor(item.page),
-                    pdfTextFor(item.page)
+                    pdfTextFor(item.page),
+                    pdfSelections.get(item.page)
                   ]"
                   class="relative shrink-0 overflow-hidden bg-surface-2"
                   :style="{ height: `${item.height}px`, marginBottom: `${PDF_PAGE_GAP}px` }"
@@ -5220,6 +5367,28 @@ function onRenameBlur(): void {
                     draggable="false"
                     class="h-full w-full object-contain"
                   />
+
+                  <!-- What is selected, drawn where the page's own glyphs are:
+                       a band per run of words on a line, from the word boxes the
+                       text was read from rather than from the browser's highlight,
+                       which follows the invisible substitute font's line box and
+                       would sit a little low and a little wide of the words. -->
+                  <div
+                    v-if="pdfSelections.get(item.page)"
+                    class="pointer-events-none absolute inset-0"
+                  >
+                    <span
+                      v-for="(rect, index) in pdfHighlightRects(item.page)"
+                      :key="index"
+                      class="pdf-selection absolute"
+                      :style="{
+                        left: `${rect.left}px`,
+                        top: `${rect.top}px`,
+                        width: `${rect.width}px`,
+                        height: `${rect.height}px`
+                      }"
+                    />
+                  </div>
 
                   <!-- The page's own text, drawn over the raster invisibly: what
                        is seen is the picture, and what is selected is this. Each

@@ -238,17 +238,21 @@ export interface PdfWord {
   width: number
   height: number
   block: number
+  /** The line it sits in, indexing `PdfPageText.lines` — what a highlight is drawn per. */
+  line: number
 }
 
 /**
- * A page's text, as `pdftotext -bbox` reports it: the page's size in points and
- * every word in reading order. Read for the page being looked at, so a document
- * is never all extracted at once.
+ * A page's text, as `pdftotext -bbox-layout` reports it: the page's size in points,
+ * every word in reading order, and each line's own band. Read for the page being
+ * looked at, so a document is never all extracted at once.
  */
 export interface PdfPageText {
   width: number
   height: number
   words: PdfWord[]
+  /** Every line's band, indexed by `PdfWord.line`. */
+  lines: { y: number; height: number }[]
 }
 
 export type Result<T> = { ok: true; data: T } | { ok: false; error: FsError }

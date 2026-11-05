@@ -1233,7 +1233,25 @@ at, so a zoom keeps the selection on the glyphs without asking for the text agai
 The spans are clipped to their boxes and the font is not the PDF's own, so a word
 the substitute draws wider is trimmed rather than spilled; what matters is that a
 drag over a line selects the words under it, and that the copied text is exact
-whatever the font draws. The space between words is *in the markup as an
+whatever the font draws.
+
+**The highlight is the pane's, not the browser's.** None of that span geometry is
+seen — the spans are transparent — but the browser's selection highlight *is* drawn
+from it, and its idea of a word is the substitute font's: a band as tall as that
+font's line box (about a sixth taller than the ink it covers, and sitting low) and
+as wide as that font drew the word, which is neither the word's own width nor
+anything the page shows. The selection looked, in short, like a rendering of the
+text rather than a highlight *of* it — the glyphs it was supposed to be pointing at
+were the raster's, a few pixels away. So the native highlight is turned off
+(`[data-pdf-text] ::selection` is transparent, `styles/pdf.css`) and the pane draws
+it instead (`pdfHighlightRects`): one translucent band per *run* of selected words on
+a line, from the first word's left edge to the last one's right, at the line's own
+band rather than a word's ink — a word's box is its ink, which is shorter for a word
+with no descender in it, and a band that changed height word by word would read as a
+fault. Which words are selected is read from the selection's own endpoints and their
+offsets (the selection is what a drag, a triple-click and the paragraph drag all
+leave behind, and `Ctrl+C` copies), so the drawn highlight and the copied text can
+never disagree. What the selection *is* is unchanged; only what it looks like moved. The space between words is *in the markup as an
 expression* (`word.text + ' '`) rather than as template text: Vue's template
 whitespace condensing drops a trailing space written after an interpolation and
 before the close tag, which would run every word of the copy together — the one
