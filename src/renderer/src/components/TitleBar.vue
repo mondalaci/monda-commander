@@ -52,6 +52,13 @@ function onDoubleClick(event: MouseEvent): void {
 
     <div class="drag-region h-full min-w-2 flex-1" aria-hidden="true"></div>
 
+    <!-- Backgrounded transfers, parked leftward of the window buttons. The slot
+         is `no-drag` like the buttons, or a pill could not be clicked, and it is
+         held against the buttons by the spacer above taking the slack. -->
+    <div class="no-drag flex h-full shrink-0 items-center gap-1 pr-1">
+      <slot name="tasks" />
+    </div>
+
     <div class="no-drag flex h-full shrink-0 items-stretch gap-1">
       <button
         type="button"

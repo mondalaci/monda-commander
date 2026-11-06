@@ -11,6 +11,8 @@ import WorkspaceTabs from '@renderer/components/WorkspaceTabs.vue'
 import TitleBar from '@renderer/components/TitleBar.vue'
 import FileViewer from '@renderer/components/FileViewer.vue'
 import PaneContextMenu from '@renderer/components/PaneContextMenu.vue'
+import TransferDialog from '@renderer/components/TransferDialog.vue'
+import TransferPill from '@renderer/components/TransferPill.vue'
 import { loadHideMode, hideMode, toggleHideMode } from '@renderer/composables/useHideMode'
 import { addQuickCd, isQuickCd, loadQuickCd, quickCdDirs, removeQuickCd, reorderQuickCd } from '@renderer/composables/useQuickCd'
 import { loadPdfView, setPdfFit } from '@renderer/composables/usePdfView'
@@ -33,7 +35,14 @@ import { targetLabel, type Target } from '@shared/target'
 import { targetApiKey } from '@renderer/lib/targetContext'
 import type { McGitApi } from '@shared/api'
 import { HIDE_MARKER } from '@shared/hide'
+import {
+  TRANSFER_BACKGROUND_KEY,
+  TRANSFER_CANCEL_KEY,
+  TRANSFER_PILLS_KEY
+} from '@shared/transfer'
 import { loadArchiveSupport } from '@renderer/lib/archive'
+import { useTransfers, type TransferTask } from '@renderer/composables/useTransfers'
+import { withViewTransition } from '@renderer/lib/viewTransition'
 import { untrackedAbove } from '@renderer/lib/gitMark'
 import { playSwapAnimation } from '@renderer/lib/swapAnimation'
 import type { FileContent, FsError, PanelSide } from '@shared/types'
@@ -221,15 +230,94 @@ const deleteTargets = ref<PaneEntry[]>([])
  * F5 stages the active pane's targets and the other pane's directory here. Like
  * the delete dialog, a non-null value is what "the copy dialog is open" means.
  * The destination is only the field's initial value: the dialog can edit it,
- * and whatever it emits on confirm is what is copied.
+ * and whatever it emits on confirm is what is copied. `source` is the pane
+ * directory the gesture was made in, kept for the transfer's tooltip.
  */
-const copyJob = ref<{ entries: PaneEntry[]; destination: string } | null>(null)
+const copyJob = ref<{ entries: PaneEntry[]; source: string; destination: string } | null>(null)
 
 /**
  * F6 stages the same thing for a move: the active pane's targets and the other
  * pane's directory, which the dialog can edit before confirming.
  */
-const moveJob = ref<{ entries: PaneEntry[]; destination: string } | null>(null)
+const moveJob = ref<{ entries: PaneEntry[]; source: string; destination: string } | null>(null)
+
+/**
+ * The transfers this window is running, and the dialogs and title-bar pills that
+ * show them. One app-wide store, because a transfer belongs to the window rather
+ * than to the pane or the tab that started it: switching tabs, or navigating both
+ * panes away, must not take the progress with it. Main reports each transfer's
+ * bytes against its id, which is what `applyTransferProgress` folds back in.
+ */
+const {
+  foregroundTasks,
+  backgroundTasks,
+  create: createTransfer,
+  applyProgress: applyTransferProgress,
+  finish: finishTransfer,
+  dismiss: dismissTransfer,
+  stop: stopTransfer,
+  background: parkTransfer,
+  restore: restoreTransfer
+} = useTransfers()
+
+/**
+ * Whether a transfer's stop is offered. Only a local copy can be interrupted
+ * mid-chunk; a relay answers its copy in one piece, so the option is left off
+ * there rather than shown doing nothing.
+ */
+function transferCancellable(): boolean {
+  return activeWorkspace.value.target.kind === 'local'
+}
+
+/**
+ * Park a transfer's dialog as a title-bar pill, or bring it back, as a *morph*:
+ * the dialog's card and the pill carry the same `view-transition-name`, so the
+ * browser flies the one box to the other while the rest of the window holds
+ * still. The state change runs inside the transition's callback, a tick before
+ * the snapshot, exactly as a view mode switch does (`withViewTransition`).
+ */
+function parkTransferDialog(task: TransferTask): void {
+  withViewTransition(async () => {
+    parkTransfer(task)
+    await nextTick()
+  })
+}
+
+function restoreTransferDialog(task: TransferTask): void {
+  withViewTransition(async () => {
+    restoreTransfer(task)
+    await nextTick()
+  })
+}
+
+/**
+ * The title-bar pills, in the order they are drawn, for the keyboard: `Ctrl+B`
+ * jumps to the first, the arrows then move between them, and Enter chooses the
+ * focused one — its own button does that, so a picked pill is restored exactly as
+ * a clicked one is. The elements are found in the document rather than held in a
+ * ref array, since the list grows and shrinks as transfers start and finish.
+ */
+function pillElements(): HTMLElement[] {
+  return Array.from(document.querySelectorAll<HTMLElement>('[data-transfer-pill]'))
+}
+
+/** Focus the pill at `index` (negative counts from the end). False when none are up. */
+function focusPillAt(index: number): boolean {
+  const pills = pillElements()
+  if (pills.length === 0) return false
+  const target = index < 0 ? pills[pills.length - 1] : pills[Math.min(index, pills.length - 1)]
+  target?.focus()
+  return true
+}
+
+/** Move the keyboard to the next/previous pill, wrapping around. */
+function stepPillFocus(delta: number): void {
+  const pills = pillElements()
+  if (pills.length === 0) return
+  const current = pills.findIndex((pill) => pill === document.activeElement)
+  const from = current < 0 ? 0 : current
+  pills[(from + delta + pills.length) % pills.length]?.focus()
+}
 
 /**
  * F7 stages the name of a directory to make in the active pane. Like the other
@@ -706,7 +794,8 @@ function restoreFocus(): void {
     deleteTargets.value.length > 0 ||
     copyJob.value !== null ||
     moveJob.value !== null ||
-    mkdirOpen.value
+    mkdirOpen.value ||
+    foregroundTasks.value.length > 0
   ) {
     return
   }
@@ -1275,7 +1364,7 @@ function requestCopy(): void {
   const targets = activePane.value.selectionTargets()
   const destination = inactivePane.value.state.path
   if (targets.length === 0 || !destination) return
-  copyJob.value = { entries: targets, destination }
+  copyJob.value = { entries: targets, source: activePane.value.state.path, destination }
 }
 
 function cancelCopy(): void {
@@ -1301,19 +1390,40 @@ function transferPanes(
 async function confirmCopy(destination: string): Promise<void> {
   const source = activePane.value
   const target = inactivePane.value
+  const job = copyJob.value
   copyJob.value = null
+  if (job === null) return
+
+  // The dialog is replaced by the transfer's own progress dialog, which is the
+  // same job continued rather than a new one: a large copy has to be watchable,
+  // and one that should not block the window is parked in the title bar rather
+  // than dismissed.
+  const task = createTransfer({
+    mode: 'copy',
+    entries: job.entries,
+    source: job.source,
+    destination,
+    cancellable: transferCancellable()
+  })
 
   const panes = transferPanes(source, target, destination)
   for (const pane of panes) pane.beginSelfChange()
   try {
     // The handler resolves a relative destination against the source pane, so
     // the resolved directory is what a pane showing it must be compared against.
-    const resolved = await source.copyEntries(destination)
+    const resolved = await source.copyEntries(destination, task.id)
+    if (resolved) task.resolvedDestination = resolved
     if (resolved && target.state.path === resolved) await target.refresh()
+    // A finished copy is `done` even if a stop was asked for a moment too late;
+    // only one that came back empty is the stop's — or a failure's.
+    const status = resolved !== null ? 'done' : task.stopRequested ? 'cancelled' : 'error'
+    finishTransfer(task, status, status === 'error' ? source.state.error : null)
+  } catch (error) {
+    finishTransfer(task, 'error', String(error))
   } finally {
     for (const pane of panes) pane.endSelfChange()
   }
-  focusPanes()
+  if (foregroundTasks.value.length === 0) focusPanes()
 }
 
 /**
@@ -1325,7 +1435,7 @@ function requestMove(): void {
   const targets = activePane.value.selectionTargets()
   const destination = inactivePane.value.state.path
   if (targets.length === 0 || !destination) return
-  moveJob.value = { entries: targets, destination }
+  moveJob.value = { entries: targets, source: activePane.value.state.path, destination }
 }
 
 function cancelMove(): void {
@@ -1336,17 +1446,33 @@ function cancelMove(): void {
 async function confirmMove(destination: string): Promise<void> {
   const source = activePane.value
   const target = inactivePane.value
+  const job = moveJob.value
   moveJob.value = null
+  if (job === null) return
+
+  const task = createTransfer({
+    mode: 'move',
+    entries: job.entries,
+    source: job.source,
+    destination,
+    cancellable: transferCancellable()
+  })
 
   const panes = transferPanes(source, target, destination)
   for (const pane of panes) pane.beginSelfChange()
   try {
-    const resolved = await source.moveEntries(destination)
+    const resolved = await source.moveEntries(destination, task.id)
+    if (resolved) task.resolvedDestination = resolved
     if (resolved && target.state.path === resolved) await target.refresh()
+    // A finished move is `done` even if a stop was asked for a moment too late.
+    const status = resolved !== null ? 'done' : task.stopRequested ? 'cancelled' : 'error'
+    finishTransfer(task, status, status === 'error' ? source.state.error : null)
+  } catch (error) {
+    finishTransfer(task, 'error', String(error))
   } finally {
     for (const pane of panes) pane.endSelfChange()
   }
-  focusPanes()
+  if (foregroundTasks.value.length === 0) focusPanes()
 }
 
 /**
@@ -2359,6 +2485,41 @@ function onKeydown(event: KeyboardEvent): void {
     return
   }
 
+  // A transfer running in front. `Escape` does not cancel it — a long copy is not
+  // something a stray key should throw away — it parks the dialog in the title
+  // bar, where the transfer keeps running as a pill and can be brought back.
+  // Cancelling is the destructive half, so it takes the deliberate chord
+  // (`Ctrl+X`), which also takes back the entry the copy was half through. A
+  // transfer that has already finished has nothing to park or cancel, so either
+  // key dismisses it, as one dismisses any other dialog.
+  const shownTransfers = foregroundTasks.value
+  if (shownTransfers.length > 0) {
+    const last = shownTransfers[shownTransfers.length - 1]
+    if (event.key === TRANSFER_BACKGROUND_KEY) {
+      consume(event)
+      if (last) {
+        if (last.status === 'running') parkTransferDialog(last)
+        else dismissTransfer(last)
+      }
+      return
+    }
+    if (
+      event.ctrlKey &&
+      !event.shiftKey &&
+      !event.altKey &&
+      !event.metaKey &&
+      event.key.toLowerCase() === TRANSFER_CANCEL_KEY
+    ) {
+      consume(event)
+      if (last) {
+        if (last.status !== 'running') dismissTransfer(last)
+        else if (last.cancellable) stopTransfer(last)
+      }
+      return
+    }
+    return
+  }
+
   // The dialogs are modal. Escape cancels; every other key is left to the
   // dialog (its default button is focused, arrows move between the buttons,
   // Enter activates the focused one) instead of reaching the panes or shell.
@@ -2461,6 +2622,39 @@ function onKeydown(event: KeyboardEvent): void {
   // the whole window — which has to work wherever the keyboard is.
   if (terminalExpanded.value && terminalFocused.value) return
 
+  // A title-bar pill holds the keyboard while it is focused — `Ctrl+B` jumps to
+  // it. The arrows move between the pills, Home/End to the first and last, and
+  // Escape comes back to the panes. Enter and Space are the button's own, so the
+  // focused pill is chosen exactly as clicking it would be.
+  if (event.target instanceof HTMLElement && event.target.closest('[data-transfer-pill]')) {
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+      consume(event)
+      stepPillFocus(-1)
+      return
+    }
+    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+      consume(event)
+      stepPillFocus(1)
+      return
+    }
+    if (event.key === 'Home') {
+      consume(event)
+      focusPillAt(0)
+      return
+    }
+    if (event.key === 'End') {
+      consume(event)
+      focusPillAt(-1)
+      return
+    }
+    if (event.key === TRANSFER_BACKGROUND_KEY) {
+      consume(event)
+      focusPanes()
+      return
+    }
+    return
+  }
+
   // A display *inside a pane* is a mode of the panes rather than an overlay of
   // their own: the cursor stays in the pane that asked for it, so Tab must not
   // move the keyboard — and with it which cursor is being displayed — to the
@@ -2551,6 +2745,16 @@ function onKeydown(event: KeyboardEvent): void {
   if (isPlainCtrl(event) && event.code === 'KeyG') {
     consume(event)
     requestCommit()
+    return
+  }
+
+  // Ctrl+B jumps the keyboard to the background-transfer pills in the title bar:
+  // the first pill takes focus, the arrows then move between them and Enter
+  // restores one, exactly as clicking it does (see the pill block above). Claimed
+  // here with the panes' keys, below the expanded terminal, so a real terminal
+  // keeps its own Ctrl+B (readline's backward-char), as it keeps Ctrl+R below.
+  if (isPlainCtrl(event) && event.code === TRANSFER_PILLS_KEY) {
+    if (focusPillAt(0)) consume(event)
     return
   }
 
@@ -2775,6 +2979,12 @@ document.addEventListener('selectionchange', onSelectionChange)
 window.addEventListener('focus', restoreFocus)
 document.addEventListener('focusout', onFocusDrop)
 
+/**
+ * The transfer-progress subscription, held so it can be released when the app is
+ * torn down. `null` until `onMounted` has subscribed.
+ */
+let stopTransferProgress: (() => void) | null = null
+
 onMounted(async () => {
   // The remembered mode is asked for before the panes walk their first
   // directory, so a folder with a `.mchide` file is listed the way the mode was
@@ -2795,6 +3005,10 @@ onMounted(async () => {
   void loadQuickCd()
   // How a PDF display is fitted and magnified, the way it was left.
   void loadPdfView()
+  // The byte progress of any transfer this window runs, folded into its task as
+  // it arrives. Subscribed once for the app: a transfer is the window's, not a
+  // pane's, so nothing about the store depends on which tab is in front.
+  stopTransferProgress = window.mc.fs.onTransferProgress(applyTransferProgress)
 })
 
 onBeforeUnmount(() => {
@@ -2805,6 +3019,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('selectionchange', onSelectionChange)
   window.removeEventListener('focus', restoreFocus)
   document.removeEventListener('focusout', onFocusDrop)
+  stopTransferProgress?.()
   for (const workspace of workspaces.value) releaseWorkspace(workspace)
 })
 </script>
@@ -2822,6 +3037,15 @@ onBeforeUnmount(() => {
         @reorder="moveWorkspace"
         @toggle-terminal="toggleTerminal"
       />
+      <!-- Backgrounded transfers: one pill each, leftward of the window buttons. -->
+      <template #tasks>
+        <TransferPill
+          v-for="task in backgroundTasks"
+          :key="task.id"
+          :task="task"
+          @restore="restoreTransferDialog(task)"
+        />
+      </template>
     </TitleBar>
 
     <!-- A new workspace is a new connection, so the target is chosen first:
@@ -3042,6 +3266,19 @@ onBeforeUnmount(() => {
       :y="paneMenu.y"
       @choose="choosePaneMenuItem"
       @close="closePaneMenu"
+    />
+
+    <!-- The transfers in front, each its own dialog: a copy or move the user
+         confirmed, showing how far it has got. Parking one (`Background`) swaps
+         its card for the title-bar pill of the same `view-transition-name`, so
+         the browser flies it up; clicking the pill brings it back. -->
+    <TransferDialog
+      v-for="task in foregroundTasks"
+      :key="task.id"
+      :task="task"
+      @background="parkTransferDialog(task)"
+      @stop="stopTransfer(task)"
+      @dismiss="dismissTransfer(task)"
     />
 
     <ConfirmTransfer

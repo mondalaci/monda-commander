@@ -1,5 +1,6 @@
-import { constants as fsConstants, promises as fs, type Stats } from 'node:fs'
+import { constants as fsConstants, createReadStream, createWriteStream, promises as fs, type Stats } from 'node:fs'
 import type { FileHandle } from 'node:fs/promises'
+import { pipeline } from 'node:stream/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { ipcMain, nativeImage, shell } from 'electron'
@@ -47,6 +48,168 @@ function toFsError(error: unknown): { code: string; message: string } {
     code: err.code ?? 'EUNKNOWN',
     message: err.message || 'Unknown filesystem error'
   }
+}
+
+/**
+ * A copy or move this window is running, so a stop can reach it: `cancelled` is
+ * what the copy loop reads between entries, and the controller is what interrupts
+ * the file being streamed mid-chunk.
+ */
+interface TransferControl {
+  cancelled: boolean
+  controller: AbortController
+  /** The entry being written, for the dialog's label. */
+  current: string | null
+}
+
+/** Active transfers per webContents, keyed by the id the caller named. */
+const transfers = new Map<number, Map<string, TransferControl>>()
+
+function registerTransfer(owner: number, id: string, control: TransferControl): void {
+  let map = transfers.get(owner)
+  if (!map) {
+    map = new Map()
+    transfers.set(owner, map)
+  }
+  map.set(id, control)
+}
+
+function releaseTransfer(owner: number, id: string): void {
+  const map = transfers.get(owner)
+  if (!map) return
+  map.delete(id)
+  if (map.size === 0) transfers.delete(owner)
+}
+
+/**
+ * How often a running transfer reports its byte count. Chunks arrive far faster
+ * than the dialog can draw them, so reports are throttled the way a size walk's
+ * are; the first and the last are always sent.
+ */
+const TRANSFER_REPORT_MS = 80
+
+function abortError(): NodeJS.ErrnoException {
+  const error = new Error('Transfer cancelled') as NodeJS.ErrnoException
+  error.code = 'EABORTED'
+  return error
+}
+
+/**
+ * What a running copy reports back as it goes: the bytes read, the file about to
+ * be written (so the dialog can name what is on screen now), and a file finished
+ * (so it can count how many of the whole job are done).
+ */
+interface CopyHooks {
+  bytes(count: number): void
+  file(path: string, size: number): void
+  fileDone(): void
+}
+
+/** The size of a copy: the bytes it will write and the regular files it holds. */
+interface CopyMeasure {
+  bytes: number
+  files: number
+}
+
+/**
+ * What copying `target` will write: a file's size, a tree's sum, and nothing for a
+ * link (copied as the link it is) or a special file. `files` counts the regular
+ * files, so a transfer can say "12 of 340". Read before the copy so the bar is
+ * determinate; an entry that cannot be read contributes nothing and is left to
+ * fail, or be skipped, in the copy itself.
+ */
+async function measureCopy(target: string, control?: TransferControl): Promise<CopyMeasure> {
+  if (control?.cancelled) throw abortError()
+
+  let stats: Stats
+  try {
+    stats = await fs.lstat(target)
+  } catch {
+    return { bytes: 0, files: 0 }
+  }
+  if (stats.isSymbolicLink()) return { bytes: 0, files: 0 }
+  if (stats.isFile()) return { bytes: stats.size, files: 1 }
+  if (!stats.isDirectory()) return { bytes: 0, files: 0 }
+
+  let bytes = 0
+  let files = 0
+  let names: string[]
+  try {
+    names = await fs.readdir(target)
+  } catch {
+    return { bytes, files }
+  }
+  for (const name of names) {
+    const measured = await measureCopy(path.join(target, name), control)
+    bytes += measured.bytes
+    files += measured.files
+  }
+  return { bytes, files }
+}
+
+/**
+ * The name a report shows for a file being written: the entry being copied, and
+ * the path under it, so a folder names the file inside rather than only itself —
+ * `photos/img_0421.jpg`, not `photos`.
+ */
+function copyCurrent(root: string, file: string): string {
+  if (file === root) return path.basename(root)
+  return `${path.basename(root)}/${path.relative(root, file)}`
+}
+
+/**
+ * Copy one entry — file, directory or link — the way `fs.cp` with `recursive`
+ * does, but reporting as it goes, because `fs.cp` cannot. A link is recreated
+ * rather than followed; a file is streamed; a directory is made, filled and only
+ * then given the source's mode, so a read-only folder does not refuse its own
+ * contents.
+ */
+async function copyTree(
+  from: string,
+  to: string,
+  hooks: CopyHooks,
+  control: TransferControl
+): Promise<void> {
+  if (control.cancelled) throw abortError()
+
+  const stats = await fs.lstat(from)
+
+  if (stats.isSymbolicLink()) {
+    await fs.symlink(await fs.readlink(from), to)
+    return
+  }
+
+  if (stats.isDirectory()) {
+    await fs.mkdir(to)
+    const names = await fs.readdir(from)
+    for (const name of names) {
+      await copyTree(path.join(from, name), path.join(to, name), hooks, control)
+    }
+    await fs.chmod(to, stats.mode & 0o7777)
+    return
+  }
+
+  if (stats.isFile()) {
+    hooks.file(from, stats.size)
+    const source = createReadStream(from)
+    // `wx` refuses to overwrite, the "never clobber" rule the caller has already
+    // checked for the entry as a whole.
+    const destination = createWriteStream(to, { flags: 'wx' })
+    source.on('data', (chunk: Buffer) => hooks.bytes(chunk.length))
+    try {
+      await pipeline(source, destination, { signal: control.controller.signal })
+    } catch (error) {
+      if (control.cancelled) throw abortError()
+      throw error
+    }
+    await fs.chmod(to, stats.mode & 0o7777)
+    hooks.fileDone()
+    return
+  }
+
+  const error = new Error(`"${path.basename(from)}" is not a regular file`) as NodeJS.ErrnoException
+  error.code = 'ENOTSUP'
+  throw error
 }
 
 /** A mount point as `/proc` writes it: `\040` for a space, and so on. */
@@ -789,6 +952,18 @@ export function registerFsHandlers(): void {
     for (const walk of walks) walk.cancelled = true
   })
 
+  // A transfer the user stopped. The flag is read between entries and at each
+  // chunk; aborting the controller interrupts the file being streamed, which is
+  // the soonest a copy can honestly stop — and the handler takes back the entry
+  // it was half through, so a cancel leaves no partial file behind.
+  ipcMain.on('fs:transfer-cancel', (event, id: unknown) => {
+    if (typeof id !== 'string') return
+    const control = transfers.get(event.sender.id)?.get(id)
+    if (!control) return
+    control.cancelled = true
+    control.controller.abort()
+  })
+
   // How full the filesystem holding a pane's path is. `statfs` answers in
   // blocks, so the block size turns them into bytes; `bavail` is what a
   // non-root writer may still use, while `bfree` is every free block including
@@ -1028,7 +1203,8 @@ export function registerFsHandlers(): void {
   ipcMain.handle(
     'fs:copy',
     async (
-      _event,
+      event,
+      id: unknown,
       sources: string[],
       destination: string,
       baseDir: string
@@ -1110,60 +1286,146 @@ export function registerFsHandlers(): void {
       }
 
       const destDir = intoDirectory ? dest : path.dirname(dest)
-      const copied: string[] = []
-      const failed: CopyFailure[] = []
+      const sender = event.sender
+      const transferId = typeof id === 'string' ? id : ''
+      const control: TransferControl = {
+        cancelled: false,
+        controller: new AbortController(),
+        current: null
+      }
+      if (transferId) registerTransfer(sender.id, transferId, control)
 
-      for (const source of valid) {
-        const from = path.resolve(source)
-        const to = intoDirectory ? path.join(dest, path.basename(from)) : dest
+      let copiedBytes = 0
+      let totalBytes = 0
+      let filesDone = 0
+      let totalFiles = 0
+      let fileCopied = 0
+      let fileTotal = 0
+      let lastReport = 0
+      let sourceRoot = ''
 
-        try {
-          // Never silently clobber: a name that already exists in the
-          // destination is reported as a per-entry failure, exactly like
-          // rename, so a copy can never overwrite data.
-          try {
-            await fs.lstat(to)
-            failed.push({
-              path: from,
-              error: {
-                code: 'EEXIST',
-                message: intoDirectory
-                  ? `"${path.basename(to)}" already exists in "${destDir}"`
-                  : `"${path.basename(to)}" already exists`
-              }
-            })
-            continue
-          } catch {
-            // Destination is free — proceed.
-          }
+      const report = (force: boolean): void => {
+        if (!transferId || sender.isDestroyed()) return
+        const now = Date.now()
+        if (!force && now - lastReport < TRANSFER_REPORT_MS) return
+        lastReport = now
+        sender.send('fs:transfer-progress', {
+          id: transferId,
+          copied: copiedBytes,
+          total: totalBytes,
+          current: control.current,
+          fileCopied,
+          fileTotal,
+          files: filesDone,
+          totalFiles
+        })
+      }
 
-          // A directory cannot be copied into itself or into one of its own
-          // descendants: that would recurse without end.
-          if (to.startsWith(from + path.sep)) {
-            failed.push({
-              path: from,
-              error: { code: 'EINVAL', message: 'Cannot copy a directory into itself' }
-            })
-            continue
-          }
-
-          // `recursive` covers directories; symlinks are preserved rather than
-          // followed, so a link is copied as a link.
-          await fs.cp(from, to, { recursive: true, errorOnExist: true, force: false })
-          copied.push(to)
-        } catch (error) {
-          failed.push({ path: from, error: toFsError(error) })
+      const hooks: CopyHooks = {
+        bytes: (count) => {
+          copiedBytes += count
+          fileCopied += count
+          report(false)
+        },
+        file: (file, size) => {
+          control.current = copyCurrent(sourceRoot, file)
+          fileCopied = 0
+          fileTotal = size
+          report(false)
+        },
+        fileDone: () => {
+          filesDone += 1
         }
       }
 
-      return { ok: true, data: { copied, failed, destination: destDir } }
+      try {
+        // Weigh the whole transfer up front so the bar is determinate from the
+        // first chunk; a tree with nothing to weigh stays at zero, and the bar
+        // slides rather than claim a fraction it does not know.
+        for (const source of valid) {
+          if (control.cancelled) break
+          const measured = await measureCopy(path.resolve(source), control)
+          totalBytes += measured.bytes
+          totalFiles += measured.files
+        }
+        report(true)
+
+        const copied: string[] = []
+        const failed: CopyFailure[] = []
+
+        for (const source of valid) {
+          if (control.cancelled) break
+          const from = path.resolve(source)
+          const to = intoDirectory ? path.join(dest, path.basename(from)) : dest
+          control.current = path.basename(from)
+          sourceRoot = from
+
+          try {
+            // Never silently clobber: a name that already exists in the
+            // destination is reported as a per-entry failure, exactly like
+            // rename, so a copy can never overwrite data.
+            try {
+              await fs.lstat(to)
+              failed.push({
+                path: from,
+                error: {
+                  code: 'EEXIST',
+                  message: intoDirectory
+                    ? `"${path.basename(to)}" already exists in "${destDir}"`
+                    : `"${path.basename(to)}" already exists`
+                }
+              })
+              continue
+            } catch {
+              // Destination is free — proceed.
+            }
+
+            // A directory cannot be copied into itself or into one of its own
+            // descendants: that would recurse without end.
+            if (to.startsWith(from + path.sep)) {
+              failed.push({
+                path: from,
+                error: { code: 'EINVAL', message: 'Cannot copy a directory into itself' }
+              })
+              continue
+            }
+
+            // The copy is our own recursive stream rather than `fs.cp`, which
+            // reports no bytes: a link is preserved, a file streamed, a folder
+            // walked, and the bytes and files counted along the way.
+            await copyTree(from, to, hooks, control)
+            copied.push(to)
+          } catch (error) {
+            // A cancelled entry is a half-written tree: take it back rather than
+            // leaving a partial copy the next attempt would refuse as existing.
+            if (control.cancelled || (error as NodeJS.ErrnoException).code === 'EABORTED') {
+              await fs.rm(to, { recursive: true, force: true }).catch(() => {})
+              break
+            }
+            failed.push({ path: from, error: toFsError(error) })
+          }
+        }
+
+        if (control.cancelled) {
+          return { ok: false, error: { code: 'EABORTED', message: 'Copy cancelled' } }
+        }
+        report(true)
+        return { ok: true, data: { copied, failed, destination: destDir } }
+      } catch (error) {
+        // A cancellation raised while weighing, or any other escape, still
+        // answers as a Result rather than rejecting across the bridge.
+        return { ok: false, error: toFsError(error) }
+      } finally {
+        if (transferId) releaseTransfer(sender.id, transferId)
+      }
     }
   )
 
   ipcMain.handle(
     'fs:move',
     async (
-      _event,
+      event,
+      id: unknown,
       sources: string[],
       destination: string,
       baseDir: string
@@ -1245,73 +1507,151 @@ export function registerFsHandlers(): void {
       }
 
       const destDir = intoDirectory ? dest : path.dirname(dest)
-      const moved: string[] = []
-      const failed: MoveFailure[] = []
+      const sender = event.sender
+      const transferId = typeof id === 'string' ? id : ''
+      const control: TransferControl = {
+        cancelled: false,
+        controller: new AbortController(),
+        current: null
+      }
+      if (transferId) registerTransfer(sender.id, transferId, control)
 
-      for (const source of valid) {
-        const from = path.resolve(source)
-        const to = intoDirectory ? path.join(dest, path.basename(from)) : dest
+      // A move within one filesystem is a rename and reports nothing; only the
+      // cross-device fallback copies bytes, so its total is found as each such
+      // entry is discovered rather than up front.
+      let copiedBytes = 0
+      let totalBytes = 0
+      let filesDone = 0
+      let totalFiles = 0
+      let fileCopied = 0
+      let fileTotal = 0
+      let lastReport = 0
+      let sourceRoot = ''
 
-        // Moving an entry to where it already is leaves it where it is.
-        if (from === to) continue
+      const report = (force: boolean): void => {
+        if (!transferId || sender.isDestroyed()) return
+        const now = Date.now()
+        if (!force && now - lastReport < TRANSFER_REPORT_MS) return
+        lastReport = now
+        sender.send('fs:transfer-progress', {
+          id: transferId,
+          copied: copiedBytes,
+          total: totalBytes,
+          current: control.current,
+          fileCopied,
+          fileTotal,
+          files: filesDone,
+          totalFiles
+        })
+      }
 
-        if (from === path.parse(from).root) {
-          failed.push({
-            path: from,
-            error: { code: 'EPERM', message: 'Refusing to move a filesystem root' }
-          })
-          continue
-        }
-
-        try {
-          // Never silently clobber: an existing name is a per-entry failure,
-          // exactly like copy and rename.
-          try {
-            await fs.lstat(to)
-            failed.push({
-              path: from,
-              error: {
-                code: 'EEXIST',
-                message: intoDirectory
-                  ? `"${path.basename(to)}" already exists in "${destDir}"`
-                  : `"${path.basename(to)}" already exists`
-              }
-            })
-            continue
-          } catch {
-            // Destination is free — proceed.
-          }
-
-          // A directory cannot be moved into itself or into one of its own
-          // descendants.
-          if (to.startsWith(from + path.sep)) {
-            failed.push({
-              path: from,
-              error: { code: 'EINVAL', message: 'Cannot move a directory into itself' }
-            })
-            continue
-          }
-
-          try {
-            await fs.rename(from, to)
-          } catch (error) {
-            // rename cannot cross filesystems (EXDEV); fall back to copy and
-            // only remove the source once the copy has finished.
-            if ((error as NodeJS.ErrnoException).code === 'EXDEV') {
-              await fs.cp(from, to, { recursive: true, errorOnExist: true, force: false })
-              await fs.rm(from, { recursive: true, force: false })
-            } else {
-              throw error
-            }
-          }
-
-          moved.push(to)
-        } catch (error) {
-          failed.push({ path: from, error: toFsError(error) })
+      const hooks: CopyHooks = {
+        bytes: (count) => {
+          copiedBytes += count
+          fileCopied += count
+          report(false)
+        },
+        file: (file, size) => {
+          control.current = copyCurrent(sourceRoot, file)
+          fileCopied = 0
+          fileTotal = size
+          report(false)
+        },
+        fileDone: () => {
+          filesDone += 1
         }
       }
 
-      return { ok: true, data: { moved, failed, destination: destDir } }
+      try {
+        const moved: string[] = []
+        const failed: MoveFailure[] = []
+
+        for (const source of valid) {
+          if (control.cancelled) break
+          const from = path.resolve(source)
+          const to = intoDirectory ? path.join(dest, path.basename(from)) : dest
+
+          // Moving an entry to where it already is leaves it where it is.
+          if (from === to) continue
+
+          if (from === path.parse(from).root) {
+            failed.push({
+              path: from,
+              error: { code: 'EPERM', message: 'Refusing to move a filesystem root' }
+            })
+            continue
+          }
+          control.current = path.basename(from)
+
+          try {
+            // Never silently clobber: an existing name is a per-entry failure,
+            // exactly like copy and rename.
+            try {
+              await fs.lstat(to)
+              failed.push({
+                path: from,
+                error: {
+                  code: 'EEXIST',
+                  message: intoDirectory
+                    ? `"${path.basename(to)}" already exists in "${destDir}"`
+                    : `"${path.basename(to)}" already exists`
+                }
+              })
+              continue
+            } catch {
+              // Destination is free — proceed.
+            }
+
+            // A directory cannot be moved into itself or into one of its own
+            // descendants.
+            if (to.startsWith(from + path.sep)) {
+              failed.push({
+                path: from,
+                error: { code: 'EINVAL', message: 'Cannot move a directory into itself' }
+              })
+              continue
+            }
+
+            try {
+              await fs.rename(from, to)
+            } catch (error) {
+              // rename cannot cross filesystems (EXDEV); fall back to copy and
+              // only remove the source once the copy has finished. The copy is
+              // the same streaming one `fs:copy` runs, so the dialog can report
+              // the bytes of a cross-device move too.
+              if ((error as NodeJS.ErrnoException).code === 'EXDEV') {
+                const measured = await measureCopy(from, control)
+                totalBytes += measured.bytes
+                totalFiles += measured.files
+                sourceRoot = from
+                report(true)
+                await copyTree(from, to, hooks, control)
+                await fs.rm(from, { recursive: true, force: false })
+              } else {
+                throw error
+              }
+            }
+
+            moved.push(to)
+          } catch (error) {
+            if (control.cancelled || (error as NodeJS.ErrnoException).code === 'EABORTED') {
+              await fs.rm(to, { recursive: true, force: true }).catch(() => {})
+              break
+            }
+            failed.push({ path: from, error: toFsError(error) })
+          }
+        }
+
+        if (control.cancelled) {
+          return { ok: false, error: { code: 'EABORTED', message: 'Move cancelled' } }
+        }
+        report(true)
+        return { ok: true, data: { moved, failed, destination: destDir } }
+      } catch (error) {
+        return { ok: false, error: toFsError(error) }
+      } finally {
+        if (transferId) releaseTransfer(sender.id, transferId)
+      }
     }
   )
 

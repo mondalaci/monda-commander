@@ -1,0 +1,18 @@
+/*
+ * The bar a transfer shows while its progress is unknown — the source still being
+ * weighed, or a run whose total never arrives. A determinate bar is a width; this
+ * one is a band travelling across the track and back, so it reads as "working"
+ * without claiming a fraction it does not know.
+ */
+@keyframes transfer-bar-slide {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(300%);
+  }
+}
+
+.transfer-bar-running {
+  animation: transfer-bar-slide 1.1s ease-in-out infinite;
+}

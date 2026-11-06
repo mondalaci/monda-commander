@@ -285,8 +285,8 @@ export interface PaneController {
   clearSelection(): void
   selectionTargets(): PaneEntry[]
   deletionTargets(): PaneEntry[]
-  copyEntries(destination: string): Promise<string | null>
-  moveEntries(destination: string): Promise<string | null>
+  copyEntries(destination: string, transferId?: string): Promise<string | null>
+  moveEntries(destination: string, transferId?: string): Promise<string | null>
   createDirectory(name: string): Promise<string | null>
   deleteEntries(): Promise<void>
   openSearch(): void
@@ -887,14 +887,28 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
 
   /**
    * Nesting depth of user-initiated changes currently in flight. While it is
-   * non-zero the pane's listing still updates, but nothing sweeps: the entries a
-   * copy, move or shell command makes are ones the user asked for, and the
-   * watcher reports them exactly like an external writer would. `quietUntil`
-   * carries that silence past the end of the operation so the watcher's delayed
-   * notification is covered too.
+   * non-zero the pane's listing still updates, and a path that keeps changing —
+   * a file the operation is still writing — sweeps; but a path seen only once is
+   * that operation's finished result and stays quiet (see `markFresh`). The
+   * entries a copy, move or shell command makes are ones the user asked for, and
+   * the watcher reports them exactly like an external writer would.
+   * `quietUntil` carries that suppression past the end of the operation so the
+   * watcher's delayed notification is covered too.
    */
   let selfChanges = 0
   let quietUntil = 0
+
+  /**
+   * The paths the previous re-list found changing, and the paths the self-change
+   * in flight is sweeping. A file still being written changes on every re-list,
+   * so a path in *both* the previous diff and this one is the one on screen now;
+   * a file the copy has finished is in neither, and so leaves the sweep. That is
+   * what keeps a batch of copied files from pulsing together — only the one being
+   * written does. Both are emptied when the operation ends, so its aftermath
+   * cannot sweep on a stale recollection.
+   */
+  let pendingFresh = new Set<string>()
+  let liveFresh = new Set<string>()
 
   function clearFresh(): void {
     if (flashTimer !== null) {
@@ -902,17 +916,43 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
       flashTimer = null
     }
     state.fresh.clear()
+    pendingFresh = new Set()
+    liveFresh = new Set()
   }
 
   function markFresh(paths: Set<string>): void {
-    // A change the pane itself just made is not news: the sweep exists to
-    // announce entries that appeared behind the app's back, so a copy, move or
-    // `mkdir` the user issued must not animate. Both the operation's own
-    // re-list and the watcher's delayed notification for it land inside the
-    // quiet window this guards.
-    if (selfChanges > 0 || Date.now() < quietUntil) return
-    if (paths.size === 0 || paths.size > FLASH_MAX) return
-    for (const path of paths) state.fresh.add(path)
+    // A change that lands inside the quiet tail is the watcher's delayed report
+    // of the user's own write, not news: it must not sweep, exactly as the
+    // operation's own re-list did not.
+    if (Date.now() < quietUntil) {
+      pendingFresh = new Set()
+      return
+    }
+
+    let sweep: Set<string>
+    if (selfChanges > 0) {
+      // While the pane is making a change at the user's request, only a path that
+      // was *also* changing on the previous re-list is swept — the file being
+      // written now. Whatever the transfer swept a moment ago and is no longer
+      // changing leaves the set, so a long copy lights one row, not the pile of
+      // files it has already finished.
+      sweep = new Set<string>()
+      for (const path of paths) if (pendingFresh.has(path)) sweep.add(path)
+      pendingFresh = new Set(paths)
+      if (sweep.size > FLASH_MAX) sweep = new Set()
+
+      for (const path of liveFresh) if (!sweep.has(path)) state.fresh.delete(path)
+      for (const path of sweep) state.fresh.add(path)
+      liveFresh = sweep
+    } else {
+      pendingFresh = new Set()
+      // The transfer's leftovers are the flash timer's to clear, not this call's.
+      liveFresh = new Set()
+      sweep = paths.size > FLASH_MAX ? new Set() : paths
+      for (const path of sweep) state.fresh.add(path)
+    }
+
+    if (sweep.size === 0) return
 
     if (flashTimer !== null) window.clearTimeout(flashTimer)
     flashTimer = window.setTimeout(() => {
@@ -923,9 +963,9 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
 
   /**
    * Mark the start of a change this pane is making because the user asked for
-   * it — a transfer, or a command typed at the prompt — so its result is not
-   * swept. Nested calls are counted, so overlapping operations are all covered;
-   * the matching `endSelfChange` starts the quiet tail.
+   * it — a transfer, or a command typed at the prompt — so its finished result is
+   * not swept (the file it is still writing is). Nested calls are counted, so
+   * overlapping operations are all covered.
    */
   function beginSelfChange(): void {
     selfChanges += 1
@@ -934,7 +974,15 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
   function endSelfChange(): void {
     if (selfChanges === 0) return
     selfChanges -= 1
-    if (selfChanges === 0) quietUntil = Date.now() + QUIET_TAIL_MS
+    if (selfChanges === 0) {
+      quietUntil = Date.now() + QUIET_TAIL_MS
+      pendingFresh = new Set()
+      // The operation is over, so nothing it was writing is still changing: take
+      // the last file out of the sweep rather than let it pulse on after the
+      // transfer has left the dialog.
+      for (const path of liveFresh) state.fresh.delete(path)
+      liveFresh = new Set()
+    }
   }
 
   function unwatchCurrent(): void {
@@ -1843,24 +1891,31 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
   /**
    * Copy the pane's targets into `destination`. A relative destination is
    * resolved against this pane's directory, so `sub` means `<pane>/sub` rather
-   * than a path next to the app. Best-effort like delete: entries that collide
-   * or cannot be read are reported without aborting the rest, and the source
-   * listing is re-read in place. Marks for entries that copied are dropped, as
-   * a move's are when it takes them away. Returns the resolved destination
-   * directory so the caller can refresh a pane showing it, or null on failure.
+   * than a path next to the app. `transferId` names the transfer main reports
+   * progress under and a cancel can reach; the dialog that started it supplies
+   * one. Best-effort like delete: entries that collide or cannot be read are
+   * reported without aborting the rest, and the source listing is re-read in
+   * place. Marks for entries that copied are dropped, as a move's are when it
+   * takes them away. Returns the resolved destination directory so the caller
+   * can refresh a pane showing it, or null on failure.
    */
-  async function copyEntries(destination: string): Promise<string | null> {
+  async function copyEntries(destination: string, transferId = ''): Promise<string | null> {
     if (refuseInArchive()) return null
     const targets = selectionTargets()
     if (targets.length === 0 || !destination) return null
 
     const result = await api.fs.copy(
+      transferId,
       targets.map((target) => target.path),
       destination,
       state.path
     )
     if (!result.ok) {
-      state.error = `${result.error.code}: ${result.error.message}`
+      // A transfer the user stopped is not an error to announce: the dialog that
+      // asked for the stop says so itself.
+      if (result.error.code !== 'EABORTED') {
+        state.error = `${result.error.code}: ${result.error.message}`
+      }
       return null
     }
 
@@ -1892,18 +1947,21 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
    * place. Returns the resolved destination so the caller can refresh a pane
    * showing it, or null on failure.
    */
-  async function moveEntries(destination: string): Promise<string | null> {
+  async function moveEntries(destination: string, transferId = ''): Promise<string | null> {
     if (refuseInArchive()) return null
     const targets = selectionTargets()
     if (targets.length === 0 || !destination) return null
 
     const result = await api.fs.move(
+      transferId,
       targets.map((target) => target.path),
       destination,
       state.path
     )
     if (!result.ok) {
-      state.error = `${result.error.code}: ${result.error.message}`
+      if (result.error.code !== 'EABORTED') {
+        state.error = `${result.error.code}: ${result.error.message}`
+      }
       return null
     }
 

@@ -24,7 +24,8 @@ import type {
   PdfInfo,
   PdfPageText,
   PdfViewState,
-  Result
+  Result,
+  TransferProgress
 } from '@shared/types'
 
 const api: McApi = {
@@ -73,17 +74,25 @@ const api: McApi = {
     mkdir: (dir: string, name: string): Promise<Result<string>> =>
       ipcRenderer.invoke('fs:mkdir', dir, name),
     copy: (
+      id: string,
       sources: string[],
       destination: string,
       baseDir: string
     ): Promise<Result<CopyOutcome>> =>
-      ipcRenderer.invoke('fs:copy', sources, destination, baseDir),
+      ipcRenderer.invoke('fs:copy', id, sources, destination, baseDir),
     move: (
+      id: string,
       sources: string[],
       destination: string,
       baseDir: string
     ): Promise<Result<MoveOutcome>> =>
-      ipcRenderer.invoke('fs:move', sources, destination, baseDir),
+      ipcRenderer.invoke('fs:move', id, sources, destination, baseDir),
+    cancelTransfer: (id: string) => ipcRenderer.send('fs:transfer-cancel', id),
+    onTransferProgress: (handler: (event: TransferProgress) => void) => {
+      const listener = (_event: IpcRendererEvent, payload: TransferProgress) => handler(payload)
+      ipcRenderer.on('fs:transfer-progress', listener)
+      return () => ipcRenderer.off('fs:transfer-progress', listener)
+    },
     remove: (targets: string[]): Promise<Result<DeleteOutcome>> =>
       ipcRenderer.invoke('fs:delete', targets),
     hideAdd: (dir: string, name: string): Promise<Result<string>> =>

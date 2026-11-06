@@ -24,7 +24,8 @@ import type {
   PdfInfo,
   PdfPageText,
   PdfViewState,
-  Result
+  Result,
+  TransferProgress
 } from './types'
 
 export interface McFsApi {
@@ -169,8 +170,29 @@ export interface McFsApi {
    * was made.
    */
   mkdir(dir: string, name: string): Promise<Result<string>>
-  copy(sources: string[], destination: string, baseDir: string): Promise<Result<CopyOutcome>>
-  move(sources: string[], destination: string, baseDir: string): Promise<Result<MoveOutcome>>
+  /**
+   * Copy `sources` into `destination`. A relative destination resolves against
+   * `baseDir`, the pane the gesture was made in. `id` names the transfer, so the
+   * progress `onTransferProgress` reports and a `cancelTransfer` can be routed to
+   * it; an empty id copies with neither. Best-effort like delete: entries that
+   * collide or cannot be read are reported without aborting the rest.
+   */
+  copy(id: string, sources: string[], destination: string, baseDir: string): Promise<Result<CopyOutcome>>
+  /** Move `sources` into `destination`, mirroring `copy` and sharing its `id`. */
+  move(id: string, sources: string[], destination: string, baseDir: string): Promise<Result<MoveOutcome>>
+  /**
+   * Ask the transfer named `id` to stop. A copy gives up at its next chunk and
+   * takes back the entry it was half through; already-copied entries stay. A
+   * no-op for an id that is not running, or on a remote target, whose relay
+   * cannot be interrupted mid-request.
+   */
+  cancelTransfer(id: string): void
+  /**
+   * The byte progress of transfers this window is running, each keyed by the id
+   * its `copy`/`move` was called with. A remote relay answers a copy in one
+   * piece, so it reports none.
+   */
+  onTransferProgress(handler: (event: TransferProgress) => void): () => void
   remove(targets: string[]): Promise<Result<DeleteOutcome>>
   /**
    * Append an entry's name to a directory's `.mchide` file — the pane menu's way

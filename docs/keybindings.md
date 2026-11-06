@@ -219,6 +219,23 @@ row just before the one that went (the `..` row when that was the first entry). 
 file removed from under the cursor some other way — another program, a command at
 the prompt, the other pane — lands it on the closest row before it all the same.
 
+`F5`/`F6` do not dismiss their dialog on confirm: it stays up as the transfer's
+progress, drawing the two bars an orthodox copy dialog draws — a `File` bar for
+the file now being written and a `Total` bar for the whole job, each with its own
+percentage and the whole job's file count and bytes beneath (mc and Double
+Commander draw the same pair). `Escape` — or the `Background` button, whose chip
+names the key — parks it in the title bar as a pill beside the window buttons,
+where the transfer keeps running; clicking the pill brings the dialog back. On a
+transfer that has already finished, `Escape` simply dismisses it. Cancelling is
+the destructive half, so it takes a deliberate chord rather than the key a reflex
+reaches for: `Ctrl+X`, the `Cancel` button's keyboard half, which also takes back
+the entry the copy was half through. `Escape` never *cancels* a copy, so a stray
+key cannot throw away a long one. `Ctrl+B` jumps the keyboard to the parked pills:
+the first takes focus, `←`/`→` (and `↑`/`↓`, `Home`/`End`) move between them, and
+`Enter` restores the focused one exactly as clicking it does, with `Escape` coming
+back to the panes — a real terminal keeps its own `Ctrl+B`, readline's
+backward-char, as it keeps `Ctrl+R` and `Ctrl+G`.
+
 `Escape` stops the size walks: a folder walk is the only thing still working in
 the background, so it is taken back before the pane's notice is dismissed.
 

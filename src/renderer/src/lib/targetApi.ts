@@ -157,10 +157,17 @@ function remoteFs(target: Target): McFsApi {
     rename: async (source, next) =>
       toResult<string>(await request(id, 'fs:rename', { source, target: next })),
     mkdir: async (dir, name) => toResult<string>(await request(id, 'fs:mkdir', { dir, name })),
-    copy: async (sources, destination, baseDir) =>
+    copy: async (_id, sources, destination, baseDir) =>
       toResult<CopyOutcome>(await request(id, 'fs:copy', { sources, destination, baseDir })),
-    move: async (sources, destination, baseDir) =>
+    move: async (_id, sources, destination, baseDir) =>
       toResult<MoveOutcome>(await request(id, 'fs:move', { sources, destination, baseDir })),
+    cancelTransfer: () => {
+      // A relay copy is one request; there is no in-flight copy to interrupt
+      // from here. The dialog's own stop still takes the transfer off screen.
+    },
+    onTransferProgress: () => () => {
+      // The relay answers a copy in one piece rather than streaming it.
+    },
     remove: async (targets) => toResult<DeleteOutcome>(await request(id, 'fs:delete', { targets })),
     hideAdd: async (dir, name) => toResult<string>(await request(id, 'fs:hideAdd', { dir, name })),
     hideRemove: async (dir, name) =>

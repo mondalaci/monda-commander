@@ -84,6 +84,9 @@ src/shared/quickCd.ts    the quick cd key and the two tooltips the title-bar
                          button is spoken with
 src/shared/git.ts        the commit key (Ctrl+G) and the git chip's tooltip,
                          spelled once so the key and the pointer door agree
+src/shared/transfer.ts   the transfer background (Escape), cancel (Ctrl+X) and
+                         pills (Ctrl+B) keys and their labels, spelled once so
+                         the keys and the buttons agree
 src/shared/archive.ts    the archive location model: the NUL-joined
                          `<archive>\0<inner>` string, its split/normalize/display
                          helpers, and the enterable-extension list
@@ -110,6 +113,8 @@ src/renderer/src/components/ModelWall.vue     the thumbnail wall's 3D tiles: one
 src/renderer/src/components/FileViewer.vue     Monaco overlay: read-only (F3) or edit (F4)
 src/renderer/src/components/PaneContextMenu.vue  a row's menu
 src/renderer/src/components/HoldRing.vue       the ring on a held right press
+src/renderer/src/components/TransferDialog.vue  a running transfer's progress dialog
+src/renderer/src/components/TransferPill.vue    a backgrounded transfer, in the title bar
 src/renderer/src/components/ColumnAddButton.vue    the column editor's gap "+"
 src/renderer/src/components/ColumnDropMarker.vue  the arrow + line insertion point
 src/renderer/src/composables/useWorkspace.ts   one tab: its two panes, its shell, cwd sync
@@ -118,6 +123,7 @@ src/renderer/src/composables/useShell.ts       createShell(id): one shell sessio
 src/renderer/src/composables/useDirectory.ts   per-pane navigation state + actions
 src/renderer/src/composables/useHideMode.ts    the hide mode's on/off state
 src/renderer/src/composables/useQuickCd.ts     the app-wide quick cd directory list
+src/renderer/src/composables/useTransfers.ts    the window's running transfers and their progress
 src/renderer/src/composables/usePdfView.ts      the app-wide PDF fit + magnification
 src/renderer/src/lib/format.ts        size/date/permission formatting
 src/renderer/src/lib/executable.ts    runnable/green rule and `shouldExecute`
@@ -158,8 +164,8 @@ src/renderer/src/lib/paneMenu.ts      the context menu's model
 ```
 
 Styles are referenced inline below: `styles/mark.css`, `hold.css`, `notice.css`,
-`flash.css`, `hide.css`, `osd.css`, `swap.css`, `view.css`, `viewer.css`,
-`diff.css`, `columns.css`, all under `src/renderer/src/`.
+`flash.css`, `hide.css`, `osd.css`, `swap.css`, `transfer.css`, `view.css`,
+`viewer.css`, `diff.css`, `columns.css`, all under `src/renderer/src/`.
 
 ## Gotchas
 
@@ -239,10 +245,18 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
 - **A refresh highlights what changed.** `fresh` → `flash-row` → `flash-sweep`
   (`styles/flash.css`); the clear timer is re-armed by every refresh; a batch over
   150 entries is skipped.
-- **Only changes made behind the app's back sweep.** `beginSelfChange` /
-  `endSelfChange` in `useDirectory` silence `markFresh` for the operation plus a
-  1000ms tail. `App.vue` wraps the F5/F6 transfer on both panes and mutes the
-  panes at the shell's directory from a submitted command until it settles.
+- **Only changes made behind the app's back sweep — and the single file an
+  operation is still writing.** `beginSelfChange` / `endSelfChange` in
+  `useDirectory` mark an operation the user asked for: `markFresh` sweeps nothing
+  on a path's *first* sighting while it runs (a copied small file, or the folder
+  `mkdir` just made), and sweeps a path only when it changed on the *previous*
+  re-list too — a file still being written. The swept set is *replaced* on each
+  re-list (`pendingFresh` holds the last diff, `liveFresh` what is sweeping), so a
+  long copy lights the one file it is on, not every file it has already finished;
+  `endSelfChange` then drops the last file and starts a 1000ms tail that covers the
+  watcher's delayed report. `App.vue` wraps the F5/F6 transfer on both panes and
+  mutes the panes at the shell's directory from a submitted command until it
+  settles.
 - **The columns sort, and can be dragged into another order.** A header click
   cycles its column: ascending if it was not the sort, otherwise ascending ⇄
   descending; the sorted header draws its direction (↓ ascending, ↑ descending)
@@ -593,6 +607,58 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   is deliberately *not* recursive, so an existing name is an `EEXIST` the pane
   reports rather than a silent success; the new folder does not sweep, because
   every pane showing the directory is told the change is the app's own.
+
+### Transfers: a progress dialog, and a pill when backgrounded
+
+- **A copy or move keeps its dialog, showing how far it has got, rather than
+  closing at once.** `F5`/`F6` stage `ConfirmTransfer` as before; confirming one
+  starts a *task* in `useTransfers` and swaps the form for `TransferDialog`, the
+  same transfer continued. `fs:copy` reports as `TransferProgress` against the id
+  the task carries (throttled in main to `TRANSFER_REPORT_MS`): the bytes written,
+  the files finished out of the whole (`measureCopy` counts them), and the file
+  now in flight — named by its path under the entry being copied (`copyCurrent`),
+  so a folder shows `photos/img_0421.jpg`, not only `photos`. The dialog draws the
+  **two bars an orthodox copy dialog draws** (mc, Double Commander): a `File` bar
+  for the file now being written (`fileCopied`/`fileTotal`, drawn only when there
+  is more than one file to tell apart) and a `Total` bar for the whole job
+  (`copied`/`total`), each with its own percent, and below them the whole job as
+  `12 of 340 files · 1.2 GB of 4.0 GB`. Either bar slides while its size is still
+  unknown (`0`).
+- **`fs.cp` cannot report progress, so main copies the tree itself**
+  (`copyTree`/`measureCopy` in `ipc/fs.ts`): a link is recreated, a file streamed
+  (byte-counted from its `data`), a folder made, filled, and only then given its
+  mode. `fs:copy` weighs the sources first so the bar is determinate, and a
+  cross-device `fs:move` falls back to the same copy and reports the same way. A
+  relay answers a copy in one piece, so a remote transfer is indeterminate and has
+  no Cancel (`TransferTask.cancellable`).
+- **Stopping takes the half-written entry back, and says so at once.**
+  `fs:transfer-cancel` flags the task and aborts its file's stream
+  (`AbortController`); main removes the entry it was part way through and answers
+  `EABORTED`, which the pane does *not* paint as a notice — the dialog that asked
+  to stop says so itself. The dialog (`stopRequested`) shows `Cancelling…` and
+  disables the button the moment the key or click lands, not when main answers:
+  the abort is a round trip, and a dialog that sat still until it returned would
+  read as a key that did not register. Entries already copied stay.
+- **`Background` parks the dialog as a pill beside the window buttons**, and so
+  does `Escape` (`TRANSFER_BACKGROUND_KEY`, `shared/transfer.ts` — the keys are
+  spelled once and shown as chips on the buttons): `Escape` does *not* cancel, so a
+  stray key never throws away a long copy, and a *finished* dialog it simply
+  dismisses. The destructive half is deliberate: `Ctrl+X`
+  (`TRANSFER_CANCEL_KEY`) is the `Cancel` button's keyboard half and takes back the
+  half-written entry. The dialog's card and the pill carry the same
+  `view-transition-name`, and the swap runs in `withViewTransition`, so the browser
+  flies the one box to the other — the `TitleBar`'s `tasks` slot is where the pill
+  lands. A pill is only an icon and a percent, so its tooltip carries what it
+  really is (`transferTooltip`): the phrase, `From:` the entry's own path for a
+  single one (the pane it was taken from when there are many), and `To:` the
+  resolved destination once main has answered (the named one before that).
+  Clicking a pill restores the dialog the same way — and so does the keyboard:
+  `Ctrl+B` (`TRANSFER_PILLS_KEY`) jumps to the pills (the first takes focus), the
+  arrows move between them and `Enter` restores the focused one, with `Escape`
+  coming back to the panes. `done`/`cancelled` linger (`TRANSFER_LINGER_MS`) then
+  remove themselves; an `error` waits for Close.
+- **A transfer is the window's, not a pane's.** The task store is app-level, so a
+  tab switch or a navigation in either pane does not take the progress with it.
 
 ### Archives
 

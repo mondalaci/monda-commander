@@ -206,19 +206,31 @@ active query cannot strand the cursor on a row it is hiding. `focusPath` still
 wins where the caller knows where the entry went — an in-place rename, a
 same-directory move, a fresh folder.
 
-### Only changes made behind the app's back sweep
+### Only changes made behind the app's back sweep — and the file it is still writing
 
-A copy, move or `mkdir` the user asked for must not animate its own result, and
-the watcher reports those changes exactly like an external writer would, so the
-app marks the panes involved as making the change themselves: `beginSelfChange` /
-`endSelfChange` in `useDirectory` silence `markFresh` while the operation runs and
-for a 1000ms tail afterwards (enough to cover the watcher's debounce), so neither
-the operation's own re-list nor the watcher's delayed notification flashes.
-`App.vue` wraps the F5/F6 transfer on both panes (the target always gains entries,
-the source too when the destination is a relative path), and mutes the panes at
-the shell's directory from a submitted command until it finishes and settles. A
-download in another directory, or one that starts after the tail, still sweeps; so
-does `Ctrl+R`.
+A copy, move or `mkdir` the user asked for must not animate its own *result*: the
+watcher reports those changes exactly like an external writer would, so the app
+marks the panes involved as making the change themselves (`beginSelfChange` /
+`endSelfChange` in `useDirectory`). While the operation runs, `markFresh` still
+records what changed but sweeps nothing on a path's *first* sighting during it — a
+copied small file, or the folder `mkdir` just made, stays quiet — and
+`endSelfChange` starts a 1000ms tail (enough to cover the watcher's debounce) so
+neither the operation's own re-list nor the watcher's delayed notification for it
+ever flashes. What it *does* sweep is a path that changed on the *previous*
+re-list too: a large file being copied keeps growing across the watcher's
+re-lists, so its row sweeps for as long as the copy does. Only that second
+sighting earns a sweep, so a copy of many small files — each seen once, whole —
+flashes nothing; and because the swept set is *replaced* on every re-list rather
+than added to (`pendingFresh` is the last diff, `liveFresh` what is sweeping), a
+long copy lights the one file it is writing now rather than every file it has
+already finished — the batch would otherwise pulse together, each row's 1.6s
+window re-armed by the next file's. `endSelfChange` drops the last file and starts
+the tail. `App.vue` wraps the F5/F6 transfer on both panes (the target always
+gains entries, the source too when the destination is a relative path), and mutes
+the panes at the shell's directory from a submitted command until it finishes and
+settles — a command that writes a file slowly (a download it started) sweeps that
+file the same way. A download in another directory, or one that starts after the
+tail, still sweeps; so does `Ctrl+R`.
 
 ### The row list must contain only entries, and the notice travels
 
@@ -910,6 +922,85 @@ the new folder, exactly as an in-place rename lands on the renamed entry, and
 every pane showing that directory is muted around the operation (`beginSelfChange`)
 so the folder it just made does not sweep as though a program had written it —
 the same reason `mkdir foo` at the prompt is muted.
+
+### A transfer shows its progress, and can be parked in the title bar
+
+The classic transfer dialog closed the moment it was confirmed, which left a large
+copy running with nothing on screen to say so. So the confirmation is not the end
+of the dialog: confirming a copy or a move starts a *task* (`useTransfers`) and
+swaps the form for the same dialog showing how far the transfer has got. The task
+is the app's, not the pane's or the tab's, because a copy of a disk image runs for
+minutes and must survive navigating both panes away, switching tabs, or being
+parked.
+
+**The bytes come from main, because `fs.cp` cannot report them.** `fs:copy` used
+to hand the whole tree to `fs.cp`; it now walks it itself (`copyTree`), recreating
+a link, streaming a file and counting the bytes off its `data`, and making a
+folder, filling it and only then giving it the source's mode (so a read-only
+folder does not refuse its own contents). It weighs the sources first
+(`measureCopy`, which counts the regular files as well as their bytes) so the bar
+is determinate from the first chunk rather than a guess, reporting as
+`fs:transfer-progress` against the id the task carries — the same id a stop is
+routed by. A report says the bytes written, the files finished out of the whole,
+and the file in flight: that last is named by its path under the entry being
+copied (`copyCurrent`), so a folder shows `photos/img_0421.jpg` rather than only
+`photos`. The reports are throttled (`TRANSFER_REPORT_MS`), as a size walk's are,
+because chunks arrive far faster than the dialog can draw them. A cross-device
+move (`EXDEV`) falls back to the same copy and so reports the same
+way; a move within one filesystem is a rename and has nothing to report. A relay
+answers its copy in one piece, so a remote transfer is indeterminate and offers no
+Cancel at all (`TransferTask.cancellable`) rather than a button that would do
+nothing.
+
+**It draws two bars, as an orthodox copy dialog does.** Midnight Commander's file
+operations dialog "uses up to two progress bars", and Double Commander documents
+"two progress bars (for the currently processed file and the general)" — the
+current file's, which fills while the whole job barely moves, sitting above the
+whole job's. So the dialog carries the same pair: a `File` bar from `fileCopied`/
+`fileTotal` and a `Total` bar from `copied`/`total`, each with its own percentage,
+and beneath them the whole job as `12 of 340 files · 1.2 GB of 4.0 GB` — the count
+being what makes a transfer of many small files read as progress rather than as
+whatever single file is in flight. The `File` row is drawn only when there is more
+than one file to tell apart; for a lone file the two bars would be the same bar
+twice. Either bar slides while its own size is still unknown.
+
+**A stop takes the half-written entry back, and says so at once.**
+`fs:transfer-cancel` sets the task's cancelled flag and aborts the file's stream
+(`AbortController`); main removes the entry it was part way through, so a cancel
+leaves no partial copy the next attempt would refuse as existing, and answers
+`EABORTED`. The pane does not paint that as its own notice — a stop is not an
+error, and the dialog that asked for it says so itself. The dialog shows
+`Cancelling…` and disables the `Cancel` button the moment the stop is asked for
+(`stopRequested`, set synchronously), rather than waiting for main's answer: the
+abort is a round trip through the copy and, for a large partial entry, a recursive
+remove, and a dialog that sat still until then would read as a key that had not
+registered. Entries already copied stay.
+
+**Parking is a morph, and the buttons have keys.** `Background` — and `Escape`,
+the key spelled once in `shared/transfer.ts` and shown as a chip on the button, so
+the key and the button cannot disagree — swaps the dialog for a pill beside the
+window buttons. `Escape` parks rather than cancels, so a stray key never throws
+away a long copy; a transfer that has already finished it simply dismisses, as one
+key dismisses any other dialog. The destructive half is deliberate: `Ctrl+X`
+(`TRANSFER_CANCEL_KEY`, the `Cancel` button's keyboard half) is what takes the
+half-written entry back. The dialog's card and the pill carry the same
+`view-transition-name`, and the swap runs inside `withViewTransition`, so the
+browser flies the one box to the other while the rest of the window holds still;
+the pill lands in the `TitleBar`'s `tasks` slot, leftward of the window buttons.
+A pill is only an icon and a percent, so its tooltip is where the transfer's real
+subject is readable (`transferTooltip`): the phrase, then `From:` and `To:` — the
+entry's own path for a single one and the pane it was taken from when there are
+many, and the resolved destination once main has answered (the named one until
+then). Clicking a pill restores the dialog the same way — and so does the
+keyboard, because a pill nobody can reach without a pointer is a pill half the app
+has lost: `Ctrl+B` (`TRANSFER_PILLS_KEY`) jumps to them (the first takes focus),
+the arrows move between them and `Enter` restores the focused one, exactly as a
+click would, with `Escape` coming back to the panes. It is claimed with the panes'
+keys rather than above an expanded terminal, so a real shell keeps its `Ctrl+B`
+(readline's backward-char). A transfer that finishes shows its outcome for a moment
+(`TRANSFER_LINGER_MS`) and then removes itself,
+whether it was in front or parked; one that *failed* waits, because a failure is
+the one outcome the user has to answer.
 
 ### `Space` on a folder walks it, and the row says how much is in there
 

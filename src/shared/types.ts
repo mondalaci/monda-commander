@@ -333,6 +333,27 @@ export interface CopyOutcome {
   destination: string
 }
 
+/**
+ * One report of a transfer's byte progress. Sent while `fs:copy` — or the copy
+ * a cross-device `fs:move` falls back to — runs, so the dialog and the title-bar
+ * pill can draw how far it has got. `id` names the transfer the caller started;
+ * `total` is 0 until the source has been measured, which the bar reads as
+ * "unknown" and slides for.
+ */
+export interface TransferProgress {
+  id: string
+  copied: number
+  total: number
+  /** The file now being written, and its own bytes done and size — the "File"
+   * bar an orthodox copy dialog draws beside the whole job's. */
+  current: string | null
+  fileCopied: number
+  fileTotal: number
+  /** Regular files written so far, and how many the transfer holds. */
+  files: number
+  totalFiles: number
+}
+
 export interface MoveFailure {
   path: string
   error: FsError

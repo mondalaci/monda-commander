@@ -2,9 +2,9 @@
  * Transient highlight for entries a directory refresh found new or changed
  * (see useDirectory's `fresh` map). A row carries `flash-row` while it is
  * "hot", and the band keeps travelling for as long as it stays hot: a file
- * written once is hot for exactly one cycle, while a file being streamed to —
- * a download — keeps re-arming that window and so keeps sweeping until the
- * writes stop.
+ * written once is hot for exactly one cycle, while a file being written over
+ * time — a download, or the large file a copy is still streaming — keeps
+ * re-arming that window and so keeps sweeping until the writes stop.
  *
  * The gradient holds two peaks (a period of 50% of the image) and never reaches
  * zero alpha, and it scrolls by exactly one period per cycle. That is what makes
