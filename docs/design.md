@@ -947,9 +947,12 @@ a stop is routed by. A report says the bytes written, the files finished out of 
 whole, and the entry in flight: that last is named by its path under the one being
 handled (`copyCurrent`), so a folder shows `photos/img_0421.jpg` rather than only
 `photos`. The reports are throttled (`TRANSFER_REPORT_MS`), as a size walk's are,
-because chunks arrive far faster than the dialog can draw them. A cross-device
-move (`EXDEV`) falls back to the same copy and so reports the same
-way; a move within one filesystem is a rename and has nothing to report. A relay
+because chunks arrive far faster than the dialog can draw them. A move is two
+passes: every rename is tried first and the entries a rename cannot cross a
+filesystem for (`EXDEV`) are collected and weighed as a group before any of them
+is copied — so the bar is determinate from the first file and the `File` bar works,
+exactly as a copy's, rather than the total being discovered a file at a time. A
+move within one filesystem is only renames and has nothing to report. A relay
 answers its transfer in one piece, so a remote one is indeterminate and offers no
 Cancel at all (`TransferTask.cancellable`) rather than a button that would do
 nothing.

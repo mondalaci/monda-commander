@@ -1601,6 +1601,12 @@ export function registerFsHandlers(): void {
       try {
         const moved: string[] = []
         const failed: MoveFailure[] = []
+        // A rename that cannot cross filesystems (EXDEV) becomes a copy. Those are
+        // collected here and copied after the renames, as one group, so the whole
+        // cross-device part can be weighed up front: the bar is determinate from
+        // the first file and the `File` bar works, exactly as a copy's does. A
+        // same-filesystem move is a rename and weighs nothing.
+        const toCopy: Array<{ from: string; to: string }> = []
 
         for (const source of valid) {
           if (control.cancelled) break
@@ -1650,31 +1656,46 @@ export function registerFsHandlers(): void {
 
             try {
               await fs.rename(from, to)
+              moved.push(to)
             } catch (error) {
-              // rename cannot cross filesystems (EXDEV); fall back to copy and
-              // only remove the source once the copy has finished. The copy is
-              // the same streaming one `fs:copy` runs, so the dialog can report
-              // the bytes of a cross-device move too.
               if ((error as NodeJS.ErrnoException).code === 'EXDEV') {
-                const measured = await measureCopy(from, control)
-                totalBytes += measured.bytes
-                totalFiles += measured.files
-                sourceRoot = from
-                report(true)
-                await copyTree(from, to, hooks, control)
-                await fs.rm(from, { recursive: true, force: false })
+                toCopy.push({ from, to })
               } else {
                 throw error
               }
             }
-
-            moved.push(to)
           } catch (error) {
-            if (control.cancelled || (error as NodeJS.ErrnoException).code === 'EABORTED') {
-              await fs.rm(to, { recursive: true, force: true }).catch(() => {})
-              break
-            }
             failed.push({ path: from, error: toFsError(error) })
+          }
+        }
+
+        // The cross-device part: weigh it, then copy each entry. It is the same
+        // streaming copy `fs:copy` runs, so it reports the same bytes, files and
+        // file in flight.
+        if (toCopy.length > 0) {
+          for (const { from } of toCopy) {
+            if (control.cancelled) break
+            const measured = await measureCopy(from, control)
+            totalBytes += measured.bytes
+            totalFiles += measured.files
+          }
+          report(true)
+
+          for (const { from, to } of toCopy) {
+            if (control.cancelled) break
+            control.current = path.basename(from)
+            sourceRoot = from
+            try {
+              await copyTree(from, to, hooks, control)
+              await fs.rm(from, { recursive: true, force: false })
+              moved.push(to)
+            } catch (error) {
+              if (control.cancelled || (error as NodeJS.ErrnoException).code === 'EABORTED') {
+                await fs.rm(to, { recursive: true, force: true }).catch(() => {})
+                break
+              }
+              failed.push({ path: from, error: toFsError(error) })
+            }
           }
         }
 

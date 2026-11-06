@@ -631,9 +631,12 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   streams a file (byte-counted from its `data`), and makes a folder, fills it and
   only then gives it its mode; a delete empties a folder child by child and removes
   it, unlinking a file at once. `fs:copy`/`fs:delete` weigh the sources first so
-  the bar is determinate, and a cross-device `fs:move` falls back to the same copy
-  and reports the same way. A relay answers a transfer in one piece, so a remote
-  one is indeterminate and has no Cancel (`TransferTask.cancellable`).
+  the bar is determinate, and a cross-device `fs:move` collects the entries a
+  rename cannot cross a filesystem for (`EXDEV`), weighs them as a group, and only
+  then copies them — so the bar is determinate from the first file and the `File`
+  bar works, exactly as a copy's. A move within one filesystem is only renames and
+  has nothing to report. A relay answers a transfer in one piece, so a remote one
+  is indeterminate and has no Cancel (`TransferTask.cancellable`).
 - **Stopping takes the half-written entry back — or, for a delete, stops where it
   is — and says so at once.** `fs:transfer-cancel` flags the task and aborts its
   file's stream (`AbortController`); main removes the entry a copy was part way
