@@ -1181,6 +1181,60 @@ tells every pane watching that work tree. That, plus a short freshness window an
 in-flight sharing so two panes refreshing together cost one status read, is what
 keeps the two panes honest about each other's edits.
 
+### Committing and pushing is a chord, not a function key
+
+The app reads git state everywhere but wrote none of it until the commit gesture:
+`Ctrl+G`, or a click on the pane title bar's git chip, opens a dialog that stages
+the whole work tree, commits it, and pushes it when the branch has an upstream. The
+key is a chord rather than an F-key on purpose. F5–F8 are the orthodox file-operation
+canon (copy, move, rename, mkdir, delete) and **F9 is the menu bar** in every file
+manager of that family — Norton Commander, Midnight Commander, FAR, Double Commander
+all put `PullDn` there and `Quit` on F10. Committing a repository is a *command*, not
+a file operation, so the orthodox home for it is a menu; until this app has one, the
+gesture takes a chord of its own (`Ctrl+G`, claimed below the expanded-terminal check
+like `Ctrl+R`, so a real terminal keeps readline's own `Ctrl+G`). F9 stays clean for
+the menu bar a later pass can build.
+
+The write is deliberately all-or-nothing. The pane's *marks* are the transfer
+gesture's — they answer "which files am I about to copy" — and reusing them as a
+staging set would give one gesture two meanings; so the dialog commits the whole work
+tree (`git add -A` plus one commit) and says so, listing every changed path it saw.
+The list is built from the pane's own `GitView`, through `lib/commit.ts`, so it and
+the row dots cannot disagree about what changed — and it draws on both halves of the
+view, `files` *and* `untracked`, because git reports a wholly untracked directory as
+one `/`-suffixed record that the listing's roll-up keeps out of `files`; a tree
+whose only change is a new folder still counts as a change in the chip, so the list
+has to name that folder or the dialog would call it clean. The message field itself
+starts with a derived default (`defaultCommitMessage`) built from the *paths*, never
+the calendar — a lone added entry is named, a directory as its contents glob
+(`2026-11/* added`, since a bare `2026-11 added` could as well be a file) and a file
+as itself, while anything mixed is counted by kind with zero kinds left out and led
+by the folder all the changes share when there is one (`2026-11/ 3 added, 1 modified`)
+— and it opens *selected*, so typing replaces the guess whole while a click or an
+arrow keeps it to edit. Enter starts a line and Shift+Enter commits — a plain
+textarea's keys with the commit on the chord, since composing is the usual intent
+and firing is deliberate; a bare Enter while the whole prefilled message is still
+selected appends *after* it rather than wiping it, and Enter on a focused button is
+left to that button, so Enter on Cancel still cancels. The message travels as a
+single `git commit -m` argument rather than on stdin: a multi-line string is one
+argv element, git takes its first line as the subject, and nothing has to be quoted.
+
+It is a *local* write. The relay carries `git:status` and `git:fileBase` so a remote
+repository is browsed and marked like a local one, but it has no commit or push op,
+so `remoteGit` answers `ENOTSUP` and the gesture is offered only for a local pane —
+the notice says where a remote repository is actually written to (the terminal the
+relay runs). The push runs with `GIT_TERMINAL_PROMPT=0`, the same setting a status
+read uses, so a credential that is not already cached (a credential helper, a loaded
+key) fails fast with git's own message rather than hanging on a prompt nobody can
+answer; that message lands in the dialog, and a push that fails *after* a commit
+succeeded lands in the pane's notice, since the commit is done and only the push is
+left to retry. A commit that failed keeps the dialog open, its message intact.
+
+Both writes tell the panes the same way a directory write does (`noteRepoWritten`:
+drop the cached status, notify every watcher), so the chip's count and drift and the
+rows' dots refresh without the renderer doing anything — though the `.git` watcher
+would usually have caught it anyway.
+
 ## The preview footer
 
 ### Images

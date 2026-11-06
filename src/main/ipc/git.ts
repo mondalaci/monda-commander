@@ -4,7 +4,15 @@ import { lstat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import { ipcMain, webContents } from 'electron'
-import type { FsError, GitChangeEvent, GitFileBase, GitStatus, Result } from '@shared/types'
+import type {
+  FsError,
+  GitChangeEvent,
+  GitCommitResult,
+  GitFileBase,
+  GitPushResult,
+  GitStatus,
+  Result
+} from '@shared/types'
 import { parseStatus } from '../gitStatus'
 
 /**
@@ -24,6 +32,19 @@ const GIT = process.env['MC_GIT'] ?? 'git'
 
 /** How long a single git call may take before it is killed, in milliseconds. */
 const TIMEOUT_MS = 5000
+
+/**
+ * A commit runs the user's hooks and may rewrite a large index, so it is given
+ * room the status reads do not need.
+ */
+const COMMIT_TIMEOUT_MS = 30000
+
+/**
+ * A push is the one call that talks to a network. With `GIT_TERMINAL_PROMPT=0`
+ * it can never wait on a prompt, so the only thing this ceiling bounds is a
+ * genuinely slow transfer.
+ */
+const PUSH_TIMEOUT_MS = 120000
 
 /**
  * `execFile`'s default ceiling is 1 MiB, and a status read is exactly the call
@@ -89,9 +110,17 @@ const REPO_ARGS = [
 const run = promisify(execFile)
 
 async function git(args: string[]): Promise<string> {
+  return gitWith(args, TIMEOUT_MS)
+}
+
+/**
+ * The same call with an explicit ceiling, for the two that outlive a status
+ * read: a commit running the user's hooks, and a push crossing the network.
+ */
+async function gitWith(args: string[], timeoutMs: number): Promise<string> {
   const { stdout } = await run(GIT, args, {
     env: GIT_ENV,
-    timeout: TIMEOUT_MS,
+    timeout: timeoutMs,
     maxBuffer: MAX_BUFFER,
     windowsHide: true,
     encoding: 'utf8'
@@ -128,14 +157,20 @@ function noBaseline(): Result<GitFileBase> {
 }
 
 function toGitError(error: unknown): FsError {
-  const err = error as { code?: number | string; message?: string }
-  // `execFile` reports a non-zero exit as a numeric `code`, and git exits 128
-  // with "not a git repository" for the one failure that is not a failure.
-  if (err.code === 128) return { code: 'ENOTREPO', message: 'Not a git repository' }
+  const err = error as { code?: number | string; message?: string; stderr?: string; stdout?: string }
   if (typeof err.code === 'string') {
     return { code: err.code, message: err.message ?? 'git failed' }
   }
-  return { code: 'EGIT', message: err.message ?? 'git failed' }
+  // git prints its own diagnosis on stderr; the exec error's `message` repeats
+  // the whole command line, so the diagnosis is the useful half.
+  const detail = (err.stderr || err.stdout || err.message || '').toString().trim()
+  // `execFile` reports a non-zero exit as a numeric `code`, and git's 128 covers
+  // both "not a repository" and a failed push (no upstream, auth, a rejected
+  // refspec). Only the first is the one failure that is not a failure.
+  if (err.code === 128 && /not a git repository/i.test(detail)) {
+    return { code: 'ENOTREPO', message: 'Not a git repository' }
+  }
+  return { code: 'EGIT', message: detail || 'git failed' }
 }
 
 interface RepoInfo {
@@ -444,6 +479,67 @@ export function noteDirectoryChanged(dir: string): void {
   scheduleNotify(repo.root)
 }
 
+/**
+ * A write of our own to a repository. The status a moment ago is now wrong, so
+ * its cached answer goes and every pane watching the work tree is told — the
+ * same path a directory write takes, since a commit or a push is exactly that
+ * from a reader's point of view. The `.git` watcher would usually fire on its
+ * own (the index, HEAD and the refs all move), but telling the panes here means
+ * the answer does not wait on a debounce it did not need to earn.
+ */
+function noteRepoWritten(root: string): void {
+  statusCache.delete(root)
+  scheduleNotify(root)
+}
+
+/**
+ * Stage every change in the work tree and commit it, in one gesture. This is
+ * the commit dialog's exact promise — it says it commits everything — so it
+ * runs `add -A` rather than guessing which of git's two sides the user meant.
+ *
+ * The message is passed as a single `-m` argument rather than on stdin: a
+ * multi-line string is one argv element, git takes its first line as the
+ * subject and the rest as the body, and nothing has to be shell-quoted. The
+ * new commit's oid is read back rather than parsed out of the commit's own
+ * output, which is meant for a human.
+ */
+async function commitAll(root: string, message: string): Promise<Result<GitCommitResult>> {
+  if (!(await gitAvailable())) return notARepo<GitCommitResult>()
+
+  try {
+    await gitWith(['-C', root, 'add', '-A'], COMMIT_TIMEOUT_MS)
+    await gitWith(['-C', root, 'commit', '-m', message], COMMIT_TIMEOUT_MS)
+    const oid = (await gitWith(['-C', root, 'rev-parse', 'HEAD'], TIMEOUT_MS)).trim()
+    noteRepoWritten(root)
+    return { ok: true, data: { oid } }
+  } catch (error) {
+    return { ok: false, error: toGitError(error) }
+  }
+}
+
+/**
+ * Push the current branch to its upstream. No refspec is named: `git push` with
+ * none is exactly "the branch I am on goes where it already goes", which is the
+ * only thing the dialog offers. A branch with no upstream is the caller's to
+ * refuse, so the failure comes back as git's own words rather than a second
+ * guess at them. `GIT_TERMINAL_PROMPT=0` means a credential that is not already
+ * cached fails fast instead of hanging on a prompt nobody can answer.
+ */
+async function pushBranch(root: string): Promise<Result<GitPushResult>> {
+  if (!(await gitAvailable())) return notARepo<GitPushResult>()
+
+  try {
+    const branch = (
+      await gitWith(['-C', root, 'rev-parse', '--abbrev-ref', 'HEAD'], TIMEOUT_MS)
+    ).trim()
+    await gitWith(['-C', root, 'push'], PUSH_TIMEOUT_MS)
+    noteRepoWritten(root)
+    return { ok: true, data: { branch } }
+  } catch (error) {
+    return { ok: false, error: toGitError(error) }
+  }
+}
+
 export function registerGitHandlers(): void {
   ipcMain.handle('git:status', (_event, dir: string): Promise<Result<GitStatus>> => {
     if (typeof dir !== 'string' || dir.length === 0) return Promise.resolve(notARepo<GitStatus>())
@@ -478,6 +574,32 @@ export function registerGitHandlers(): void {
     if (!repo) return
     releaseRepoRef(repo.root, event.sender.id)
   })
+
+  // The two write paths. They take the work tree's root (`GitStatus.root`)
+  // rather than an arbitrary directory, because that is what the pane's own git
+  // view carries and what every cache and watcher here is keyed by.
+  ipcMain.handle(
+    'git:commit',
+    (_event, root: string, message: string): Promise<Result<GitCommitResult>> => {
+      if (typeof root !== 'string' || root.length === 0) return Promise.resolve(notARepo<GitCommitResult>())
+      const text = typeof message === 'string' ? message.trim() : ''
+      if (text.length === 0) {
+        return Promise.resolve({
+          ok: false,
+          error: { code: 'EINVAL', message: 'A commit message is required' }
+        })
+      }
+      return commitAll(root, text)
+    }
+  )
+
+  ipcMain.handle(
+    'git:push',
+    (_event, root: string): Promise<Result<GitPushResult>> => {
+      if (typeof root !== 'string' || root.length === 0) return Promise.resolve(notARepo<GitPushResult>())
+      return pushBranch(root)
+    }
+  )
 }
 
 export function closeAllGitWatchers(): void {

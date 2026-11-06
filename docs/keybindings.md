@@ -85,6 +85,17 @@ the pointer does rather than by a modifier,
 
 `Ctrl+O` toggles the terminal, `Ctrl+R` re-lists the active pane,
 
+`Ctrl+G` opens the commit dialog for the work tree the active pane is in: it stages
+every change, commits it with the message typed there, and pushes the branch to its
+upstream when the dialog's box is ticked — a branch with no upstream, or a detached
+HEAD, has nothing to push to and says so. The pane title bar's git chip is the same
+gesture by pointer. The commit is all-or-nothing (the whole work tree, stated in the
+dialog) and it is a *local* one: a pane on a remote target is browsed and marked but
+not written to from here. A commit that failed keeps the dialog open with git's own
+message in it, so the message can be fixed; a push that failed *after* the commit
+landed says so in the pane's notice. It is a chord rather than a function key because
+F5–F8 are the file operations and F9 is the menu bar in every orthodox file manager,
+
 `Ctrl+T` opens a new terminal — a fresh workspace (two panes at home plus a new
 shell) at the right of the tab strip, focused — `Ctrl+W` closes the active one
 (the last workspace is never closed), `Ctrl+PageDown`/`Ctrl+PageUp` step to the
@@ -232,7 +243,8 @@ want the same key: `Alt+S` (Search), `Alt+A` (PutCurrentPath), `Alt+Enter`
 `Ctrl+R` (Reread) and `Alt+.`
 (ShowHidden) are pane
 gestures of ours *and* of mc's, and a plain shell's readline has `Ctrl+R`,
-`Alt+.`, `Alt+T` (transpose-words) and `Alt+C` (capitalize-word) of its own.
+`Alt+.`, `Alt+T` (transpose-words), `Alt+C` (capitalize-word) and `Ctrl+G`
+(abort) of its own.
 Above that line is only the
 app's own chrome — the overlays,
 `Ctrl+O`, the tab keys, and the `Escape` of a display that covers the whole

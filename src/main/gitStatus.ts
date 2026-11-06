@@ -19,6 +19,7 @@ export function parseStatus(stdout: string, root: string): GitStatus {
   let detached = false
   let ahead = 0
   let behind = 0
+  let upstream: string | null = null
 
   for (let i = 0; i < records.length; i += 1) {
     const record = records[i]
@@ -34,6 +35,8 @@ export function parseStatus(stdout: string, root: string): GitStatus {
         const value = header.slice('branch.oid '.length)
         // On a repository with no commits yet the oid is the literal `(initial)`.
         oid = value === '(initial)' ? null : value
+      } else if (header.startsWith('branch.upstream ')) {
+        upstream = header.slice('branch.upstream '.length)
       } else if (header.startsWith('branch.ab ')) {
         const counts = /^\+(\d+) -(\d+)$/.exec(header.slice('branch.ab '.length))
         if (counts) {
@@ -93,5 +96,5 @@ export function parseStatus(stdout: string, root: string): GitStatus {
     }
   }
 
-  return { root, branch, oid, detached, ahead, behind, files }
+  return { root, branch, oid, detached, ahead, behind, upstream, files }
 }

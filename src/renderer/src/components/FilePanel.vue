@@ -55,6 +55,7 @@ import { hideMode } from '@renderer/composables/useHideMode'
 import { pdfView, setPdfFit, setPdfZoom } from '@renderer/composables/usePdfView'
 import { archiveDisplay } from '@shared/archive'
 import { HIDE_MODE_OFF_TOOLTIP, HIDE_MODE_TOOLTIP } from '@shared/hide'
+import { COMMIT_TOOLTIP } from '@shared/git'
 import { QUICK_CD_LEAVE_TOOLTIP, QUICK_CD_TOOLTIP } from '@shared/quickCd'
 import {
   VIEW_ENTER_MAX,
@@ -152,6 +153,11 @@ const emit = defineEmits<{
    * app's: it holds the operations the pane has no business owning.
    */
   (event: 'context-menu', request: PaneMenuRequest): void
+  /**
+   * The title bar's git chip was clicked: commit the work tree this pane is in.
+   * The app owns the dialog and the write; the pane only says which pane asked.
+   */
+  (event: 'commit'): void
 }>()
 
 // The target this pane lives on, so a preview reads the file where it actually
@@ -4959,10 +4965,16 @@ function onRenameBlur(): void {
              because the two panes can be in different repositories — and in the
              title's own color rather than the gold the marks take, so nothing up
              here competes with a selection further down. -->
-        <span
+        <!-- The whole chip is a button: its own pointer door to the commit
+             gesture (Ctrl+G), which is the one action the git state it reports
+             makes possible from here. -->
+        <button
           v-if="gitView && !quickCdMode"
-          class="flex min-w-0 shrink-0 items-center gap-1 text-ui-sm"
-          :title="gitTitle"
+          type="button"
+          class="-mx-1 flex min-w-0 shrink-0 items-center gap-1 rounded px-1 text-ui-sm transition-colors hover:bg-hover"
+          :title="`${gitTitle}\n\n${COMMIT_TOOLTIP}`"
+          aria-label="Commit changes"
+          @click.stop="emit('commit')"
         >
           <svg
             viewBox="0 0 24 24"
@@ -4996,7 +5008,7 @@ function onRenameBlur(): void {
             />
             <span>{{ gitSummaryText }}</span>
           </span>
-        </span>
+        </button>
         <!-- How full this pane's filesystem is, left of the hide icon so the two
              state chips share the title's tail; the tooltip carries the exact
              sizes and the mount point. -->

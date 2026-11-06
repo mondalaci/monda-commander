@@ -238,6 +238,17 @@ function remoteGit(target: Target): McGitApi {
   return {
     status: async (dir) => toResult<GitStatus>(await request(id, 'git:status', { dir })),
     fileBase: async (path) => toResult<GitFileBase>(await request(id, 'git:fileBase', { path })),
+    // Committing and pushing run on the machine the work tree is on, and the
+    // relay has no such ops to ask for. A remote repository is browsed and
+    // marked like a local one; it is written to in the terminal the relay runs.
+    commit: async () => ({
+      ok: false,
+      error: { code: 'ENOTSUP', message: 'Committing is done on the local machine only' }
+    }),
+    push: async () => ({
+      ok: false,
+      error: { code: 'ENOTSUP', message: 'Pushing is done on the local machine only' }
+    }),
     watch: async (root) => {
       await request(id, 'git:watch', { path: root })
     },

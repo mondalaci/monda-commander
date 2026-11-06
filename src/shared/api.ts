@@ -9,7 +9,9 @@ import type {
   FileContent,
   FsChangeEvent,
   GitChangeEvent,
+  GitCommitResult,
   GitFileBase,
+  GitPushResult,
   GitStatus,
   ImagePreview,
   ModelData,
@@ -267,6 +269,21 @@ export interface McGitApi {
    * working copy as added.
    */
   fileBase(path: string): Promise<Result<GitFileBase>>
+  /**
+   * Stage every change in the work tree and commit it. `root` is the
+   * `GitStatus.root`. The message's first line is the subject and the rest the
+   * body; the answer carries the new commit's oid. This is the only write the
+   * app makes to a repository's *history*, so it is deliberately all-or-nothing:
+   * `git add -A` and one commit, no partial staging the user did not ask for.
+   */
+  commit(root: string, message: string): Promise<Result<GitCommitResult>>
+  /**
+   * Push the current branch to the one it already tracks. Not offered with no
+   * upstream and on a detached HEAD; a failure — no upstream, a rejected
+   * refspec, a credential git cannot answer with prompts off — comes back as
+   * git's own message.
+   */
+  push(root: string): Promise<Result<GitPushResult>>
   /**
    * Watch a work tree for changes to what git thinks. `root` is the
    * `GitStatus.root`, not an arbitrary directory, because a pane keeps one

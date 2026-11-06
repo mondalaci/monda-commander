@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, provide, ref, shallowRe
 import FilePanel from '@renderer/components/FilePanel.vue'
 import ConfirmTransfer from '@renderer/components/ConfirmTransfer.vue'
 import ConfirmMkdir from '@renderer/components/ConfirmMkdir.vue'
+import ConfirmCommit from '@renderer/components/ConfirmCommit.vue'
 import ConfirmDelete from '@renderer/components/ConfirmDelete.vue'
 import ConfirmDiscard from '@renderer/components/ConfirmDiscard.vue'
 import TerminalPane from '@renderer/components/TerminalPane.vue'
@@ -26,9 +27,11 @@ import {
   type StageRequest
 } from '@renderer/lib/preview'
 import type { PaneMenuChoice, PaneMenuItem, PaneMenuRequest } from '@renderer/lib/paneMenu'
+import { commitBranchLabel, commitEntries, defaultCommitMessage, type CommitEntry } from '@renderer/lib/commit'
 import { archiveDisplay, isArchivePath, splitArchivePath } from '@shared/archive'
 import { targetLabel, type Target } from '@shared/target'
 import { targetApiKey } from '@renderer/lib/targetContext'
+import type { McGitApi } from '@shared/api'
 import { HIDE_MARKER } from '@shared/hide'
 import { loadArchiveSupport } from '@renderer/lib/archive'
 import { untrackedAbove } from '@renderer/lib/gitMark'
@@ -1381,6 +1384,121 @@ async function confirmMkdir(name: string): Promise<void> {
   focusPanes()
 }
 
+/**
+ * The commit dialog's subject: the pane that asked, the work tree it belongs to,
+ * and everything the dialog draws — all captured when it opens, because the
+ * pane's git view is replaced whole on every status read and the list has to say
+ * what was true when the user asked. `api` is captured with it, so the commit
+ * and the push go to the same host the status came from.
+ */
+const commitJob = ref<{
+  pane: PaneController
+  api: McGitApi
+  root: string
+  branch: string
+  detached: boolean
+  upstream: string | null
+  entries: CommitEntry[]
+  /** The generated starting message, selected on open. */
+  defaultMessage: string
+  conflicted: number
+} | null>(null)
+
+/** A commit or push in flight, and why the last one failed. */
+const commitRunning = ref(false)
+const commitError = ref<string | null>(null)
+
+/**
+ * Ctrl+G — and the pane title bar's git chip — ask to commit the work tree the
+ * active pane is in. It is offered only where there is something to write to: a
+ * work tree the pane has a git view of (not outside a repository, and not inside
+ * an archive, where there is no work tree at all) on the local machine, because a
+ * remote repository is the relay's and the relay has no commit op.
+ */
+function requestCommit(): void {
+  if (commitJob.value !== null || commitRunning.value) return
+
+  const pane = activePane.value
+  const view = pane.state.git
+  if (!view) {
+    pane.state.error = 'Not a git repository'
+    return
+  }
+  if (activeWorkspace.value.target.kind !== 'local') {
+    pane.state.error = 'Committing is done on the local machine only'
+    return
+  }
+
+  const git = activeWorkspace.value.api.git
+  commitError.value = null
+  commitJob.value = {
+    pane,
+    api: git,
+    root: view.root,
+    branch: commitBranchLabel(view),
+    detached: view.detached,
+    upstream: view.upstream,
+    entries: commitEntries(view),
+    defaultMessage: defaultCommitMessage(view),
+    conflicted: view.summary.conflicted
+  }
+}
+
+/**
+ * The title bar's git chip: a pointer door to the same gesture `Ctrl+G` is. The
+ * pane it was clicked in becomes the active one first, so the commit is asked of
+ * the work tree *that* pane is in rather than of whichever pane happened to hold
+ * the keyboard.
+ */
+function requestCommitFrom(side: PanelSide): void {
+  setActive(side)
+  requestCommit()
+}
+
+function cancelCommit(): void {
+  if (commitRunning.value) return
+  commitJob.value = null
+  commitError.value = null
+  focusPanes()
+}
+
+/**
+ * Commit what the dialog collected, then push when it asked. A failed commit
+ * keeps the dialog open with the reason in it — nothing was written, so the
+ * message is still there to fix. A commit that succeeded and a push that did not
+ * closes the dialog all the same: the commit is done and its failure is the
+ * push's, which belongs in the pane's notice like any other failed operation.
+ */
+async function confirmCommit(message: string, push: boolean): Promise<void> {
+  const job = commitJob.value
+  if (!job || commitRunning.value) return
+
+  commitRunning.value = true
+  commitError.value = null
+
+  const committed = await job.api.commit(job.root, message)
+  if (!committed.ok) {
+    commitError.value = `${committed.error.code}: ${committed.error.message}`
+    commitRunning.value = false
+    return
+  }
+
+  if (push) {
+    const pushed = await job.api.push(job.root)
+    if (!pushed.ok) {
+      commitRunning.value = false
+      commitJob.value = null
+      job.pane.state.error = `Committed, but the push failed — ${pushed.error.message}`
+      focusPanes()
+      return
+    }
+  }
+
+  commitRunning.value = false
+  commitJob.value = null
+  focusPanes()
+}
+
 watch(
   () => left.value.state.searchActive || right.value.state.searchActive,
   (anyActive, wasActive) => {
@@ -2248,13 +2366,15 @@ function onKeydown(event: KeyboardEvent): void {
     mkdirOpen.value ||
     deleteTargets.value.length > 0 ||
     copyJob.value !== null ||
-    moveJob.value !== null
+    moveJob.value !== null ||
+    commitJob.value !== null
   ) {
     if (event.key === 'Escape') {
       consume(event)
       if (mkdirOpen.value) cancelMkdir()
       else if (deleteTargets.value.length > 0) cancelDelete()
       else if (moveJob.value !== null) cancelMove()
+      else if (commitJob.value !== null) cancelCommit()
       else cancelCopy()
     }
     return
@@ -2418,6 +2538,19 @@ function onKeydown(event: KeyboardEvent): void {
   if (isOtherPaneCd) {
     consume(event)
     revealInOtherPane()
+    return
+  }
+
+  // Ctrl+G commits the work tree the pane is in — stage everything, commit it,
+  // and push if the dialog is told to. It is the panes' own gesture (the work
+  // tree is the pane's own location) and is claimed here, below the expanded
+  // terminal, so a real terminal keeps its Ctrl+G (readline's abort), exactly as
+  // it keeps Ctrl+R below. It is a chord rather than a function key because F9 is
+  // the menu bar in every orthodox file manager and the file-operation keys stop
+  // at F8.
+  if (isPlainCtrl(event) && event.code === 'KeyG') {
+    consume(event)
+    requestCommit()
     return
   }
 
@@ -2790,6 +2923,7 @@ onBeforeUnmount(() => {
           @stage-on="showStage('left')"
           @stage-off="exitStage()"
           @context-menu="openPaneMenu('left', $event)"
+          @commit="requestCommitFrom('left')"
         />
         <!-- The boundary between the panes, and the handle that moves it: the
              line stays a pixel, while an invisible band around it is what the
@@ -2855,6 +2989,7 @@ onBeforeUnmount(() => {
           @stage-on="showStage('right')"
           @stage-off="exitStage()"
           @context-menu="openPaneMenu('right', $event)"
+          @commit="requestCommitFrom('right')"
         />
         <!-- The workspace is one connection, so both panes come up together and
              their two titles would repeat the same stage. While they do, this bar
@@ -2931,6 +3066,21 @@ onBeforeUnmount(() => {
       v-if="mkdirOpen"
       @confirm="confirmMkdir"
       @cancel="cancelMkdir"
+    />
+
+    <ConfirmCommit
+      v-if="commitJob"
+      :root="commitJob.root"
+      :branch="commitJob.branch"
+      :detached="commitJob.detached"
+      :upstream="commitJob.upstream"
+      :entries="commitJob.entries"
+      :default-message="commitJob.defaultMessage"
+      :conflicted="commitJob.conflicted"
+      :running="commitRunning"
+      :error="commitError"
+      @confirm="confirmCommit"
+      @cancel="cancelCommit"
     />
 
     <ConfirmDelete

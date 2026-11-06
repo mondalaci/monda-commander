@@ -44,8 +44,11 @@ src/main/pdf.ts          poppler-backed PDF pages: page count and every page's
                          a page's word boxes for the selection layer (pdftotext
                          -bbox-layout), all probed and cached
 src/main/ipc/watch.ts    IPC: fs:watch, fs:unwatch; pushes fs:changed
-src/main/ipc/git.ts      IPC: git:status, git:file-base, git:watch, git:unwatch;
-                         pushes git:changed (one watcher per work tree)
+src/main/ipc/git.ts      IPC: git:status, git:file-base, git:watch, git:unwatch,
+                         git:commit, git:push; pushes git:changed (one watcher per
+                         work tree). The two writes are local-only (ENOTSUP from
+                         the relay); commit stages all (add -A) and pushes with
+                         GIT_TERMINAL_PROMPT=0
 src/main/gitStatus.ts    the `status --porcelain=v2` reader (pure: no Electron)
 src/main/ipc/pty.ts      IPC: pty:create/write/resize/kill/state; pushes pty:data, pty:exit
 src/main/ipc/window.ts   IPC: window:minimize/toggle-maximize/close/is-maximized
@@ -79,6 +82,8 @@ src/main/thumbnail.ts    tiles and clip posters read from main: an image decoded
                          LRU-cached; fs:thumbnail (local only)
 src/shared/quickCd.ts    the quick cd key and the two tooltips the title-bar
                          button is spoken with
+src/shared/git.ts        the commit key (Ctrl+G) and the git chip's tooltip,
+                         spelled once so the key and the pointer door agree
 src/shared/archive.ts    the archive location model: the NUL-joined
                          `<archive>\0<inner>` string, its split/normalize/display
                          helpers, and the enterable-extension list
@@ -130,6 +135,8 @@ src/renderer/src/lib/fileIcon.ts      per-entry icon: name/extension -> 24x24 sv
                                       (FILENAME_ICONS, EXTENSION_ICONS, fallback text)
 src/renderer/src/lib/gitMark.ts       git status -> per-row marks, folder roll-ups,
                                       and the palette they are drawn in
+src/renderer/src/lib/commit.ts        a pane's git view -> the commit dialog's list
+                                      of changed paths and the branch it names
 src/renderer/src/lib/diff.ts          the viewer's changed-line view: a line diff
                                       against a HEAD baseline, and the Monaco
                                       decorations the buffer's side is drawn with
@@ -463,6 +470,33 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   into the git side (`noteDirectoryChanged`, from `watch.ts`), which drops that
   repository's cached answer and tells every pane watching it — that is what keeps
   the *other* pane's rows honest.
+- **Commit and push are `Ctrl+G`, not a function key.** F5–F8 are the orthodox
+  file-operation canon and **F9 is the menu bar** in every file manager of that
+  family, so committing — a command, not a file operation — takes a chord
+  (`shared/git.ts`). The gesture is all-or-nothing (`git add -A` + one commit; the
+  pane's *marks* are the transfer gesture's and are not a staging set) and
+  **local-only**: the relay has no commit/push op, so `remoteGit` answers
+  `ENOTSUP` and the write is offered only for a local pane. The message rides one
+  `-m` argv element (multi-line is fine); push runs with `GIT_TERMINAL_PROMPT=0`
+  so an uncached credential fails fast with git's own words. Both writes go
+  through `noteRepoWritten` (drop the cached status, notify watchers) so the chip
+  and rows refresh. The dialog's list comes from `lib/commit.ts` off the pane's
+  own `GitView`, so it cannot disagree with the dots — and it must include
+  `GitView.untracked` as well as `GitView.files`, because git reports a *wholly
+  untracked directory* as one record that the row collapse keeps out of `files`:
+  the chip counts it, so a tree whose only change is a new directory would
+  otherwise read as "nothing to commit".
+- **The message field starts with a derived default from the *paths*, never the
+  calendar** (`defaultCommitMessage` in `lib/commit.ts`): a lone added entry is
+  *named* — a directory as its contents glob (`2026-11/* added`), a file as itself
+  (`notes.md added`) — and anything else is *counted* by kind with zero kinds left
+  out, led by the folder the changes share when there is one (`2026-11/ 3 added, 1
+  modified`). It opens selected, so typing replaces it, and **Enter starts a line
+  while Shift+Enter commits** — a plain textarea's keys with the commit on the
+  chord, since composing is the common case and firing is deliberate. A bare Enter
+  while the whole prefilled message is still selected appends *after* it rather than
+  wiping it, and Enter on a focused button stays the button's, so Enter on Cancel
+  still cancels. Added is `A`/`?`, deleted `D`, everything else modified.
 
 ### Marks, the right button, and the context menu
 

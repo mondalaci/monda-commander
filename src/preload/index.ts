@@ -10,7 +10,9 @@ import type {
   FileContent,
   FsChangeEvent,
   GitChangeEvent,
+  GitCommitResult,
   GitFileBase,
+  GitPushResult,
   GitStatus,
   ImagePreview,
   ModelData,
@@ -142,6 +144,10 @@ const api: McApi = {
     status: (dir: string): Promise<Result<GitStatus>> => ipcRenderer.invoke('git:status', dir),
     fileBase: (path: string): Promise<Result<GitFileBase>> =>
       ipcRenderer.invoke('git:file-base', path),
+    commit: (root: string, message: string): Promise<Result<GitCommitResult>> =>
+      ipcRenderer.invoke('git:commit', root, message),
+    push: (root: string): Promise<Result<GitPushResult>> =>
+      ipcRenderer.invoke('git:push', root),
     watch: (root: string): Promise<void> => ipcRenderer.invoke('git:watch', root),
     unwatch: (root: string): Promise<void> => ipcRenderer.invoke('git:unwatch', root),
     onChanged: (handler: (event: GitChangeEvent) => void) => {

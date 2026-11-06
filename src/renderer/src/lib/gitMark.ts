@@ -268,6 +268,8 @@ export interface GitView {
   detached: boolean
   ahead: number
   behind: number
+  /** The upstream HEAD tracks, or null with none — what a push would reach. */
+  upstream: string | null
   files: Map<string, GitMark>
   dirs: Map<string, GitDirMark>
   /** Directories git collapsed into a single untracked record. */
@@ -368,6 +370,7 @@ export function buildGitView(status: GitStatus): GitView {
     detached: status.detached,
     ahead: status.ahead,
     behind: status.behind,
+    upstream: status.upstream,
     files,
     dirs,
     untracked: untrackedDirs,

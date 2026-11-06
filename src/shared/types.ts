@@ -115,7 +115,31 @@ export interface GitStatus {
   /** Commits the upstream is behind and ahead, both zero with no upstream. */
   ahead: number
   behind: number
+  /**
+   * The upstream branch HEAD tracks, as git names it (`origin/main`); null when
+   * the branch has no upstream. Read from porcelain's `branch.upstream` header,
+   * so the commit dialog can name what a push would reach.
+   */
+  upstream: string | null
   files: GitFileStatus[]
+}
+
+/**
+ * A commit the app made on the user's behalf — the stage-all-and-commit the
+ * commit dialog runs. `oid` is the new commit's full object name, which the
+ * dialog does not need to show but which makes the answer a real receipt rather
+ * than a bare success.
+ */
+export interface GitCommitResult {
+  oid: string
+}
+
+/**
+ * A push the app made. `branch` is the local branch that went out — the one the
+ * dialog named, so the answer can be said back the way it was asked.
+ */
+export interface GitPushResult {
+  branch: string
 }
 
 /**
