@@ -1348,11 +1348,35 @@ function cancelDelete(): void {
   focusPanes()
 }
 
+/**
+ * Run the delete the dialog confirmed. As with a copy, the dialog becomes the
+ * transfer's own progress dialog: a folder of many files can take a while, so it
+ * is watchable and can be parked in the title bar rather than blocking the
+ * window. A delete has no destination, so the tooltip's `To` is left off, and a
+ * stop leaves whatever it already removed removed — nothing can put it back.
+ */
 async function confirmDelete(): Promise<void> {
   const pane = activePane.value
+  const targets = deleteTargets.value
   deleteTargets.value = []
-  await pane.deleteEntries()
-  focusPanes()
+  if (targets.length === 0) return
+
+  const task = createTransfer({
+    mode: 'delete',
+    entries: targets,
+    source: pane.state.path,
+    destination: '',
+    cancellable: transferCancellable()
+  })
+
+  try {
+    const done = await pane.deleteEntries(task.id)
+    const status = done ? 'done' : task.stopRequested ? 'cancelled' : 'error'
+    finishTransfer(task, status, status === 'error' ? pane.state.error : null)
+  } catch (error) {
+    finishTransfer(task, 'error', String(error))
+  }
+  if (foregroundTasks.value.length === 0) focusPanes()
 }
 
 /**

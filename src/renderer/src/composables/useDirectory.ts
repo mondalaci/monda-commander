@@ -288,7 +288,7 @@ export interface PaneController {
   copyEntries(destination: string, transferId?: string): Promise<string | null>
   moveEntries(destination: string, transferId?: string): Promise<string | null>
   createDirectory(name: string): Promise<string | null>
-  deleteEntries(): Promise<void>
+  deleteEntries(transferId?: string): Promise<boolean>
   openSearch(): void
   updateSearch(query: string): boolean
   closeSearch(): void
@@ -2024,15 +2024,25 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     return result.data
   }
 
-  async function deleteEntries(): Promise<void> {
-    if (refuseInArchive()) return
+  async function deleteEntries(transferId = ''): Promise<boolean> {
+    if (refuseInArchive()) return false
     const targets = deletionTargets()
-    if (targets.length === 0) return
+    if (targets.length === 0) return false
 
-    const result = await api.fs.remove(targets.map((target) => target.path))
+    const result = await api.fs.remove(
+      transferId,
+      targets.map((target) => target.path)
+    )
     if (!result.ok) {
-      state.error = `${result.error.code}: ${result.error.message}`
-      return
+      // A delete the user stopped is not an error to announce: the dialog that
+      // asked for the stop says so itself. The pane still re-lists, since what it
+      // removed is gone whatever the outcome is called.
+      if (result.error.code !== 'EABORTED') {
+        state.error = `${result.error.code}: ${result.error.message}`
+        return false
+      }
+      await refresh()
+      return false
     }
 
     // Drop the marks that are gone, keep any that failed so a retry still
@@ -2049,6 +2059,8 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
       const [first] = result.data.failed
       if (first) state.error = `${first.error.code}: ${first.error.message}`
     }
+
+    return true
   }
 
   async function activate(force = false): Promise<void> {

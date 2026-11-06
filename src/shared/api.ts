@@ -193,7 +193,15 @@ export interface McFsApi {
    * piece, so it reports none.
    */
   onTransferProgress(handler: (event: TransferProgress) => void): () => void
-  remove(targets: string[]): Promise<Result<DeleteOutcome>>
+  /**
+   * Delete `targets`. `id` names the transfer, so the progress
+   * `onTransferProgress` reports and a `cancelTransfer` can be routed to it.
+   * Best-effort like copy: an unreadable entry is reported without aborting the
+   * rest. A delete that is stopped stops where it is — what it already removed
+   * stays removed, since removal cannot be taken back the way a half-written copy
+   * can.
+   */
+  remove(id: string, targets: string[]): Promise<Result<DeleteOutcome>>
   /**
    * Append an entry's name to a directory's `.mchide` file — the pane menu's way
    * of adding to a hide list without the file being opened. Idempotent: a name

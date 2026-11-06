@@ -212,6 +212,42 @@ async function copyTree(
   throw error
 }
 
+/**
+ * Remove one entry — file, directory or link — the way `fs.rm` with `recursive`
+ * does, but reporting as it goes so a long delete is watchable and can be stopped.
+ * A directory is emptied child by child and only then removed; a link is unlinked
+ * as the link it is. Cancelling throws, so the entry is left half removed: unlike
+ * a copy there is nothing to take back, and the caller reports where it stopped.
+ */
+async function deleteTree(
+  target: string,
+  hooks: CopyHooks,
+  control: TransferControl
+): Promise<void> {
+  if (control.cancelled) throw abortError()
+
+  const stats = await fs.lstat(target)
+
+  if (stats.isDirectory()) {
+    const names = await fs.readdir(target)
+    for (const name of names) {
+      await deleteTree(path.join(target, name), hooks, control)
+    }
+    await fs.rmdir(target)
+    return
+  }
+
+  // A link (or a special file) is removed as it is: no bytes, and not one of the
+  // files the transfer counted — exactly as `measureCopy` counted it.
+  hooks.file(target, stats.isFile() ? stats.size : 0)
+  if (control.cancelled) throw abortError()
+  await fs.unlink(target)
+  if (stats.isFile()) {
+    hooks.bytes(stats.size)
+    hooks.fileDone()
+  }
+}
+
 /** A mount point as `/proc` writes it: `\040` for a space, and so on. */
 function decodeMountPath(raw: string): string {
   return raw.replace(/\\([0-7]{3})/g, (_match, octal: string) =>
@@ -1657,9 +1693,10 @@ export function registerFsHandlers(): void {
 
   ipcMain.handle(
     'fs:delete',
-    async (_event, targets: string[]): Promise<Result<DeleteOutcome>> => {
-      const deleted: string[] = []
-      const failed: DeleteFailure[] = []
+    async (event, id: unknown, targets: string[]): Promise<Result<DeleteOutcome>> => {
+      if (!Array.isArray(targets)) {
+        return { ok: false, error: { code: 'EINVAL', message: 'Invalid delete arguments' } }
+      }
 
       if (targets.some((target) => typeof target === 'string' && isArchivePath(target))) {
         return {
@@ -1668,27 +1705,111 @@ export function registerFsHandlers(): void {
         }
       }
 
-      for (const target of targets) {
-        if (typeof target !== 'string' || target.length === 0) continue
-        const resolved = path.resolve(target)
-        if (resolved === path.parse(resolved).root) {
-          failed.push({
-            path: resolved,
-            error: { code: 'EPERM', message: 'Refusing to delete a filesystem root' }
-          })
-          continue
-        }
-        try {
-          // `recursive` handles directories; `force: false` keeps a missing or
-          // protected path an error instead of a silent success.
-          await fs.rm(resolved, { recursive: true, force: false })
-          deleted.push(resolved)
-        } catch (error) {
-          failed.push({ path: resolved, error: toFsError(error) })
+      const sender = event.sender
+      const transferId = typeof id === 'string' ? id : ''
+      const control: TransferControl = {
+        cancelled: false,
+        controller: new AbortController(),
+        current: null
+      }
+      if (transferId) registerTransfer(sender.id, transferId, control)
+
+      let bytesDone = 0
+      let totalBytes = 0
+      let filesDone = 0
+      let totalFiles = 0
+      let fileCopied = 0
+      let fileTotal = 0
+      let lastReport = 0
+      let sourceRoot = ''
+
+      const report = (force: boolean): void => {
+        if (!transferId || sender.isDestroyed()) return
+        const now = Date.now()
+        if (!force && now - lastReport < TRANSFER_REPORT_MS) return
+        lastReport = now
+        sender.send('fs:transfer-progress', {
+          id: transferId,
+          copied: bytesDone,
+          total: totalBytes,
+          current: control.current,
+          fileCopied,
+          fileTotal,
+          files: filesDone,
+          totalFiles
+        })
+      }
+
+      const hooks: CopyHooks = {
+        bytes: (count) => {
+          bytesDone += count
+          fileCopied += count
+          report(false)
+        },
+        file: (file, size) => {
+          control.current = copyCurrent(sourceRoot, file)
+          fileCopied = 0
+          fileTotal = size
+          report(false)
+        },
+        fileDone: () => {
+          filesDone += 1
         }
       }
 
-      return { ok: true, data: { deleted, failed } }
+      const deleted: string[] = []
+      const failed: DeleteFailure[] = []
+
+      try {
+        // A filesystem root is refused before anything is measured: weighing one
+        // would walk the whole disk, and there is nothing a walk would decide.
+        const removable: string[] = []
+        for (const target of targets) {
+          if (typeof target !== 'string' || target.length === 0) continue
+          const resolved = path.resolve(target)
+          if (resolved === path.parse(resolved).root) {
+            failed.push({
+              path: resolved,
+              error: { code: 'EPERM', message: 'Refusing to delete a filesystem root' }
+            })
+            continue
+          }
+          removable.push(resolved)
+        }
+
+        for (const target of removable) {
+          if (control.cancelled) break
+          const measured = await measureCopy(target, control)
+          totalBytes += measured.bytes
+          totalFiles += measured.files
+        }
+        report(true)
+
+        for (const resolved of removable) {
+          if (control.cancelled) break
+          control.current = path.basename(resolved)
+          sourceRoot = resolved
+          try {
+            await deleteTree(resolved, hooks, control)
+            deleted.push(resolved)
+          } catch (error) {
+            // A stop is not an entry's failure: it leaves the tree half removed
+            // where it stood and the caller reports the stop itself.
+            if (control.cancelled || (error as NodeJS.ErrnoException).code === 'EABORTED') break
+            failed.push({ path: resolved, error: toFsError(error) })
+          }
+        }
+
+        if (control.cancelled) {
+          return { ok: false, error: { code: 'EABORTED', message: 'Delete cancelled' } }
+        }
+        report(true)
+        return { ok: true, data: { deleted, failed } }
+      } catch (error) {
+        return { ok: false, error: toFsError(error) }
+      } finally {
+        if (transferId) releaseTransfer(sender.id, transferId)
+      }
     }
   )
 

@@ -20,6 +20,7 @@ const card = ref<HTMLElement | null>(null)
 onMounted(() => card.value?.focus())
 
 const isMove = computed(() => props.task.mode === 'move')
+const isDelete = computed(() => props.task.mode === 'delete')
 const phrase = computed(() => transferPhrase(props.task))
 
 /** A stop that has been asked for but not yet confirmed by main. */
@@ -30,7 +31,8 @@ const detail = computed(() => {
   const task = props.task
   if (task.status === 'error') return task.error ?? 'The transfer failed'
   if (task.status === 'done' || task.status === 'cancelled') {
-    return task.resolvedDestination ?? task.destination
+    // A delete has no destination, so it lands on the folder it emptied.
+    return task.resolvedDestination || task.destination || task.source
   }
   if (task.total === 0 && task.copied === 0 && task.totalFiles === 0) return 'Measuring…'
   return task.current ?? 'Preparing…'
@@ -53,7 +55,7 @@ const percent = computed(() => Math.floor(fraction.value * 100))
  * there is more than one file to tell apart — a lone file's two bars would be
  * the same bar twice.
  */
-const showFileBar = computed(() => props.task.totalFiles > 1)
+const showFileBar = computed(() => props.task.mode !== 'delete' && props.task.totalFiles > 1)
 
 const fileFraction = computed(() => {
   const { fileCopied, fileTotal } = props.task
@@ -95,7 +97,8 @@ const summary = computed(() => {
       <div class="flex items-center gap-2 border-b border-border-subtle px-4 py-3">
         <svg
           viewBox="0 0 24 24"
-          class="h-4 w-4 shrink-0 text-accent-strong"
+          class="h-4 w-4 shrink-0"
+          :class="isDelete ? 'text-danger' : 'text-accent-strong'"
           fill="none"
           stroke="currentColor"
           stroke-width="1.7"
@@ -103,7 +106,10 @@ const summary = computed(() => {
           stroke-linejoin="round"
           aria-hidden="true"
         >
-          <template v-if="isMove">
+          <template v-if="isDelete">
+            <path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v5M14 11v5" />
+          </template>
+          <template v-else-if="isMove">
             <path d="M13 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h8" />
             <path d="M15 7l5 5-5 5M20 12H9" />
           </template>

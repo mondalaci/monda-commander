@@ -93,8 +93,8 @@ const api: McApi = {
       ipcRenderer.on('fs:transfer-progress', listener)
       return () => ipcRenderer.off('fs:transfer-progress', listener)
     },
-    remove: (targets: string[]): Promise<Result<DeleteOutcome>> =>
-      ipcRenderer.invoke('fs:delete', targets),
+    remove: (id: string, targets: string[]): Promise<Result<DeleteOutcome>> =>
+      ipcRenderer.invoke('fs:delete', id, targets),
     hideAdd: (dir: string, name: string): Promise<Result<string>> =>
       ipcRenderer.invoke('fs:hide-add', dir, name),
     hideRemove: (dir: string, name: string): Promise<Result<string>> =>

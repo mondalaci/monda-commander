@@ -927,28 +927,30 @@ the same reason `mkdir foo` at the prompt is muted.
 
 The classic transfer dialog closed the moment it was confirmed, which left a large
 copy running with nothing on screen to say so. So the confirmation is not the end
-of the dialog: confirming a copy or a move starts a *task* (`useTransfers`) and
-swaps the form for the same dialog showing how far the transfer has got. The task
-is the app's, not the pane's or the tab's, because a copy of a disk image runs for
-minutes and must survive navigating both panes away, switching tabs, or being
-parked.
+of the dialog: confirming a copy, a move or a delete starts a *task*
+(`useTransfers`) and swaps the form for the same dialog showing how far it has got.
+The task is the app's, not the pane's or the tab's, because a copy of a disk image
+runs for minutes and must survive navigating both panes away, switching tabs, or
+being parked.
 
 **The bytes come from main, because `fs.cp` cannot report them.** `fs:copy` used
 to hand the whole tree to `fs.cp`; it now walks it itself (`copyTree`), recreating
 a link, streaming a file and counting the bytes off its `data`, and making a
 folder, filling it and only then giving it the source's mode (so a read-only
-folder does not refuse its own contents). It weighs the sources first
-(`measureCopy`, which counts the regular files as well as their bytes) so the bar
-is determinate from the first chunk rather than a guess, reporting as
-`fs:transfer-progress` against the id the task carries — the same id a stop is
-routed by. A report says the bytes written, the files finished out of the whole,
-and the file in flight: that last is named by its path under the entry being
-copied (`copyCurrent`), so a folder shows `photos/img_0421.jpg` rather than only
+folder does not refuse its own contents). A delete is the mirror (`deleteTree`):
+it empties a folder child by child and removes it, unlinking a file at once, so a
+long delete is watchable and stoppable where `fs.rm` reported nothing. Both weigh
+the sources first (`measureCopy`, which counts the regular files as well as their
+bytes) so the bar is determinate from the first chunk rather than a guess,
+reporting as `fs:transfer-progress` against the id the task carries — the same id
+a stop is routed by. A report says the bytes written, the files finished out of the
+whole, and the entry in flight: that last is named by its path under the one being
+handled (`copyCurrent`), so a folder shows `photos/img_0421.jpg` rather than only
 `photos`. The reports are throttled (`TRANSFER_REPORT_MS`), as a size walk's are,
 because chunks arrive far faster than the dialog can draw them. A cross-device
 move (`EXDEV`) falls back to the same copy and so reports the same
 way; a move within one filesystem is a rename and has nothing to report. A relay
-answers its copy in one piece, so a remote transfer is indeterminate and offers no
+answers its transfer in one piece, so a remote one is indeterminate and offers no
 Cancel at all (`TransferTask.cancellable`) rather than a button that would do
 nothing.
 
@@ -961,15 +963,19 @@ whole job's. So the dialog carries the same pair: a `File` bar from `fileCopied`
 and beneath them the whole job as `12 of 340 files · 1.2 GB of 4.0 GB` — the count
 being what makes a transfer of many small files read as progress rather than as
 whatever single file is in flight. The `File` row is drawn only when there is more
-than one file to tell apart; for a lone file the two bars would be the same bar
-twice. Either bar slides while its own size is still unknown.
+than one file to tell apart and the operation is not a delete — a lone file's two
+bars would be the same bar twice, and a delete has no per-file byte progress at
+all (each unlink is one step), so it draws the `Total` bar alone. Either bar slides
+while its own size is still unknown.
 
-**A stop takes the half-written entry back, and says so at once.**
-`fs:transfer-cancel` sets the task's cancelled flag and aborts the file's stream
-(`AbortController`); main removes the entry it was part way through, so a cancel
-leaves no partial copy the next attempt would refuse as existing, and answers
-`EABORTED`. The pane does not paint that as its own notice — a stop is not an
-error, and the dialog that asked for it says so itself. The dialog shows
+**A stop takes the half-written entry back — or, for a delete, stops where it
+is — and says so at once.** `fs:transfer-cancel` sets the task's cancelled flag and
+aborts the file's stream (`AbortController`); main removes the entry a copy was
+part way through, so a cancel leaves no partial copy the next attempt would refuse
+as existing, and answers `EABORTED`. A delete has nothing to take back — what it
+removed is gone — so it simply stops, leaving the tree half removed where it
+stood. The pane does not paint a stop as its own notice — a stop is not an error,
+and the dialog that asked for it says so itself. The dialog shows
 `Cancelling…` and disables the `Cancel` button the moment the stop is asked for
 (`stopRequested`, set synchronously), rather than waiting for main's answer: the
 abort is a round trip through the copy and, for a large partial entry, a recursive

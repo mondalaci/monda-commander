@@ -610,35 +610,39 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
 
 ### Transfers: a progress dialog, and a pill when backgrounded
 
-- **A copy or move keeps its dialog, showing how far it has got, rather than
-  closing at once.** `F5`/`F6` stage `ConfirmTransfer` as before; confirming one
-  starts a *task* in `useTransfers` and swaps the form for `TransferDialog`, the
-  same transfer continued. `fs:copy` reports as `TransferProgress` against the id
-  the task carries (throttled in main to `TRANSFER_REPORT_MS`): the bytes written,
-  the files finished out of the whole (`measureCopy` counts them), and the file
-  now in flight — named by its path under the entry being copied (`copyCurrent`),
-  so a folder shows `photos/img_0421.jpg`, not only `photos`. The dialog draws the
+- **A copy, move or delete keeps its dialog, showing how far it has got, rather
+  than closing at once.** `F5`/`F6`/`F8` stage `ConfirmTransfer`/`ConfirmDelete` as
+  before; confirming one starts a *task* in `useTransfers` and swaps the form for
+  `TransferDialog`, the operation continued (a delete has no destination, so its
+  tooltip leaves `To` off). `fs:copy`/`fs:move`/`fs:delete` report as
+  `TransferProgress` against the id the task carries (throttled in main to
+  `TRANSFER_REPORT_MS`): the bytes written — removed, for a delete — the files
+  finished out of the whole (`measureCopy` counts them), and the entry now in
+  flight, named by its path under the one being handled (`copyCurrent`), so a
+  folder shows `photos/img_0421.jpg`, not only `photos`. The dialog draws the
   **two bars an orthodox copy dialog draws** (mc, Double Commander): a `File` bar
   for the file now being written (`fileCopied`/`fileTotal`, drawn only when there
-  is more than one file to tell apart) and a `Total` bar for the whole job
-  (`copied`/`total`), each with its own percent, and below them the whole job as
-  `12 of 340 files · 1.2 GB of 4.0 GB`. Either bar slides while its size is still
-  unknown (`0`).
-- **`fs.cp` cannot report progress, so main copies the tree itself**
-  (`copyTree`/`measureCopy` in `ipc/fs.ts`): a link is recreated, a file streamed
-  (byte-counted from its `data`), a folder made, filled, and only then given its
-  mode. `fs:copy` weighs the sources first so the bar is determinate, and a
-  cross-device `fs:move` falls back to the same copy and reports the same way. A
-  relay answers a copy in one piece, so a remote transfer is indeterminate and has
-  no Cancel (`TransferTask.cancellable`).
-- **Stopping takes the half-written entry back, and says so at once.**
-  `fs:transfer-cancel` flags the task and aborts its file's stream
-  (`AbortController`); main removes the entry it was part way through and answers
-  `EABORTED`, which the pane does *not* paint as a notice — the dialog that asked
-  to stop says so itself. The dialog (`stopRequested`) shows `Cancelling…` and
-  disables the button the moment the key or click lands, not when main answers:
-  the abort is a round trip, and a dialog that sat still until it returned would
-  read as a key that did not register. Entries already copied stay.
+  is more than one file and the mode is not a delete) and a `Total` bar for the
+  whole job (`copied`/`total`), each with its own percent, and below them the whole
+  job as `12 of 340 files · 1.2 GB of 4.0 GB`. Either bar slides while its size is
+  still unknown (`0`).
+- **`fs.cp` cannot report progress, so main walks the tree itself**
+  (`copyTree`/`deleteTree`/`measureCopy` in `ipc/fs.ts`): a copy recreates a link,
+  streams a file (byte-counted from its `data`), and makes a folder, fills it and
+  only then gives it its mode; a delete empties a folder child by child and removes
+  it, unlinking a file at once. `fs:copy`/`fs:delete` weigh the sources first so
+  the bar is determinate, and a cross-device `fs:move` falls back to the same copy
+  and reports the same way. A relay answers a transfer in one piece, so a remote
+  one is indeterminate and has no Cancel (`TransferTask.cancellable`).
+- **Stopping takes the half-written entry back — or, for a delete, stops where it
+  is — and says so at once.** `fs:transfer-cancel` flags the task and aborts its
+  file's stream (`AbortController`); main removes the entry a copy was part way
+  through and answers `EABORTED` (a delete cannot take back what it already
+  removed, so it simply stops). The pane does *not* paint that as a notice — the
+  dialog that asked to stop says so itself — and the dialog shows `Cancelling…` and
+  disables the button the moment the key or click lands (`stopRequested`), not when
+  main answers: the abort is a round trip, and a dialog that sat still until it
+  returned would read as a key that did not register.
 - **`Background` parks the dialog as a pill beside the window buttons**, and so
   does `Escape` (`TRANSFER_BACKGROUND_KEY`, `shared/transfer.ts` — the keys are
   spelled once and shown as chips on the buttons): `Escape` does *not* cancel, so a

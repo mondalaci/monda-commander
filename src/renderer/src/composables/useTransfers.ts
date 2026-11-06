@@ -16,7 +16,7 @@ import type { PaneEntry } from '@renderer/composables/useDirectory'
  * dialog, the pill or the progress with it.
  */
 
-export type TransferMode = 'copy' | 'move'
+export type TransferMode = 'copy' | 'move' | 'delete'
 
 /**
  * Where a transfer sits. `done` and `cancelled` are a moment rather than an end —
@@ -73,7 +73,8 @@ export interface TransferInput {
 /** The verb a transfer's state is spelled with, for the dialog and the pill. */
 const VERBS: Record<TransferMode, { running: string; done: string; failed: string }> = {
   copy: { running: 'Copying', done: 'Copied', failed: 'Copy failed' },
-  move: { running: 'Moving', done: 'Moved', failed: 'Move failed' }
+  move: { running: 'Moving', done: 'Moved', failed: 'Move failed' },
+  delete: { running: 'Deleting', done: 'Deleted', failed: 'Delete failed' }
 }
 
 /**

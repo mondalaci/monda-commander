@@ -334,22 +334,23 @@ export interface CopyOutcome {
 }
 
 /**
- * One report of a transfer's byte progress. Sent while `fs:copy` — or the copy
- * a cross-device `fs:move` falls back to — runs, so the dialog and the title-bar
- * pill can draw how far it has got. `id` names the transfer the caller started;
- * `total` is 0 until the source has been measured, which the bar reads as
- * "unknown" and slides for.
+ * One report of a transfer's progress. Sent while `fs:copy` — or the copy a
+ * cross-device `fs:move` falls back to, or a `fs:delete` — runs, so the dialog
+ * and the title-bar pill can draw how far it has got. `id` names the transfer the
+ * caller started; `total` is 0 until the source has been measured, which the bar
+ * reads as "unknown" and slides for. `copied` is bytes written, or removed for a
+ * delete; `files`/`totalFiles` count the regular files the same way.
  */
 export interface TransferProgress {
   id: string
   copied: number
   total: number
-  /** The file now being written, and its own bytes done and size — the "File"
-   * bar an orthodox copy dialog draws beside the whole job's. */
+  /** The file now being written (or removed), and its own bytes done and size —
+   * the "File" bar an orthodox copy dialog draws beside the whole job's. */
   current: string | null
   fileCopied: number
   fileTotal: number
-  /** Regular files written so far, and how many the transfer holds. */
+  /** Regular files done so far, and how many the transfer holds. */
   files: number
   totalFiles: number
 }
