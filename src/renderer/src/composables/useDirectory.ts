@@ -214,6 +214,18 @@ export interface PaneState {
   git: GitView | null
 }
 
+/**
+ * What a transfer reports when it is over: whether it completed (a stopped or
+ * failed one did not), the directory a copy or move landed in, and how many of
+ * its entries were left alone at a collision (`skipped`) or failed.
+ */
+export interface TransferOutcome {
+  ok: boolean
+  destination: string | null
+  failed: number
+  skipped: number
+}
+
 export interface PaneController {
   readonly state: PaneState
   init(): Promise<void>
@@ -285,10 +297,10 @@ export interface PaneController {
   clearSelection(): void
   selectionTargets(): PaneEntry[]
   deletionTargets(): PaneEntry[]
-  copyEntries(destination: string, transferId?: string): Promise<string | null>
-  moveEntries(destination: string, transferId?: string): Promise<string | null>
+  copyEntries(destination: string, transferId?: string): Promise<TransferOutcome>
+  moveEntries(destination: string, transferId?: string): Promise<TransferOutcome>
   createDirectory(name: string): Promise<string | null>
-  deleteEntries(transferId?: string): Promise<boolean>
+  deleteEntries(transferId?: string): Promise<TransferOutcome>
   openSearch(): void
   updateSearch(query: string): boolean
   closeSearch(): void
@@ -1899,10 +1911,11 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
    * takes them away. Returns the resolved destination directory so the caller
    * can refresh a pane showing it, or null on failure.
    */
-  async function copyEntries(destination: string, transferId = ''): Promise<string | null> {
-    if (refuseInArchive()) return null
+  async function copyEntries(destination: string, transferId = ''): Promise<TransferOutcome> {
+    const nothing: TransferOutcome = { ok: false, destination: null, failed: 0, skipped: 0 }
+    if (refuseInArchive()) return nothing
     const targets = selectionTargets()
-    if (targets.length === 0 || !destination) return null
+    if (targets.length === 0 || !destination) return nothing
 
     const result = await api.fs.copy(
       transferId,
@@ -1912,11 +1925,14 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     )
     if (!result.ok) {
       // A transfer the user stopped is not an error to announce: the dialog that
-      // asked for the stop says so itself.
-      if (result.error.code !== 'EABORTED') {
-        state.error = `${result.error.code}: ${result.error.message}`
+      // asked for the stop says so itself. The pane still re-lists, since a
+      // partial copy may be sitting in it.
+      if (result.error.code === 'EABORTED') {
+        await refresh()
+        return { ok: false, destination: null, failed: 0, skipped: 0 }
       }
-      return null
+      state.error = `${result.error.code}: ${result.error.message}`
+      return { ok: false, destination: null, failed: 1, skipped: 0 }
     }
 
     // A copy leaves the source in place, so nothing prunes the marks the way a
@@ -1936,7 +1952,12 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
       if (first) state.error = `${first.error.code}: ${first.error.message}`
     }
 
-    return result.data.destination
+    return {
+      ok: true,
+      destination: result.data.destination,
+      failed: result.data.failed.length,
+      skipped: result.data.skipped ?? 0
+    }
   }
 
   /**
@@ -1947,10 +1968,11 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
    * place. Returns the resolved destination so the caller can refresh a pane
    * showing it, or null on failure.
    */
-  async function moveEntries(destination: string, transferId = ''): Promise<string | null> {
-    if (refuseInArchive()) return null
+  async function moveEntries(destination: string, transferId = ''): Promise<TransferOutcome> {
+    const nothing: TransferOutcome = { ok: false, destination: null, failed: 0, skipped: 0 }
+    if (refuseInArchive()) return nothing
     const targets = selectionTargets()
-    if (targets.length === 0 || !destination) return null
+    if (targets.length === 0 || !destination) return nothing
 
     const result = await api.fs.move(
       transferId,
@@ -1959,10 +1981,12 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
       state.path
     )
     if (!result.ok) {
-      if (result.error.code !== 'EABORTED') {
-        state.error = `${result.error.code}: ${result.error.message}`
+      if (result.error.code === 'EABORTED') {
+        await refresh()
+        return { ok: false, destination: null, failed: 0, skipped: 0 }
       }
-      return null
+      state.error = `${result.error.code}: ${result.error.message}`
+      return { ok: false, destination: null, failed: 1, skipped: 0 }
     }
 
     // A source that did not fail has left this directory; drop its mark. Marks
@@ -1991,7 +2015,12 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
       if (first) state.error = `${first.error.code}: ${first.error.message}`
     }
 
-    return result.data.destination
+    return {
+      ok: true,
+      destination: result.data.destination,
+      failed: result.data.failed.length,
+      skipped: result.data.skipped ?? 0
+    }
   }
 
   /**
@@ -2024,10 +2053,11 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     return result.data
   }
 
-  async function deleteEntries(transferId = ''): Promise<boolean> {
-    if (refuseInArchive()) return false
+  async function deleteEntries(transferId = ''): Promise<TransferOutcome> {
+    const nothing: TransferOutcome = { ok: false, destination: null, failed: 0, skipped: 0 }
+    if (refuseInArchive()) return nothing
     const targets = deletionTargets()
-    if (targets.length === 0) return false
+    if (targets.length === 0) return nothing
 
     const result = await api.fs.remove(
       transferId,
@@ -2037,12 +2067,12 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
       // A delete the user stopped is not an error to announce: the dialog that
       // asked for the stop says so itself. The pane still re-lists, since what it
       // removed is gone whatever the outcome is called.
-      if (result.error.code !== 'EABORTED') {
-        state.error = `${result.error.code}: ${result.error.message}`
-        return false
+      if (result.error.code === 'EABORTED') {
+        await refresh()
+        return { ok: false, destination: null, failed: 0, skipped: 0 }
       }
-      await refresh()
-      return false
+      state.error = `${result.error.code}: ${result.error.message}`
+      return { ok: false, destination: null, failed: 1, skipped: 0 }
     }
 
     // Drop the marks that are gone, keep any that failed so a retry still
@@ -2060,7 +2090,12 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
       if (first) state.error = `${first.error.code}: ${first.error.message}`
     }
 
-    return true
+    return {
+      ok: true,
+      destination: null,
+      failed: result.data.failed.length,
+      skipped: 0
+    }
   }
 
   async function activate(force = false): Promise<void> {

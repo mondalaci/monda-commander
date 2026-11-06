@@ -13,6 +13,7 @@ import FileViewer from '@renderer/components/FileViewer.vue'
 import PaneContextMenu from '@renderer/components/PaneContextMenu.vue'
 import TransferDialog from '@renderer/components/TransferDialog.vue'
 import TransferPill from '@renderer/components/TransferPill.vue'
+import ConflictDialog from '@renderer/components/ConflictDialog.vue'
 import { loadHideMode, hideMode, toggleHideMode } from '@renderer/composables/useHideMode'
 import { addQuickCd, isQuickCd, loadQuickCd, quickCdDirs, removeQuickCd, reorderQuickCd } from '@renderer/composables/useQuickCd'
 import { loadPdfView, setPdfFit } from '@renderer/composables/usePdfView'
@@ -45,7 +46,7 @@ import { useTransfers, type TransferTask } from '@renderer/composables/useTransf
 import { withViewTransition } from '@renderer/lib/viewTransition'
 import { untrackedAbove } from '@renderer/lib/gitMark'
 import { playSwapAnimation } from '@renderer/lib/swapAnimation'
-import type { FileContent, FsError, PanelSide } from '@shared/types'
+import type { ConflictChoice, FileContent, FsError, PanelSide } from '@shared/types'
 
 /**
  * The app is a stack of workspaces — one tab each. A workspace owns its own
@@ -251,8 +252,11 @@ const moveJob = ref<{ entries: PaneEntry[]; source: string; destination: string 
 const {
   foregroundTasks,
   backgroundTasks,
+  conflictingTasks,
   create: createTransfer,
   applyProgress: applyTransferProgress,
+  applyConflict: applyTransferConflict,
+  answerConflict: answerTransferConflict,
   finish: finishTransfer,
   dismiss: dismissTransfer,
   stop: stopTransfer,
@@ -288,6 +292,11 @@ function restoreTransferDialog(task: TransferTask): void {
     restoreTransfer(task)
     await nextTick()
   })
+}
+
+/** Answer the collision a transfer is held on, and let it go on. */
+function chooseConflict(task: TransferTask, choice: ConflictChoice): void {
+  answerTransferConflict(task, choice)
 }
 
 /**
@@ -1370,9 +1379,9 @@ async function confirmDelete(): Promise<void> {
   })
 
   try {
-    const done = await pane.deleteEntries(task.id)
-    const status = done ? 'done' : task.stopRequested ? 'cancelled' : 'error'
-    finishTransfer(task, status, status === 'error' ? pane.state.error : null)
+    const outcome = await pane.deleteEntries(task.id)
+    const status = outcome.ok ? 'done' : task.stopRequested ? 'cancelled' : 'error'
+    finishTransfer(task, status, pane.state.error, outcome.failed, outcome.skipped)
   } catch (error) {
     finishTransfer(task, 'error', String(error))
   }
@@ -1435,13 +1444,13 @@ async function confirmCopy(destination: string): Promise<void> {
   try {
     // The handler resolves a relative destination against the source pane, so
     // the resolved directory is what a pane showing it must be compared against.
-    const resolved = await source.copyEntries(destination, task.id)
-    if (resolved) task.resolvedDestination = resolved
-    if (resolved && target.state.path === resolved) await target.refresh()
+    const outcome = await source.copyEntries(destination, task.id)
+    if (outcome.destination) task.resolvedDestination = outcome.destination
+    if (outcome.destination && target.state.path === outcome.destination) await target.refresh()
     // A finished copy is `done` even if a stop was asked for a moment too late;
     // only one that came back empty is the stop's — or a failure's.
-    const status = resolved !== null ? 'done' : task.stopRequested ? 'cancelled' : 'error'
-    finishTransfer(task, status, status === 'error' ? source.state.error : null)
+    const status = outcome.ok ? 'done' : task.stopRequested ? 'cancelled' : 'error'
+    finishTransfer(task, status, source.state.error, outcome.failed, outcome.skipped)
   } catch (error) {
     finishTransfer(task, 'error', String(error))
   } finally {
@@ -1485,12 +1494,12 @@ async function confirmMove(destination: string): Promise<void> {
   const panes = transferPanes(source, target, destination)
   for (const pane of panes) pane.beginSelfChange()
   try {
-    const resolved = await source.moveEntries(destination, task.id)
-    if (resolved) task.resolvedDestination = resolved
-    if (resolved && target.state.path === resolved) await target.refresh()
+    const outcome = await source.moveEntries(destination, task.id)
+    if (outcome.destination) task.resolvedDestination = outcome.destination
+    if (outcome.destination && target.state.path === outcome.destination) await target.refresh()
     // A finished move is `done` even if a stop was asked for a moment too late.
-    const status = resolved !== null ? 'done' : task.stopRequested ? 'cancelled' : 'error'
-    finishTransfer(task, status, status === 'error' ? source.state.error : null)
+    const status = outcome.ok ? 'done' : task.stopRequested ? 'cancelled' : 'error'
+    finishTransfer(task, status, source.state.error, outcome.failed, outcome.skipped)
   } catch (error) {
     finishTransfer(task, 'error', String(error))
   } finally {
@@ -2509,6 +2518,26 @@ function onKeydown(event: KeyboardEvent): void {
     return
   }
 
+  // A collision is the dialog in front: `Escape` — or `Ctrl+X` — stops the
+  // transfer, and every other key belongs to the conflict's own buttons (Enter
+  // activates the focused one).
+  const conflicts = conflictingTasks.value
+  if (conflicts.length > 0) {
+    const isCancelKey =
+      event.key === TRANSFER_BACKGROUND_KEY ||
+      (event.ctrlKey &&
+        !event.shiftKey &&
+        !event.altKey &&
+        !event.metaKey &&
+        event.key.toLowerCase() === TRANSFER_CANCEL_KEY)
+    if (isCancelKey) {
+      consume(event)
+      const first = conflicts[0]
+      if (first) answerTransferConflict(first, 'cancel')
+    }
+    return
+  }
+
   // A transfer running in front. `Escape` does not cancel it — a long copy is not
   // something a stray key should throw away — it parks the dialog in the title
   // bar, where the transfer keeps running as a pill and can be brought back.
@@ -3008,6 +3037,7 @@ document.addEventListener('focusout', onFocusDrop)
  * torn down. `null` until `onMounted` has subscribed.
  */
 let stopTransferProgress: (() => void) | null = null
+let stopTransferConflict: (() => void) | null = null
 
 onMounted(async () => {
   // The remembered mode is asked for before the panes walk their first
@@ -3033,6 +3063,8 @@ onMounted(async () => {
   // it arrives. Subscribed once for the app: a transfer is the window's, not a
   // pane's, so nothing about the store depends on which tab is in front.
   stopTransferProgress = window.mc.fs.onTransferProgress(applyTransferProgress)
+  // A collision a transfer has hit, which its dialog then asks about.
+  stopTransferConflict = window.mc.fs.onTransferConflict(applyTransferConflict)
 })
 
 onBeforeUnmount(() => {
@@ -3044,6 +3076,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('focus', restoreFocus)
   document.removeEventListener('focusout', onFocusDrop)
   stopTransferProgress?.()
+  stopTransferConflict?.()
   for (const workspace of workspaces.value) releaseWorkspace(workspace)
 })
 </script>
@@ -3303,6 +3336,16 @@ onBeforeUnmount(() => {
       @background="parkTransferDialog(task)"
       @stop="stopTransfer(task)"
       @dismiss="dismissTransfer(task)"
+    />
+
+    <!-- A collision the transfer in front has hit. It holds the copy where it is
+         until answered, and it is drawn over the progress dialog — the one thing
+         the darkened backdrop must not hide. -->
+    <ConflictDialog
+      v-for="task in conflictingTasks"
+      :key="task.id"
+      :task="task"
+      @choose="chooseConflict(task, $event)"
     />
 
     <ConfirmTransfer

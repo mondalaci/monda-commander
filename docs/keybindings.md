@@ -239,6 +239,15 @@ the first takes focus, `←`/`→` (and `↑`/`↓`, `Home`/`End`) move between 
 back to the panes — a real terminal keeps its own `Ctrl+B`, readline's
 backward-char, as it keeps `Ctrl+R` and `Ctrl+G`.
 
+A name the transfer would clobber stops it and asks in its own dialog, over the
+progress one: **Overwrite / Overwrite All / Skip / Skip All / Cancel** (**Merge** in
+place of Overwrite when it is a folder), the set mc, Total Commander and Double
+Commander share. The arrows move between those buttons (wrapping, `Home`/`End` to
+the ends), `Enter` activates the focused one — `Skip` holds the focus to begin
+with, so a stray `Enter` replaces nothing — and `Escape` or `Ctrl+X` cancels the
+whole transfer. The answer already made is remembered for the rest of it by the
+`… All` buttons.
+
 `Escape` stops the size walks: a folder walk is the only thing still working in
 the background, so it is taken back before the pane's notice is dismissed.
 

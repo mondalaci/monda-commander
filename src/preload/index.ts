@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import type { McApi, McRemoteEvent, RelayProgress } from '@shared/api'
 import type {
+  ConflictChoice,
   CopyOutcome,
   DeleteOutcome,
   DirListing,
@@ -25,6 +26,7 @@ import type {
   PdfPageText,
   PdfViewState,
   Result,
+  TransferConflict,
   TransferProgress
 } from '@shared/types'
 
@@ -93,6 +95,13 @@ const api: McApi = {
       ipcRenderer.on('fs:transfer-progress', listener)
       return () => ipcRenderer.off('fs:transfer-progress', listener)
     },
+    onTransferConflict: (handler: (event: TransferConflict) => void) => {
+      const listener = (_event: IpcRendererEvent, payload: TransferConflict) => handler(payload)
+      ipcRenderer.on('fs:transfer-conflict', listener)
+      return () => ipcRenderer.off('fs:transfer-conflict', listener)
+    },
+    answerTransferConflict: (id: string, requestId: string, choice: ConflictChoice) =>
+      ipcRenderer.send('fs:transfer-conflict-answer', { id, requestId, choice }),
     remove: (id: string, targets: string[]): Promise<Result<DeleteOutcome>> =>
       ipcRenderer.invoke('fs:delete', id, targets),
     hideAdd: (dir: string, name: string): Promise<Result<string>> =>

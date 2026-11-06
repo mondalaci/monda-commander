@@ -971,6 +971,32 @@ bars would be the same bar twice, and a delete has no per-file byte progress at
 all (each unlink is one step), so it draws the `Total` bar alone. Either bar slides
 while its own size is still unknown.
 
+**A name collision is a question, not a failure.** The app never clobbered
+silently, and still does not — but where it once reported `EEXIST` into the pane's
+notice and left the entry, it now stops and asks. `copyTree`/`moveEntry` hold the
+transfer on `askConflict`, which sends the renderer the two paths (and their sizes
+and mtimes) and waits; `ConflictDialog.vue` draws that over the progress dialog —
+`z-[60]`, the one thing the darkened backdrop must not hide — and the buttons are
+the set Midnight Commander, Total Commander and Double Commander share:
+**Overwrite / Overwrite All / Skip / Skip All / Cancel**, with a *folder* collision
+saying **Merge** for Overwrite (the one that is there stays, and the source is
+filled into it). The `…All` forms are remembered per kind in
+`TransferControl.decisions`, so the same choice is not asked again for the rest of
+the transfer; `cancel` stops it exactly as the stop key does. The arrows move
+between the buttons (wrapping, `Home`/`End` to the ends), and `Skip` holds the
+focus to begin with so a stray `Enter` replaces nothing. A copy skips rather than
+clobbers when there is no window to ask. The mirror question is asked of a
+move too — a rename would clobber silently on POSIX, so `moveEntry` checks the
+target first, and a folder moved onto a folder merges by moving its children in one
+at a time.
+
+**What was skipped or failed is said in the dialog.** A collision answered Skip
+leaves the entry where it is, so the outcome counts them (`CopyOutcome.skipped`)
+and the dialog prints `N skipped` / `N failed` with the first failure's message
+under the bars — the old pane notice sat behind the backdrop where nothing behind a
+modal could read it. (A relay answers a transfer in one piece and cannot be asked
+mid-copy, so a collision on a remote target still fails its entry, as before.)
+
 **A stop takes the half-written entry back — or, for a delete, stops where it
 is — and says so at once.** `fs:transfer-cancel` sets the task's cancelled flag and
 aborts the file's stream (`AbortController`); main removes the entry a copy was

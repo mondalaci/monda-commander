@@ -168,6 +168,11 @@ function remoteFs(target: Target): McFsApi {
     onTransferProgress: () => () => {
       // The relay answers a copy in one piece rather than streaming it.
     },
+    onTransferConflict: () => () => {
+      // A remote transfer cannot be asked mid-copy: the relay does not hold one
+      // open for an answer. A collision there fails its entry, as it always did.
+    },
+    answerTransferConflict: () => {},
     remove: async (_id, targets) => toResult<DeleteOutcome>(await request(id, 'fs:delete', { targets })),
     hideAdd: async (dir, name) => toResult<string>(await request(id, 'fs:hideAdd', { dir, name })),
     hideRemove: async (dir, name) =>

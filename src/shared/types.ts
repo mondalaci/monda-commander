@@ -331,6 +331,8 @@ export interface CopyOutcome {
   copied: string[]
   failed: CopyFailure[]
   destination: string
+  /** Entries the user chose to leave alone at a name collision. */
+  skipped?: number
 }
 
 /**
@@ -355,6 +357,34 @@ export interface TransferProgress {
   totalFiles: number
 }
 
+/** The kind of entry a collision is about: a file is replaced, a folder merged. */
+export type ConflictKind = 'file' | 'directory'
+
+/**
+ * How a collision is answered. `overwrite` replaces a file or merges a folder;
+ * the `…All` forms do the same for every later collision of that kind without
+ * asking again; `cancel` stops the whole transfer.
+ */
+export type ConflictChoice = 'overwrite' | 'overwriteAll' | 'skip' | 'skipAll' | 'cancel'
+
+/**
+ * A collision a copy or move has hit — the two paths and their metadata — that
+ * main is waiting on, so the dialog can name both sides and ask. The renderer
+ * answers it by `requestId`; main holds the transfer there until it does.
+ */
+export interface TransferConflict {
+  id: string
+  requestId: string
+  kind: ConflictKind
+  source: string
+  target: string
+  /** Sizes and mtimes for the two sides, for a file; null for a folder. */
+  sourceSize: number | null
+  sourceMtime: number | null
+  targetSize: number | null
+  targetMtime: number | null
+}
+
 export interface MoveFailure {
   path: string
   error: FsError
@@ -371,6 +401,8 @@ export interface MoveOutcome {
   moved: string[]
   failed: MoveFailure[]
   destination: string
+  /** Entries the user chose to leave alone at a name collision. */
+  skipped?: number
 }
 
 export interface PtySpawnOptions {

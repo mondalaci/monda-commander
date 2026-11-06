@@ -1,5 +1,6 @@
 import type { Target } from './target'
 import type {
+  ConflictChoice,
   CopyOutcome,
   DeleteOutcome,
   DirListing,
@@ -25,6 +26,7 @@ import type {
   PdfPageText,
   PdfViewState,
   Result,
+  TransferConflict,
   TransferProgress
 } from './types'
 
@@ -193,6 +195,18 @@ export interface McFsApi {
    * piece, so it reports none.
    */
   onTransferProgress(handler: (event: TransferProgress) => void): () => void
+  /**
+   * A name collision a running copy or move has hit, which main is holding open
+   * for an answer. The dialog shows the two sides and asks what to do; until
+   * `answerTransferConflict` is called the transfer waits where it is.
+   */
+  onTransferConflict(handler: (event: TransferConflict) => void): () => void
+  /**
+   * Answer the collision `requestId` on transfer `id`: `overwrite` replaces the
+   * file or merges the folder, `skip` leaves it, the `…All` forms decide the rest
+   * of that kind silently, and `cancel` stops the transfer.
+   */
+  answerTransferConflict(id: string, requestId: string, choice: ConflictChoice): void
   /**
    * Delete `targets`. `id` names the transfer, so the progress
    * `onTransferProgress` reports and a `cancelTransfer` can be routed to it.

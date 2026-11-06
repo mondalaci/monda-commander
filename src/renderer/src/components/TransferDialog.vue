@@ -13,11 +13,32 @@ const emit = defineEmits<{
 }>()
 
 const card = ref<HTMLElement | null>(null)
+const footer = ref<HTMLElement | null>(null)
 
 // The dialog holds the keyboard while it is up, so the app's own keys do not
 // leak past it to the panes. Focus lands on the card rather than a button, so a
 // stray Enter does not fire Background or Cancel unbidden.
 onMounted(() => card.value?.focus())
+
+// Left/Right (and Up/Down) reach the buttons from the card, wrapping, so the
+// dialog is usable without the pointer.
+function moveFocus(delta: number): void {
+  const buttons = Array.from(footer.value?.querySelectorAll<HTMLButtonElement>('button') ?? [])
+  if (buttons.length === 0) return
+  const current = buttons.indexOf(document.activeElement as HTMLButtonElement)
+  const from = current < 0 ? 0 : current
+  buttons[(from + delta + buttons.length) % buttons.length]?.focus()
+}
+
+function onKey(event: KeyboardEvent): void {
+  if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+    event.preventDefault()
+    moveFocus(-1)
+  } else if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+    event.preventDefault()
+    moveFocus(1)
+  }
+}
 
 const isMove = computed(() => props.task.mode === 'move')
 const isDelete = computed(() => props.task.mode === 'delete')
@@ -79,6 +100,15 @@ const summary = computed(() => {
   else if (task.copied > 0) parts.push(formatSize(task.copied))
   return parts.join(' · ')
 })
+
+/** What was left alone or failed, so neither hides behind the backdrop. */
+const notes = computed(() => {
+  const task = props.task
+  const parts: string[] = []
+  if (task.skipped > 0) parts.push(`${task.skipped} skipped`)
+  if (task.failed > 0) parts.push(`${task.failed} failed`)
+  return parts.join(' · ')
+})
 </script>
 
 <template>
@@ -93,6 +123,7 @@ const summary = computed(() => {
       :style="{ 'view-transition-name': `transfer-${task.id}` }"
       role="dialog"
       aria-modal="true"
+      @keydown="onKey"
     >
       <div class="flex items-center gap-2 border-b border-border-subtle px-4 py-3">
         <svg
@@ -187,10 +218,19 @@ const summary = computed(() => {
         </div>
 
         <div v-if="summary" class="tabular-nums text-ui-sm text-fg-dim">{{ summary }}</div>
+        <div v-if="notes" class="tabular-nums text-ui-sm text-fg-dim">{{ notes }}</div>
+        <div
+          v-if="task.error && task.status !== 'error'"
+          class="min-w-0 truncate text-ui-sm text-danger"
+          :title="task.error"
+        >
+          {{ task.error }}
+        </div>
       </div>
 
       <div
         v-if="task.status === 'running' || task.status === 'error'"
+        ref="footer"
         class="flex justify-end gap-2 border-t border-border-subtle px-4 py-3"
       >
         <template v-if="task.status === 'running'">

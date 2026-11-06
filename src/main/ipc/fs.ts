@@ -3,7 +3,7 @@ import type { FileHandle } from 'node:fs/promises'
 import { pipeline } from 'node:stream/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { ipcMain, nativeImage, shell } from 'electron'
+import { ipcMain, nativeImage, shell, type WebContents } from 'electron'
 import { isArchivePath, splitArchivePath } from '@shared/archive'
 import { HIDE_MARKER } from '@shared/hide'
 import { imageMimeFor } from '@shared/image'
@@ -15,6 +15,8 @@ import {
   readArchiveEntry
 } from '../archive'
 import type {
+  ConflictChoice,
+  ConflictKind,
   CopyFailure,
   CopyOutcome,
   DeleteFailure,
@@ -53,13 +55,29 @@ function toFsError(error: unknown): { code: string; message: string } {
 /**
  * A copy or move this window is running, so a stop can reach it: `cancelled` is
  * what the copy loop reads between entries, and the controller is what interrupts
- * the file being streamed mid-chunk.
+ * the file being streamed mid-chunk. A collision is held here too — main cannot
+ * go on until the renderer has said what to do — and `decisions` remembers an
+ * "overwrite all"/"skip all" for the rest of the transfer.
  */
 interface TransferControl {
   cancelled: boolean
   controller: AbortController
   /** The entry being written, for the dialog's label. */
   current: string | null
+  /** What to do with every later collision of a kind, from an "… all" answer. */
+  decisions: { file: 'overwrite' | 'skip' | null; directory: 'overwrite' | 'skip' | null }
+  /** Collisions waiting on the renderer, keyed by the request id its answer names. */
+  conflicts: Map<string, { kind: ConflictKind; resolve: (choice: ConflictChoice) => void }>
+}
+
+function newTransferControl(): TransferControl {
+  return {
+    cancelled: false,
+    controller: new AbortController(),
+    current: null,
+    decisions: { file: null, directory: null },
+    conflicts: new Map()
+  }
 }
 
 /** Active transfers per webContents, keyed by the id the caller named. */
@@ -103,6 +121,8 @@ interface CopyHooks {
   bytes(count: number): void
   file(path: string, size: number): void
   fileDone(): void
+  /** An entry was left alone at a collision. */
+  skipped(): void
 }
 
 /** The size of a copy: the bytes it will write and the regular files it holds. */
@@ -147,8 +167,26 @@ async function measureCopy(target: string, control?: TransferControl): Promise<C
   return { bytes, files }
 }
 
-/**
- * The name a report shows for a file being written: the entry being copied, and
+/** Whether a path is taken, without saying what by. */
+async function pathExists(target: string): Promise<boolean> {
+  try {
+    await fs.lstat(target)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** The filesystem a path sits on — the `dev` of its stat — or null if unreadable. */
+async function deviceOf(target: string): Promise<number | null> {
+  try {
+    return (await fs.lstat(target)).dev
+  } catch {
+    return null
+  }
+}
+
+/** The name a report shows for a file being written: the entry being copied, and
  * the path under it, so a folder names the file inside rather than only itself —
  * `photos/img_0421.jpg`, not `photos`.
  */
@@ -157,50 +195,164 @@ function copyCurrent(root: string, file: string): string {
   return `${path.basename(root)}/${path.relative(root, file)}`
 }
 
+/** The next collision's id, named on the wire so its answer can be routed back. */
+let conflictSeq = 0
+
+/** The two sides of a collision, for the dialog that asks about it. */
+async function conflictDetails(
+  kind: ConflictKind,
+  from: string,
+  to: string
+): Promise<{
+  source: string
+  target: string
+  sourceSize: number | null
+  sourceMtime: number | null
+  targetSize: number | null
+  targetMtime: number | null
+}> {
+  const sourceStats = await fs.lstat(from).catch(() => null)
+  const targetStats = await fs.lstat(to).catch(() => null)
+  const file = kind === 'file'
+  return {
+    source: from,
+    target: to,
+    sourceSize: file ? (sourceStats?.size ?? null) : null,
+    sourceMtime: sourceStats?.mtimeMs ?? null,
+    targetSize: file ? (targetStats?.size ?? null) : null,
+    targetMtime: targetStats?.mtimeMs ?? null
+  }
+}
+
+/** What to do about a collision: the choice the renderer answers with. */
+type AskConflict = (kind: ConflictKind, from: string, to: string) => Promise<ConflictChoice>
+
+/**
+ * Ask the renderer what to do about a collision the copy has hit, and hold the
+ * transfer there until it answers — the dialog in front is the only way past it.
+ * A kind an "… all" answer has already decided is not asked again. A transfer
+ * with no id, or a window that is gone, cannot be asked, so it skips rather than
+ * clobber.
+ */
+async function askConflict(
+  sender: WebContents,
+  transferId: string,
+  control: TransferControl,
+  kind: ConflictKind,
+  from: string,
+  to: string
+): Promise<ConflictChoice> {
+  if (control.cancelled) return 'cancel'
+  const decided = control.decisions[kind]
+  if (decided) return decided
+
+  const requestId = `c${++conflictSeq}`
+  const details = await conflictDetails(kind, from, to)
+  return new Promise<ConflictChoice>((resolve) => {
+    control.conflicts.set(requestId, { kind, resolve })
+    if (!transferId || sender.isDestroyed()) {
+      control.conflicts.delete(requestId)
+      resolve('skip')
+      return
+    }
+    sender.send('fs:transfer-conflict', { id: transferId, requestId, kind, ...details })
+  })
+}
+
 /**
  * Copy one entry — file, directory or link — the way `fs.cp` with `recursive`
  * does, but reporting as it goes, because `fs.cp` cannot. A link is recreated
  * rather than followed; a file is streamed; a directory is made, filled and only
  * then given the source's mode, so a read-only folder does not refuse its own
  * contents.
+ *
+ * A name that is already taken is not a failure but a question: `ask` puts it to
+ * the user, and the answer replaces the entry (`overwrite`), merges into a folder,
+ * or leaves it (`skip`). Nothing is overwritten without being asked, exactly as
+ * the app never clobbered silently — the difference is that now the user can say
+ * yes.
  */
 async function copyTree(
   from: string,
   to: string,
   hooks: CopyHooks,
-  control: TransferControl
+  control: TransferControl,
+  ask: AskConflict
 ): Promise<void> {
   if (control.cancelled) throw abortError()
 
   const stats = await fs.lstat(from)
 
   if (stats.isSymbolicLink()) {
-    await fs.symlink(await fs.readlink(from), to)
+    const link = await fs.readlink(from)
+    try {
+      await fs.symlink(link, to)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+      const choice = await ask('file', from, to)
+      if (choice === 'skip') {
+        hooks.skipped()
+        return
+      }
+      if (choice === 'cancel') throw abortError()
+      await fs.rm(to, { recursive: true, force: true })
+      await fs.symlink(link, to)
+    }
     return
   }
 
   if (stats.isDirectory()) {
-    await fs.mkdir(to)
+    try {
+      await fs.mkdir(to)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+      const choice = await ask('directory', from, to)
+      if (choice === 'skip') {
+        hooks.skipped()
+        return
+      }
+      if (choice === 'cancel') throw abortError()
+      // Overwrite of a folder is a merge: the one that is there stays, and the
+      // source's contents are filled into it.
+    }
     const names = await fs.readdir(from)
     for (const name of names) {
-      await copyTree(path.join(from, name), path.join(to, name), hooks, control)
+      await copyTree(path.join(from, name), path.join(to, name), hooks, control, ask)
     }
     await fs.chmod(to, stats.mode & 0o7777)
     return
   }
 
   if (stats.isFile()) {
-    hooks.file(from, stats.size)
-    const source = createReadStream(from)
-    // `wx` refuses to overwrite, the "never clobber" rule the caller has already
-    // checked for the entry as a whole.
-    const destination = createWriteStream(to, { flags: 'wx' })
-    source.on('data', (chunk: Buffer) => hooks.bytes(chunk.length))
-    try {
+    const write = async (): Promise<void> => {
+      const source = createReadStream(from)
+      // `wx` refuses to overwrite, which is what turns a taken name into the
+      // question below rather than a silent clobber.
+      const destination = createWriteStream(to, { flags: 'wx' })
+      source.on('data', (chunk: Buffer) => hooks.bytes(chunk.length))
       await pipeline(source, destination, { signal: control.controller.signal })
+    }
+
+    hooks.file(from, stats.size)
+    try {
+      await write()
     } catch (error) {
       if (control.cancelled) throw abortError()
-      throw error
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+
+      const choice = await ask('file', from, to)
+      if (choice === 'skip') {
+        hooks.skipped()
+        return
+      }
+      if (choice === 'cancel') throw abortError()
+      await fs.rm(to, { recursive: true, force: true })
+      try {
+        await write()
+      } catch (retry) {
+        if (control.cancelled) throw abortError()
+        throw retry
+      }
     }
     await fs.chmod(to, stats.mode & 0o7777)
     hooks.fileDone()
@@ -210,6 +362,65 @@ async function copyTree(
   const error = new Error(`"${path.basename(from)}" is not a regular file`) as NodeJS.ErrnoException
   error.code = 'ENOTSUP'
   throw error
+}
+
+/**
+ * Move one entry. A rename where the two are on one filesystem; a collision is put
+ * to the user first — `overwrite` clears the way, a folder's overwrite *merges*
+ * into the one that is there (its own children then move in one at a time), and
+ * `skip` leaves it. Where a rename cannot cross filesystems the entry is copied
+ * with the same `copyTree` a copy uses, and only then is the source removed.
+ */
+async function moveEntry(
+  from: string,
+  to: string,
+  hooks: CopyHooks,
+  control: TransferControl,
+  ask: AskConflict
+): Promise<void> {
+  if (control.cancelled) throw abortError()
+
+  let target: Stats | null = null
+  try {
+    target = await fs.lstat(to)
+  } catch {
+    target = null
+  }
+
+  if (target) {
+    const source = await fs.lstat(from)
+    const kind: ConflictKind =
+      source.isDirectory() && target.isDirectory() ? 'directory' : 'file'
+    const choice = await ask(kind, from, to)
+    if (choice === 'skip') {
+      hooks.skipped()
+      return
+    }
+    if (choice === 'cancel') throw abortError()
+    if (kind === 'file') {
+      await fs.rm(to, { recursive: true, force: true })
+    } else {
+      // A folder moved onto a folder merges: each child is moved into the one
+      // that is there, and the emptied source folder is taken away.
+      const names = await fs.readdir(from)
+      for (const name of names) {
+        await moveEntry(path.join(from, name), path.join(to, name), hooks, control, ask)
+      }
+      await fs.rmdir(from).catch(() => {})
+      return
+    }
+  }
+
+  try {
+    await fs.rename(from, to)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EXDEV') {
+      await copyTree(from, to, hooks, control, ask)
+      await fs.rm(from, { recursive: true, force: false })
+    } else {
+      throw error
+    }
+  }
 }
 
 /**
@@ -1000,6 +1211,40 @@ export function registerFsHandlers(): void {
     control.controller.abort()
   })
 
+  // The answer to a collision a running copy or move is held on. The "… all"
+  // forms are remembered for the rest of that transfer, so the same choice is not
+  // asked again; cancel stops the transfer as the stop key would.
+  ipcMain.on('fs:transfer-conflict-answer', (event, payload: unknown) => {
+    const { id, requestId, choice } = (payload ?? {}) as {
+      id?: unknown
+      requestId?: unknown
+      choice?: unknown
+    }
+    if (typeof id !== 'string' || typeof requestId !== 'string') return
+    const control = transfers.get(event.sender.id)?.get(id)
+    const pending = control?.conflicts.get(requestId)
+    if (!control || !pending) return
+    control.conflicts.delete(requestId)
+
+    if (choice === 'overwriteAll') {
+      control.decisions[pending.kind] = 'overwrite'
+      pending.resolve('overwrite')
+      return
+    }
+    if (choice === 'skipAll') {
+      control.decisions[pending.kind] = 'skip'
+      pending.resolve('skip')
+      return
+    }
+    if (choice === 'cancel') {
+      control.cancelled = true
+      control.controller.abort()
+      pending.resolve('cancel')
+      return
+    }
+    pending.resolve(choice === 'overwrite' ? 'overwrite' : 'skip')
+  })
+
   // How full the filesystem holding a pane's path is. `statfs` answers in
   // blocks, so the block size turns them into bytes; `bavail` is what a
   // non-root writer may still use, while `bfree` is every free block including
@@ -1324,11 +1569,7 @@ export function registerFsHandlers(): void {
       const destDir = intoDirectory ? dest : path.dirname(dest)
       const sender = event.sender
       const transferId = typeof id === 'string' ? id : ''
-      const control: TransferControl = {
-        cancelled: false,
-        controller: new AbortController(),
-        current: null
-      }
+      const control = newTransferControl()
       if (transferId) registerTransfer(sender.id, transferId, control)
 
       let copiedBytes = 0
@@ -1337,6 +1578,7 @@ export function registerFsHandlers(): void {
       let totalFiles = 0
       let fileCopied = 0
       let fileTotal = 0
+      let skippedCount = 0
       let lastReport = 0
       let sourceRoot = ''
 
@@ -1371,8 +1613,14 @@ export function registerFsHandlers(): void {
         },
         fileDone: () => {
           filesDone += 1
+        },
+        skipped: () => {
+          skippedCount += 1
         }
       }
+
+      const ask: AskConflict = (kind, from, to) =>
+        askConflict(sender, transferId, control, kind, from, to)
 
       try {
         // Weigh the whole transfer up front so the bar is determinate from the
@@ -1396,26 +1644,8 @@ export function registerFsHandlers(): void {
           control.current = path.basename(from)
           sourceRoot = from
 
+          const existed = await pathExists(to)
           try {
-            // Never silently clobber: a name that already exists in the
-            // destination is reported as a per-entry failure, exactly like
-            // rename, so a copy can never overwrite data.
-            try {
-              await fs.lstat(to)
-              failed.push({
-                path: from,
-                error: {
-                  code: 'EEXIST',
-                  message: intoDirectory
-                    ? `"${path.basename(to)}" already exists in "${destDir}"`
-                    : `"${path.basename(to)}" already exists`
-                }
-              })
-              continue
-            } catch {
-              // Destination is free — proceed.
-            }
-
             // A directory cannot be copied into itself or into one of its own
             // descendants: that would recurse without end.
             if (to.startsWith(from + path.sep)) {
@@ -1428,14 +1658,18 @@ export function registerFsHandlers(): void {
 
             // The copy is our own recursive stream rather than `fs.cp`, which
             // reports no bytes: a link is preserved, a file streamed, a folder
-            // walked, and the bytes and files counted along the way.
-            await copyTree(from, to, hooks, control)
-            copied.push(to)
+            // walked, and the bytes and files counted along the way. A name that
+            // is already taken is put to the user by `ask`, not clobbered.
+            const before = skippedCount
+            await copyTree(from, to, hooks, control, ask)
+            if (skippedCount === before) copied.push(to)
           } catch (error) {
             // A cancelled entry is a half-written tree: take it back rather than
-            // leaving a partial copy the next attempt would refuse as existing.
+            // leaving a partial copy the next attempt would refuse as existing —
+            // but not a target that was already there (a merge), which is not
+            // ours to remove.
             if (control.cancelled || (error as NodeJS.ErrnoException).code === 'EABORTED') {
-              await fs.rm(to, { recursive: true, force: true }).catch(() => {})
+              if (!existed) await fs.rm(to, { recursive: true, force: true }).catch(() => {})
               break
             }
             failed.push({ path: from, error: toFsError(error) })
@@ -1446,7 +1680,7 @@ export function registerFsHandlers(): void {
           return { ok: false, error: { code: 'EABORTED', message: 'Copy cancelled' } }
         }
         report(true)
-        return { ok: true, data: { copied, failed, destination: destDir } }
+        return { ok: true, data: { copied, failed, destination: destDir, skipped: skippedCount } }
       } catch (error) {
         // A cancellation raised while weighing, or any other escape, still
         // answers as a Result rather than rejecting across the bridge.
@@ -1545,22 +1779,20 @@ export function registerFsHandlers(): void {
       const destDir = intoDirectory ? dest : path.dirname(dest)
       const sender = event.sender
       const transferId = typeof id === 'string' ? id : ''
-      const control: TransferControl = {
-        cancelled: false,
-        controller: new AbortController(),
-        current: null
-      }
+      const control = newTransferControl()
       if (transferId) registerTransfer(sender.id, transferId, control)
 
       // A move within one filesystem is a rename and reports nothing; only the
-      // cross-device fallback copies bytes, so its total is found as each such
-      // entry is discovered rather than up front.
+      // part that must be copied — an entry on another device than the
+      // destination — is weighed, and it is weighed up front so the bar is
+      // determinate from the first file, exactly as a copy's is.
       let copiedBytes = 0
       let totalBytes = 0
       let filesDone = 0
       let totalFiles = 0
       let fileCopied = 0
       let fileTotal = 0
+      let skippedCount = 0
       let lastReport = 0
       let sourceRoot = ''
 
@@ -1595,21 +1827,23 @@ export function registerFsHandlers(): void {
         },
         fileDone: () => {
           filesDone += 1
+        },
+        skipped: () => {
+          skippedCount += 1
         }
       }
+
+      const ask: AskConflict = (kind, from, to) =>
+        askConflict(sender, transferId, control, kind, from, to)
 
       try {
         const moved: string[] = []
         const failed: MoveFailure[] = []
-        // A rename that cannot cross filesystems (EXDEV) becomes a copy. Those are
-        // collected here and copied after the renames, as one group, so the whole
-        // cross-device part can be weighed up front: the bar is determinate from
-        // the first file and the `File` bar works, exactly as a copy's does. A
-        // same-filesystem move is a rename and weighs nothing.
-        const toCopy: Array<{ from: string; to: string }> = []
 
+        // The entries that pass every check, with where each is going. A root, or
+        // a move into a directory's own descendant, is refused before any work.
+        const pairs: Array<{ from: string; to: string }> = []
         for (const source of valid) {
-          if (control.cancelled) break
           const from = path.resolve(source)
           const to = intoDirectory ? path.join(dest, path.basename(from)) : dest
 
@@ -1623,79 +1857,52 @@ export function registerFsHandlers(): void {
             })
             continue
           }
-          control.current = path.basename(from)
 
-          try {
-            // Never silently clobber: an existing name is a per-entry failure,
-            // exactly like copy and rename.
-            try {
-              await fs.lstat(to)
-              failed.push({
-                path: from,
-                error: {
-                  code: 'EEXIST',
-                  message: intoDirectory
-                    ? `"${path.basename(to)}" already exists in "${destDir}"`
-                    : `"${path.basename(to)}" already exists`
-                }
-              })
-              continue
-            } catch {
-              // Destination is free — proceed.
-            }
-
-            // A directory cannot be moved into itself or into one of its own
-            // descendants.
-            if (to.startsWith(from + path.sep)) {
-              failed.push({
-                path: from,
-                error: { code: 'EINVAL', message: 'Cannot move a directory into itself' }
-              })
-              continue
-            }
-
-            try {
-              await fs.rename(from, to)
-              moved.push(to)
-            } catch (error) {
-              if ((error as NodeJS.ErrnoException).code === 'EXDEV') {
-                toCopy.push({ from, to })
-              } else {
-                throw error
-              }
-            }
-          } catch (error) {
-            failed.push({ path: from, error: toFsError(error) })
+          // A directory cannot be moved into itself or into one of its own
+          // descendants.
+          if (to.startsWith(from + path.sep)) {
+            failed.push({
+              path: from,
+              error: { code: 'EINVAL', message: 'Cannot move a directory into itself' }
+            })
+            continue
           }
+
+          pairs.push({ from, to })
         }
 
-        // The cross-device part: weigh it, then copy each entry. It is the same
-        // streaming copy `fs:copy` runs, so it reports the same bytes, files and
-        // file in flight.
-        if (toCopy.length > 0) {
-          for (const { from } of toCopy) {
-            if (control.cancelled) break
+        // Weigh only what has to be copied across: an entry on another device
+        // than the destination cannot be renamed, so it will be streamed.
+        const destDevice = await deviceOf(destDir)
+        for (const { from } of pairs) {
+          if (control.cancelled) break
+          const fromDevice = await deviceOf(from)
+          if (destDevice === null || fromDevice === null || fromDevice !== destDevice) {
             const measured = await measureCopy(from, control)
             totalBytes += measured.bytes
             totalFiles += measured.files
           }
-          report(true)
+        }
+        report(true)
 
-          for (const { from, to } of toCopy) {
-            if (control.cancelled) break
-            control.current = path.basename(from)
-            sourceRoot = from
-            try {
-              await copyTree(from, to, hooks, control)
-              await fs.rm(from, { recursive: true, force: false })
-              moved.push(to)
-            } catch (error) {
-              if (control.cancelled || (error as NodeJS.ErrnoException).code === 'EABORTED') {
-                await fs.rm(to, { recursive: true, force: true }).catch(() => {})
-                break
-              }
-              failed.push({ path: from, error: toFsError(error) })
+        for (const { from, to } of pairs) {
+          if (control.cancelled) break
+          control.current = path.basename(from)
+          sourceRoot = from
+          const existed = await pathExists(to)
+          const before = skippedCount
+          try {
+            await moveEntry(from, to, hooks, control, ask)
+            if (skippedCount === before) moved.push(to)
+          } catch (error) {
+            if (control.cancelled || (error as NodeJS.ErrnoException).code === 'EABORTED') {
+              // Take back a copy this transfer was part way through — but not a
+              // target that was already there (a merge), which is not ours to
+              // remove.
+              if (!existed) await fs.rm(to, { recursive: true, force: true }).catch(() => {})
+              break
             }
+            failed.push({ path: from, error: toFsError(error) })
           }
         }
 
@@ -1703,7 +1910,7 @@ export function registerFsHandlers(): void {
           return { ok: false, error: { code: 'EABORTED', message: 'Move cancelled' } }
         }
         report(true)
-        return { ok: true, data: { moved, failed, destination: destDir } }
+        return { ok: true, data: { moved, failed, destination: destDir, skipped: skippedCount } }
       } catch (error) {
         return { ok: false, error: toFsError(error) }
       } finally {
@@ -1728,11 +1935,7 @@ export function registerFsHandlers(): void {
 
       const sender = event.sender
       const transferId = typeof id === 'string' ? id : ''
-      const control: TransferControl = {
-        cancelled: false,
-        controller: new AbortController(),
-        current: null
-      }
+      const control = newTransferControl()
       if (transferId) registerTransfer(sender.id, transferId, control)
 
       let bytesDone = 0
@@ -1775,7 +1978,9 @@ export function registerFsHandlers(): void {
         },
         fileDone: () => {
           filesDone += 1
-        }
+        },
+        // A delete has no collisions: nothing is left alone.
+        skipped: () => {}
       }
 
       const deleted: string[] = []

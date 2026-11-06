@@ -115,6 +115,7 @@ src/renderer/src/components/PaneContextMenu.vue  a row's menu
 src/renderer/src/components/HoldRing.vue       the ring on a held right press
 src/renderer/src/components/TransferDialog.vue  a running transfer's progress dialog
 src/renderer/src/components/TransferPill.vue    a backgrounded transfer, in the title bar
+src/renderer/src/components/ConflictDialog.vue  a name collision, and what to do about it
 src/renderer/src/components/ColumnAddButton.vue    the column editor's gap "+"
 src/renderer/src/components/ColumnDropMarker.vue  the arrow + line insertion point
 src/renderer/src/composables/useWorkspace.ts   one tab: its two panes, its shell, cwd sync
@@ -646,6 +647,22 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   disables the button the moment the key or click lands (`stopRequested`), not when
   main answers: the abort is a round trip, and a dialog that sat still until it
   returned would read as a key that did not register.
+- **A name collision is a question, not a failure.** `copyTree`/`moveEntry` in
+  `ipc/fs.ts` do not clobber and no longer fail on `EEXIST`: they hold the transfer
+  on `askConflict`, which sends `fs:transfer-conflict` and waits for the dialog's
+  answer. `ConflictDialog.vue` offers **Overwrite / Overwrite All / Skip / Skip
+  All / Cancel** (a folder says **Merge** instead of Overwrite) — the set mc,
+  Total Commander and Double Commander share — with the `…All` forms remembered
+  per kind in `TransferControl.decisions`, and `cancel` stopping the transfer as
+  `Ctrl+X` does. A collision with no window to ask falls back to skipping rather
+  than clobbering. The dialog is drawn over the progress one (`z-[60]`), so it is
+  the thing in front rather than a notice hidden under the backdrop, and the arrows
+  move between its buttons (wrapping, `Home`/`End` to the ends) — `Skip` holding
+  the focus, so a stray `Enter` replaces nothing.
+- **What was skipped or failed is said in the dialog.** `CopyOutcome.skipped` and
+  the per-entry failures ride back on `TransferOutcome`, and `TransferDialog`
+  prints `N skipped` / `N failed` and the first failure's message beneath the bars,
+  so nothing hides behind the dark backdrop the way the old pane notice did.
 - **`Background` parks the dialog as a pill beside the window buttons**, and so
   does `Escape` (`TRANSFER_BACKGROUND_KEY`, `shared/transfer.ts` — the keys are
   spelled once and shown as chips on the buttons): `Escape` does *not* cancel, so a

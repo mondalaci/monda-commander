@@ -1,5 +1,5 @@
 import { computed, reactive, ref, type ComputedRef, type Ref } from 'vue'
-import type { TransferProgress } from '@shared/types'
+import type { ConflictChoice, TransferConflict, TransferProgress } from '@shared/types'
 import type { PaneEntry } from '@renderer/composables/useDirectory'
 
 /**
@@ -48,6 +48,11 @@ export interface TransferTask {
   current: string | null
   status: TransferStatus
   error: string | null
+  /** Entries left alone at a collision, and entries that failed. */
+  skipped: number
+  failed: number
+  /** The collision main is waiting on, or null when there is none. */
+  conflict: TransferConflict | null
   /** Whether the dialog is parked in the title bar rather than shown modally. */
   backgrounded: boolean
   /**
@@ -122,10 +127,16 @@ export interface Transfers {
   foregroundTasks: ComputedRef<TransferTask[]>
   /** The tasks parked as title-bar pills, leftward of the window buttons. */
   backgroundTasks: ComputedRef<TransferTask[]>
+  /** The tasks held on a name collision, which the conflict dialog answers. */
+  conflictingTasks: ComputedRef<TransferTask[]>
   create(input: TransferInput): TransferTask
   /** Fold one byte-progress report into its task, if it is still running. */
   applyProgress(event: TransferProgress): void
-  finish(task: TransferTask, status: TransferStatus, error?: string | null): void
+  /** Record a collision a task has hit, so its dialog can ask about it. */
+  applyConflict(event: TransferConflict): void
+  /** Answer the collision a task is held on, and let its transfer go on. */
+  answerConflict(task: TransferTask, choice: ConflictChoice): void
+  finish(task: TransferTask, status: TransferStatus, error?: string | null, failed?: number, skipped?: number): void
   /** Take a task off screen now — the error dialog's Close, or a timer's ending. */
   dismiss(task: TransferTask): void
   /** Ask main to stop the transfer; its promise then finishes as `cancelled`. */
@@ -142,6 +153,7 @@ export function useTransfers(): Transfers {
   const tasks = ref<TransferTask[]>([])
   const foregroundTasks = computed(() => tasks.value.filter((task) => !task.backgrounded))
   const backgroundTasks = computed(() => tasks.value.filter((task) => task.backgrounded))
+  const conflictingTasks = computed(() => tasks.value.filter((task) => task.conflict !== null))
 
   function create(input: TransferInput): TransferTask {
     sequence += 1
@@ -161,6 +173,9 @@ export function useTransfers(): Transfers {
       current: null,
       status: 'running',
       error: null,
+      skipped: 0,
+      failed: 0,
+      conflict: null,
       backgrounded: false,
       stopRequested: false,
       cancellable: input.cancellable
@@ -181,10 +196,32 @@ export function useTransfers(): Transfers {
     task.current = event.current
   }
 
-  function finish(task: TransferTask, status: TransferStatus, error: string | null = null): void {
+  function applyConflict(event: TransferConflict): void {
+    const task = tasks.value.find((entry) => entry.id === event.id)
+    if (!task || task.status !== 'running') return
+    task.conflict = event
+  }
+
+  function answerConflict(task: TransferTask, choice: ConflictChoice): void {
+    const conflict = task.conflict
+    if (conflict === null) return
+    task.conflict = null
+    window.mc.fs.answerTransferConflict(task.id, conflict.requestId, choice)
+  }
+
+  function finish(
+    task: TransferTask,
+    status: TransferStatus,
+    error: string | null = null,
+    failed = 0,
+    skipped = 0
+  ): void {
     if (task.status !== 'running') return
     task.status = status
     task.error = error
+    task.failed = failed
+    task.skipped = skipped
+    task.conflict = null
     if (status === 'done' || status === 'cancelled') {
       window.setTimeout(() => dismiss(task), TRANSFER_LINGER_MS)
     }
@@ -213,8 +250,11 @@ export function useTransfers(): Transfers {
     tasks,
     foregroundTasks,
     backgroundTasks,
+    conflictingTasks,
     create,
     applyProgress,
+    applyConflict,
+    answerConflict,
     finish,
     dismiss,
     stop,
