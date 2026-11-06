@@ -933,6 +933,11 @@ The task is the app's, not the pane's or the tab's, because a copy of a disk ima
 runs for minutes and must survive navigating both panes away, switching tabs, or
 being parked.
 
+The dialog is up for the operation itself and not a moment longer: it appears the
+instant it is confirmed and is gone the instant the operation is over, with nothing
+lingering — a delete that takes no time shows a dialog for no time. The one thing
+that waits is a failure, which stays until it is dismissed.
+
 **The bytes come from main, because `fs.cp` cannot report them.** `fs:copy` used
 to hand the whole tree to `fs.cp`; it now walks it itself (`copyTree`), recreating
 a link, streaming a file and counting the bytes off its `data`, and making a
@@ -1032,10 +1037,9 @@ has lost: `Ctrl+B` (`TRANSFER_PILLS_KEY`) jumps to them (the first takes focus),
 the arrows move between them and `Enter` restores the focused one, exactly as a
 click would, with `Escape` coming back to the panes. It is claimed with the panes'
 keys rather than above an expanded terminal, so a real shell keeps its `Ctrl+B`
-(readline's backward-char). A transfer that finishes shows its outcome for a moment
-(`TRANSFER_LINGER_MS`) and then removes itself,
-whether it was in front or parked; one that *failed* waits, because a failure is
-the one outcome the user has to answer.
+(readline's backward-char). A transfer that finishes takes its dialog — or its
+pill — away at once, whether it was in front or parked; one that *failed* waits,
+because a failure is the one outcome the user has to answer.
 
 ### `Space` on a folder walks it, and the row says how much is in there
 

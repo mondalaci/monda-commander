@@ -679,8 +679,9 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   Clicking a pill restores the dialog the same way — and so does the keyboard:
   `Ctrl+B` (`TRANSFER_PILLS_KEY`) jumps to the pills (the first takes focus), the
   arrows move between them and `Enter` restores the focused one, with `Escape`
-  coming back to the panes. `done`/`cancelled` linger (`TRANSFER_LINGER_MS`) then
-  remove themselves; an `error` waits for Close.
+  coming back to the panes. The dialog is up from the moment the operation starts
+  and gone the moment it is over — nothing lingers, so even an instant delete shows
+  it only for as long as it took; a failure is the one thing that waits for Close.
 - **A transfer is the window's, not a pane's.** The task store is app-level, so a
   tab switch or a navigation in either pane does not take the progress with it.
 

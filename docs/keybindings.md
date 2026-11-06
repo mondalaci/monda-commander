@@ -219,9 +219,10 @@ row just before the one that went (the `..` row when that was the first entry). 
 file removed from under the cursor some other way — another program, a command at
 the prompt, the other pane — lands it on the closest row before it all the same.
 
-`F5`/`F6`/`F8` do not dismiss their dialog on confirm: it stays up as the
-operation's progress, drawing the two bars an orthodox copy dialog draws — a
-`File` bar for the file now being written and a `Total` bar for the whole job,
+`F5`/`F6`/`F8` do not dismiss their dialog on confirm: an operation that runs long
+enough keeps it up as the progress, drawing the two bars an orthodox copy dialog
+draws — a `File` bar for the file now being written and a `Total` bar for the whole
+job,
 each with its own percentage and the whole job's file count and bytes beneath (mc
 and Double Commander draw the same pair; a delete draws the `Total` bar alone,
 having no per-file byte progress, and its tooltip leaves `To` off, having no
@@ -246,7 +247,9 @@ Commander share. The arrows move between those buttons (wrapping, `Home`/`End` t
 the ends), `Enter` activates the focused one — `Skip` holds the focus to begin
 with, so a stray `Enter` replaces nothing — and `Escape` or `Ctrl+X` cancels the
 whole transfer. The answer already made is remembered for the rest of it by the
-`… All` buttons.
+`… All` buttons. The dialog appears the instant the operation is confirmed and is
+gone the instant it is over — nothing lingers, so an instantaneous delete is
+instantaneous.
 
 `Escape` stops the size walks: a folder walk is the only thing still working in
 the background, so it is taken back before the pane's notice is dismissed.

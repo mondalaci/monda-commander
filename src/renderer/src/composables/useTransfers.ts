@@ -118,9 +118,6 @@ export function transferTooltip(task: TransferTask): string {
   return lines.join('\n')
 }
 
-/** How long a finished dialog or pill stays before it takes itself off screen. */
-const TRANSFER_LINGER_MS = 900
-
 export interface Transfers {
   tasks: Ref<TransferTask[]>
   /** The tasks whose dialog is shown, in the order they were started. */
@@ -222,8 +219,11 @@ export function useTransfers(): Transfers {
     task.failed = failed
     task.skipped = skipped
     task.conflict = null
+
+    // Nothing lingers: the dialog is gone the moment the operation is over. A
+    // failure is the one exception — it waits to be read and dismissed.
     if (status === 'done' || status === 'cancelled') {
-      window.setTimeout(() => dismiss(task), TRANSFER_LINGER_MS)
+      dismiss(task)
     }
   }
 
