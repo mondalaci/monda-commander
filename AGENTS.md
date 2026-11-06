@@ -138,7 +138,9 @@ src/renderer/src/lib/gitMark.ts       git status -> per-row marks, folder roll-u
 src/renderer/src/lib/commit.ts        a pane's git view -> the commit dialog's list
                                       of changed paths and the branch it names
 src/renderer/src/lib/diff.ts          the viewer's changed-line view: a line diff
-                                      against a HEAD baseline, and the Monaco
+                                      against a HEAD baseline, the changed stretch
+                                      within a modified pair trimmed to what differs
+                                      and highlighted more strongly, and the Monaco
                                       decorations the buffer's side is drawn with
                                       (styles/diff.css; the removed side is a view
                                       zone, built in FileViewer.vue)
@@ -881,6 +883,12 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   HEAD's removed side has no buffer line to tint, so the viewer draws it as an
   inline **view zone** above the run, in the editor's own font and line height
   (`removedLinesNode`), with a triangle left in the gutter and a red ruler mark.
+  A run that pairs an equal number of baseline and buffer lines is matched line by
+  line and each pair's common ends trimmed (`lineSpan`), and the stretch that
+  actually differs is highlighted more strongly — an inline decoration on the
+  buffer's line, a span inside the removed zone — so a one-character edit does not
+  read as a rewritten line; a run that does not line up one to one keeps the
+  whole-line tint alone.
   Lines are compared without their terminators, so a CRLF checkout does not
   differ from the LF blob. App.vue reads the baseline eagerly for a file the
   pane already marks changed, so its diff is on screen at open; every other file
@@ -891,7 +899,8 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   be shown — or the link's own text — would read as a whole file of deletions);
   a path HEAD has no blob for reads as wholly added. The palette is the panes'
   (`DIFF_COLORS` from `gitMark.ts`); `styles/diff.css` paints the lines, the
-  gutter bars and the removal tint, and the overview ruler takes the same hues.
+  gutter bars, the removal tint and the stronger inline highlight, and the
+  overview ruler takes the same hues.
 
 ### The terminal
 

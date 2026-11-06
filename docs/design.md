@@ -2003,6 +2003,20 @@ staged still reads as changed from the last commit, which is what the pane's own
 dot says about it, where a diff against the index would blank the view for a file
 the row is still showing as modified.
 
+**The exact changed stretch is pointed at on top of the line's faint tint.** A
+run that sets an equal number of baseline and buffer lines against each other —
+the ordinary modification — is paired line by line, and each pair's two common
+ends are trimmed (`lineSpan`, `lib/diff.ts`), leaving the characters that actually
+differ; those are drawn more strongly, as a Monaco inline decoration on the buffer
+line and as a span inside the removed zone, so a one-character edit does not read
+as a rewritten line and a swapped word stands out of the line it sits in. The trim
+is at the character level rather than the word's: it is what makes ` key` versus
+`-key` point at the space and the hyphen rather than at the whole word, and it
+costs a single pass over the pair. A run that does not line up one to one — a
+lopsided rewrite, an insertion, a removal — has no pair to compare and keeps the
+whole-line tint alone, which is also all an addition has, having no baseline line
+to differ from.
+
 **The removed side is a view zone, not a decoration**, because there is no buffer
 line for it to be a decoration *of* — the text it names is gone from the model.
 Monaco's `IViewZone` is the mechanism the diff editor itself uses for this: a

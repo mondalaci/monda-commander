@@ -8,7 +8,9 @@
  *
  * The line's own tint is deliberately faint: the gutter bar and the
  * overview-ruler mark beside it carry the signal, and a line of text reads
- * better on a hint of colour than on a slab of it.
+ * better on a hint of colour than on a slab of it — while the words that
+ * actually changed are pointed at on top of it, more strongly, so a one-character
+ * edit does not read as a rewritten line.
  *
  * The three hex values are mirrored in DIFF_COLORS (lib/gitMark.ts), which is
  * what the overview ruler is coloured with: a canvas cannot read a stylesheet.
@@ -19,6 +21,14 @@
 
 .monaco-editor .mc-diff-modified {
   background: color-mix(in srgb, #e2c08d 14%, transparent);
+}
+
+/*
+ * The changed stretch within a modified buffer line — the characters the pair of
+ * lines does not share — on top of the line's faint tint.
+ */
+.monaco-editor .mc-diff-modified-inline {
+  background: color-mix(in srgb, #e2c08d 40%, transparent);
 }
 
 /*
@@ -37,6 +47,11 @@
   color: var(--color-fg);
   white-space: pre;
   overflow: hidden;
+}
+
+/* The changed stretch within a removed line, on top of the removal tint. */
+.monaco-editor .mc-diff-removed-inline {
+  background: color-mix(in srgb, #c74e39 40%, transparent);
 }
 
 /* The last row of a removal too large to draw whole: how many lines were not. */

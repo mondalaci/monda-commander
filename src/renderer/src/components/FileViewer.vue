@@ -3,7 +3,13 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type * as MonacoApi from 'monaco-editor'
 import type { FileContent } from '@shared/types'
 import { languageFor, loadMonaco } from '@renderer/lib/monaco'
-import { diffDecorations, diffLineArrays, toLines, type LineChange } from '@renderer/lib/diff'
+import {
+  diffDecorations,
+  diffLineArrays,
+  toLines,
+  type InlineSpan,
+  type LineChange
+} from '@renderer/lib/diff'
 import { injectTargetApi } from '@renderer/lib/targetContext'
 
 /**
@@ -143,10 +149,15 @@ function bufferLines(): string[] {
  * line would need is not known before the zone is placed. At most
  * `MAX_REMOVED_LINES` are drawn — a whole-file rewrite must not become a hundred
  * thousand nodes — with the rest counted in a final row.
+ *
+ * A line a run paired with a buffer line carries the changed stretch (`spans`),
+ * drawn as its own span so the words HEAD lost stand out from the whole-line
+ * removal tint exactly as the buffer's changed words do above it.
  */
 function removedLinesNode(
   monaco: typeof MonacoApi,
   lines: string[],
+  spans: (InlineSpan | null)[] | null,
   hidden: number
 ): HTMLElement {
   const node = document.createElement('div')
@@ -156,17 +167,33 @@ function removedLinesNode(
   node.style.tabSize = String(model?.getOptions().tabSize ?? 4)
 
   const lineHeight = editor?.getOption(monaco.editor.EditorOption.lineHeight) ?? 16
-  const addRow = (text: string, extra = ''): void => {
+  const addRow = (text: string, span: InlineSpan | null, extra = ''): void => {
     const row = document.createElement('div')
     row.className = `mc-diff-removed-line${extra}`
     row.style.height = `${lineHeight}px`
     row.style.lineHeight = `${lineHeight}px`
-    row.textContent = text
+
+    // Only a stretch that lost text is worth splitting out; an empty side (the
+    // baseline of a pure insertion) leaves the line as it was.
+    if (span && span.baseEnd > span.baseStart) {
+      const before = text.slice(0, span.baseStart)
+      const changed = text.slice(span.baseStart, span.baseEnd)
+      const after = text.slice(span.baseEnd)
+      if (before) row.appendChild(document.createTextNode(before))
+      const mark = document.createElement('span')
+      mark.className = 'mc-diff-removed-inline'
+      mark.textContent = changed
+      row.appendChild(mark)
+      if (after) row.appendChild(document.createTextNode(after))
+    } else {
+      row.textContent = text
+    }
+
     node.appendChild(row)
   }
 
-  for (const line of lines) addRow(line)
-  if (hidden > 0) addRow(`… ${hidden} more lines removed`, ' mc-diff-removed-more')
+  for (let k = 0; k < lines.length; k += 1) addRow(lines[k] ?? '', spans?.[k] ?? null)
+  if (hidden > 0) addRow(`… ${hidden} more lines removed`, null, ' mc-diff-removed-more')
   return node
 }
 
@@ -197,12 +224,15 @@ function paintRemovedLines(
 
       const shown = removed.slice(0, MAX_REMOVED_LINES)
       const hidden = removed.length - shown.length
+      // The run's per-line spans index from its first baseline line, which is
+      // where `removed` starts, so the slice lines up one to one.
+      const shownSpans = change.spans?.slice(0, MAX_REMOVED_LINES) ?? null
 
       diffZones.push(
         accessor.addZone({
           afterLineNumber: change.currentStart > 0 ? change.currentStart - 1 : change.afterLine,
           heightInLines: shown.length + (hidden > 0 ? 1 : 0),
-          domNode: removedLinesNode(monaco, shown, hidden),
+          domNode: removedLinesNode(monaco, shown, shownSpans, hidden),
           suppressMouseDown: true
         })
       )

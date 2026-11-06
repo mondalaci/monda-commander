@@ -19,6 +19,22 @@ import { DIFF_COLORS } from '@renderer/lib/gitMark'
  */
 
 /**
+ * The still-changed stretch within one pair of lines a run set against each
+ * other: the characters left after the two common ends are trimmed, so a word
+ * swapped in the middle of an otherwise identical line is what is left to point
+ * at. Offsets are 0-based and half-open into the line's own text; an empty side
+ * is a pure insertion (buffer) or deletion (baseline) inside the line.
+ */
+export interface InlineSpan {
+  /** The changed stretch of the baseline line. */
+  baseStart: number
+  baseEnd: number
+  /** The changed stretch of the buffer line. */
+  currentStart: number
+  currentEnd: number
+}
+
+/**
  * One run of lines that differs between HEAD and the working copy. Every number
  * is 1-based and inclusive, and a side that the run does not touch — the baseline
  * of an insertion, the buffer of a removal — is left at zero.
@@ -36,6 +52,15 @@ export interface LineChange {
    * from the line before they start.
    */
   afterLine: number
+  /**
+   * For a run that sets an equal number of baseline and buffer lines against each
+   * other, the changed stretch within each pair, indexed from the run's first
+   * line — the exact difference the viewer highlights more strongly than the
+   * line's own tint. An entry is null when a pair happens to be identical; the
+   * whole array is null when the run's lines could not be paired one to one (a
+   * lopsided rewrite, an insertion, a removal) and are tinted whole instead.
+   */
+  spans: (InlineSpan | null)[] | null
 }
 
 /**
@@ -83,11 +108,25 @@ export function diffLineArrays(a: string[], b: string[]): LineChange[] {
     tail += 1
   }
 
-  const runs = align(a.slice(head, a.length - tail), b.slice(head, b.length - tail))
+  const aTrim = a.slice(head, a.length - tail)
+  const bTrim = b.slice(head, b.length - tail)
+  const runs = align(aTrim, bTrim)
 
   return runs.map((run) => {
     const hasBase = run.baseEnd > run.baseStart
     const hasCurrent = run.currentEnd > run.currentStart
+    const baseCount = run.baseEnd - run.baseStart
+    const currentCount = run.currentEnd - run.currentStart
+
+    // One-to-one runs are paired line by line for the inline view; a run that
+    // does not line up that way is left whole.
+    let spans: (InlineSpan | null)[] | null = null
+    if (hasBase && hasCurrent && baseCount === currentCount) {
+      spans = []
+      for (let k = 0; k < baseCount; k += 1) {
+        spans.push(lineSpan(aTrim[run.baseStart + k] ?? '', bTrim[run.currentStart + k] ?? ''))
+      }
+    }
 
     return {
       baseStart: hasBase ? head + run.baseStart + 1 : 0,
@@ -96,9 +135,43 @@ export function diffLineArrays(a: string[], b: string[]): LineChange[] {
       currentEnd: hasCurrent ? head + run.currentEnd : 0,
       // A run with buffer lines is anchored above them; a removal has none, so it
       // names the line it sat after — or the top of the file.
-      afterLine: hasCurrent ? 0 : head + run.anchor
+      afterLine: hasCurrent ? 0 : head + run.anchor,
+      spans
     }
   })
+}
+
+/**
+ * The changed stretch of one pair of lines: what is left once the characters the
+ * two share at their start and at their end have been trimmed away. This is the
+ * whole line for a rewrite and a single character for a one-character edit; a
+ * pair with nothing in common is reported whole, and a pair that is identical
+ * (possible when equal-count runs are paired by position rather than by match)
+ * reports nothing.
+ */
+function lineSpan(baseLine: string, currentLine: string): InlineSpan | null {
+  const baseLen = baseLine.length
+  const currentLen = currentLine.length
+  const shortest = Math.min(baseLen, currentLen)
+
+  let prefix = 0
+  while (prefix < shortest && baseLine[prefix] === currentLine[prefix]) prefix += 1
+
+  // The common tail cannot overlap the common head, so it is bounded by what the
+  // head left on the shorter line.
+  let suffix = 0
+  while (
+    suffix < shortest - prefix &&
+    baseLine[baseLen - 1 - suffix] === currentLine[currentLen - 1 - suffix]
+  ) {
+    suffix += 1
+  }
+
+  const baseEnd = baseLen - suffix
+  const currentEnd = currentLen - suffix
+  if (prefix === baseEnd && prefix === currentEnd) return null
+
+  return { baseStart: prefix, baseEnd, currentStart: prefix, currentEnd }
 }
 
 /** A changed run within the trimmed regions, in half-open line indices. */
@@ -215,7 +288,8 @@ function align(a: string[], b: string[]): RegionRun[] {
 
 /**
  * The Monaco decorations a set of changes is drawn with: the tinted line and the
- * gutter decoration for the buffer's side of a change, and a mark in the overview
+ * gutter decoration for the buffer's side of a change, the exact changed stretch
+ * within a modified line highlighted more strongly, and a mark in the overview
  * ruler for both sides. The removed side is not a decoration at all — it has no
  * line in the buffer to sit on — and is shown by the viewer as an inline view
  * zone above the run; the triangle here is only the cue left in the gutter. The
@@ -243,6 +317,20 @@ export function diffDecorations(
           }
         }
       })
+
+      // The line's own tint is faint on purpose; the words that actually changed
+      // are pointed at on top of it, one inline range per changed pair.
+      if (change.spans !== null) {
+        for (let k = 0; k < change.spans.length; k += 1) {
+          const span = change.spans[k]
+          if (!span || span.currentEnd <= span.currentStart) continue
+          const line = change.currentStart + k
+          decorations.push({
+            range: new monaco.Range(line, span.currentStart + 1, line, span.currentEnd + 1),
+            options: { inlineClassName: 'mc-diff-modified-inline' }
+          })
+        }
+      }
       continue
     }
 
