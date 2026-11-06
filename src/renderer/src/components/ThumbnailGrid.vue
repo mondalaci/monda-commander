@@ -168,27 +168,34 @@ const visibleCells = computed<Cell[]>(() => {
   return cells
 })
 
-/** The band of cells hidden above the window, as padding of its exact height. */
-const padTop = computed(() => {
+/**
+ * The band of cells hidden above the window, as whole grid rows. It is a spacer
+ * *item* spanning every column rather than padding on the grid: padding large
+ * enough to stand in for the hidden rows (a listing of thousands, scrolled past
+ * its middle) exceeds the grid's own height, and a flex item whose padding is
+ * taller than its box does not stretch — the grid then takes its padding as its
+ * height, `measure` reads that as the viewport, and the window it computes covers
+ * the whole listing. A row-spanning spacer adds to the scroll height without ever
+ * touching the grid's own height.
+ */
+const padTopRows = computed(() => {
   const first = visibleCells.value[0]
   if (!first) return 0
-  return Math.floor(first.index / columns.value) * cellHeight.value
+  return Math.floor(first.index / columns.value)
 })
 
-/** The band of cells hidden below the window, as padding of its exact height. */
-const padBottom = computed(() => {
+/** The band of cells hidden below the window, as whole grid rows (see above). */
+const padBottomRows = computed(() => {
   const cells = visibleCells.value
   const last = cells[cells.length - 1]
   if (!last) return 0
   const lastRow = Math.floor(last.index / columns.value) + 1
-  return Math.max(0, totalRows.value - lastRow) * cellHeight.value
+  return Math.max(0, totalRows.value - lastRow)
 })
 
 const gridStyle = computed(() => ({
   gridTemplateColumns: `repeat(${columns.value}, minmax(0, 1fr))`,
   gridAutoRows: `${cellHeight.value}px`,
-  paddingTop: `${padTop.value}px`,
-  paddingBottom: `${padBottom.value}px`,
   paddingLeft: `${GRID_GUTTER}px`,
   paddingRight: `${GRID_GUTTER}px`
 }))
@@ -602,6 +609,13 @@ function enterStyle(order: number): { animationDelay: string } | null {
       :style="gridStyle"
       @scroll="onScroll"
     >
+      <!-- The rows hidden above the window, as one spacer spanning every column;
+           see `padTopRows` for why this is an item rather than padding. -->
+      <li
+        v-if="padTopRows > 0"
+        aria-hidden="true"
+        :style="{ gridColumn: '1 / -1', gridRow: `span ${padTopRows}` }"
+      />
       <li
         v-for="(cell, order) in visibleCells"
         :key="cell.entry.path"
@@ -667,6 +681,12 @@ function enterStyle(order: number): { animationDelay: string } | null {
           {{ cell.entry.name }}
         </span>
       </li>
+      <!-- The rows hidden below the window, as one spacer spanning every column. -->
+      <li
+        v-if="padBottomRows > 0"
+        aria-hidden="true"
+        :style="{ gridColumn: '1 / -1', gridRow: `span ${padBottomRows}` }"
+      />
     </ul>
 
     <!-- One renderer for every 3D tile, laid over the grid: fetched only where

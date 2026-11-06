@@ -515,6 +515,17 @@ file's content (path, size, mtime), so a rewrite is a different tile, and the
 renderer's own map is cleared on navigation, with reads that land after it dropped
 by an epoch — the same shape the size walks use.
 
+The band of hidden rows above and below the window is a pair of spacer *items*
+spanning every grid column, not padding on the grid. Padding was the obvious
+choice, and it is wrong for exactly the folders this windowing exists for: a
+listing of thousands, scrolled past its middle, needs a padding taller than the
+grid's own box, and a flex item whose padding exceeds its box does not stretch —
+Chrome gives it a zero-height content box and its padding becomes its height. The
+grid then reports that padding as its height, `measure` reads it as the viewport,
+and the window expands to cover the whole listing: the very blow-up the spacer
+avoids, since a row-spanning item adds to the scroll height without touching the
+grid's own height.
+
 ## Quick cd
 
 A quick cd directory is a folder the user has bookmarked, and `Alt+C` puts the
