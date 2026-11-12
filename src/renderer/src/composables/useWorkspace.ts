@@ -94,7 +94,15 @@ export function createWorkspace(id: string, label: string, target: Target): Work
     const targetApi = createTargetApi(target)
     const left = shallowRef<PaneController>(useDirectory('left', { run: runInShell, api: targetApi }))
     const right = shallowRef<PaneController>(useDirectory('right', { run: runInShell, api: targetApi }))
-    const shell = createShell(id, targetApi.pty)
+    // Only an ssh shell lives on the host: one per ssh target, detached when its
+    // tab closes and attached again when the host is reopened, as `tmux new -A`
+    // is. root@localhost is a relay target too, but its relay is the app's own
+    // child rather than a host daemon, so its shell ends with its tab exactly as
+    // a local one does — and there is no point keeping a *privileged* shell
+    // running with no tab to show it.
+    const shared = target.kind === 'ssh'
+    const sessionId = shared ? `session:${target.id}` : id
+    const shell = createShell(sessionId, targetApi.pty, { persistent: shared })
 
     const activeSide = ref<PanelSide>('left')
     const columnsSwapped = ref(false)
@@ -409,6 +417,33 @@ export function createWorkspace(id: string, label: string, target: Target): Work
       return true
     }
 
+    /**
+     * The connection's own state. A drop is not an error: the relay behind the
+     * target keeps the shells, and main re-dials and replays them. On the way
+     * down the workspace says so in the panes' titles — the same bar a first
+     * connect uses — and on the way back re-lists each pane, whose watcher was
+     * the dropped connection's and so has to be re-established.
+     */
+    let reconnecting = false
+    const stopStatus = targetApi.onStatus((status) => {
+      if (status.state === 'reconnecting') {
+        reconnecting = true
+        for (const pane of [left.value, right.value]) {
+          pane.state.connectPhase = 'Reconnecting…'
+          pane.state.connectValue = 0.6
+        }
+        return
+      }
+      if (status.state !== 'connected' || !reconnecting) return
+      reconnecting = false
+      for (const pane of [left.value, right.value]) {
+        pane.state.connectPhase = null
+        pane.state.connectValue = null
+      }
+      void Promise.all([left.value.reconnect(), right.value.reconnect()])
+      void shell.refreshState()
+    })
+
     async function init(): Promise<void> {
       await Promise.all([left.value.init(), right.value.init()])
     }
@@ -436,6 +471,7 @@ export function createWorkspace(id: string, label: string, target: Target): Work
     onScopeDispose(() => {
       if (pendingTimer !== null) window.clearTimeout(pendingTimer)
       if (commandSettleTimer !== null) window.clearTimeout(commandSettleTimer)
+      stopStatus()
       shell.dispose()
     })
   })

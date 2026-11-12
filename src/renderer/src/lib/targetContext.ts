@@ -26,6 +26,7 @@ export function injectTargetApi(): TargetApi {
     fs: window.mc.fs,
     pty: window.mc.pty,
     git: window.mc.git,
-    onProgress: () => () => {}
+    onProgress: () => () => {},
+    onStatus: () => () => {}
   }
 }

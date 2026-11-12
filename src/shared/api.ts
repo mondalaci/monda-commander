@@ -366,6 +366,19 @@ export interface RelayProgress {
 }
 
 /**
+ * What a target's connection is doing now, for the pane's bar: coming up for the
+ * first time, dropped and being re-established, or back. `reconnecting` is the
+ * mosh-like half — the link went away and the app is restoring it — and the pane
+ * paints it the way it paints a first connect. See docs/design.md, "The
+ * connection is long-lived; the protocol is its guest".
+ */
+export interface RelayStatus {
+  state: 'connecting' | 'reconnecting' | 'connected'
+  /** A short human reason, when the connection has one. */
+  message?: string
+}
+
+/**
  * The targets a workspace can run on. Local and root are always present; ssh
  * targets are the ones the user saved. `add` takes what the picker's dialog
  * collects and returns the stored target, id included.
@@ -414,6 +427,12 @@ export interface McRemoteEvent {
   phase?: string
   /** For a `target:progress` event: how far through the connect it sits, 0..1. */
   value?: number
+  /** For a `target:status` event: the connection's state. */
+  state?: string
+  /** For a `target:status` event: a short reason, when there is one. */
+  message?: string
+  /** For a `pty:data` event replayed on attach: the view it is meant for. */
+  view?: string
 }
 
 /**

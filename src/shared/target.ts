@@ -1,4 +1,4 @@
-import type { McGitApi, McFsApi, McPtyApi, RelayProgress } from './api'
+import type { McGitApi, McFsApi, McPtyApi, RelayProgress, RelayStatus } from './api'
 
 /**
  * Where a workspace's files and shell live. A workspace is one connection: both
@@ -36,6 +36,13 @@ export interface TargetApi {
    * labelled, determinate bar instead of a blank list.
    */
   onProgress(handler: (progress: RelayProgress) => void): () => void
+  /**
+   * The connection's own state — up for the first time, dropped and being
+   * re-established, back. A pane re-lists and re-watches when it hears the link
+   * return, and paints the `reconnecting` state in its title while it waits. A
+   * no-op for a local target, which has no link to lose.
+   */
+  onStatus(handler: (status: RelayStatus) => void): () => void
 }
 
 /** `user@host`, the way a tab names the connection it is on. */

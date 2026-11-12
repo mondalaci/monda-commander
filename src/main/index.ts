@@ -145,6 +145,9 @@ if (!gotLock) {
     killAllPdfRenders()
     killAllModelConversions()
     killAllThumbnails()
+    // Remote shells are deliberately not ended here. They live in the host's
+    // relay daemon and are meant to outlive the app — quitting drops the channel
+    // and the shell keeps running, to be reattached on the next launch.
     targetRegistry.closeAll()
   })
 }

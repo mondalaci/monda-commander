@@ -409,11 +409,21 @@ export interface PtySpawnOptions {
   cwd: string
   cols: number
   rows: number
+  /**
+   * A token naming the view that asked for this shell. It matters only for a
+   * *shared* shell — one host's, which a second tab can attach to: the bytes
+   * replayed to reconstruct its screen on attach go to the view that asked, not
+   * to every view of that session, so an already-open tab does not see the
+   * history a second time.
+   */
+  view?: string
 }
 
 export interface PtyDataEvent {
   id: string
   data: string
+  /** Set on a replayed catch-up for one view; absent on live output. */
+  view?: string
 }
 
 export interface PtyExitEvent {

@@ -18,7 +18,7 @@ import (
 // has to equal: a remote running anything else answers `--version` with a number
 // the app does not accept and is replaced before the connection opens. Adding an
 // operation to the protocol is what bumps it.
-const relayVersion = 5
+const relayVersion = 7
 
 type HelloInfo struct {
 	Version      int    `json:"version"`
@@ -35,31 +35,51 @@ type PtyState struct {
 }
 
 func main() {
-	// The bootstrap check: `--version` answers without opening the protocol, so a
-	// remote can tell a current relay from a stale or missing one before the app
-	// commits to talking to it.
-	if len(os.Args) > 1 && os.Args[1] == "--version" {
-		fmt.Printf("monda-relay version %d\n", relayVersion)
-		return
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "--version":
+			// The bootstrap check: `--version` answers without opening the
+			// protocol, so a remote can tell a current relay from a stale or
+			// missing one before the app commits to talking to it.
+			fmt.Printf("monda-relay version %d\n", relayVersion)
+			return
+		case "--server":
+			// A persistent daemon holding the sessions, living on its own. See
+			// server.go and docs/design.md, "The connection is long-lived".
+			runServer()
+			return
+		case "--connect":
+			// The thin per-connection proxy ssh launches: it reaches the daemon
+			// (starting it if need be) and shovels bytes to and from it.
+			runConnect()
+			return
+		}
 	}
 
+	// The default is the in-process server root and a development run use: the
+	// relay speaks the protocol on its own stdin/stdout, and its shells are as
+	// short-lived as it is.
 	conn := NewConn(os.Stdin, os.Stdout)
+	installSignalHandler(conn)
+	serve(conn)
+	detachConn(conn)
+	stopAllWatches()
+	killAllPtys()
+}
 
-	// A signal that ends the relay should take its shells with it, so a closed
-	// connection cannot leave a root or remote shell running with no one
-	// attached.
+// installSignalHandler ends the relay when the process is told to, taking its
+// shells and watchers with it so a closed connection cannot leave a root shell
+// running with no one attached.
+func installSignalHandler(conn *Conn) {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-signals
+		detachConn(conn)
 		killAllPtys()
 		stopAllWatches()
 		os.Exit(0)
 	}()
-
-	serve(conn)
-	killAllPtys()
-	stopAllWatches()
 }
 
 func serve(conn *Conn) {
@@ -220,7 +240,7 @@ func handle(conn *Conn, req Request, id uint32) {
 		respond(nil, startWatch(conn, req.Path, "fs:changed"))
 
 	case "fs:unwatch":
-		stopWatch(req.Path, "fs:changed")
+		stopWatch(conn, req.Path, "fs:changed")
 		respond(nil, nil)
 
 	case "git:status":
@@ -235,12 +255,46 @@ func handle(conn *Conn, req Request, id uint32) {
 		respond(nil, startWatch(conn, req.Path, "git:changed"))
 
 	case "git:unwatch":
-		stopWatch(req.Path, "git:changed")
+		stopWatch(conn, req.Path, "git:changed")
 		respond(nil, nil)
 
 	case "pty:create":
-		_, err := spawnPty(conn, req)
-		respond(nil, err)
+		// Attach-or-create, as `tmux new -A` is: a live session with this id is
+		// the one the client meant — this host's shell — so it is attached and
+		// its output replayed, rather than spawning a second shell under the
+		// name. An exited session is replaced.
+		if existing := findPty(req.ID); existing != nil {
+			existing.mu.Lock()
+			exited := existing.exited
+			existing.mu.Unlock()
+			if !exited {
+				attachPty(conn, id, req.ID, req.Since)
+				return
+			}
+			killPty(req.ID)
+		}
+		if _, err := spawnPty(req); err != nil {
+			respond(nil, err)
+			return
+		}
+		// A freshly spawned shell is attached only now, so its prompt — which may
+		// already be in the ring — is replayed to this client once, in order.
+		attachPty(conn, id, req.ID, req.Since)
+
+	case "pty:attach":
+		// Resume a session this connection is rejoining: replay what it missed
+		// since req.Since and make it the sink for what follows.
+		attachPty(conn, id, req.ID, req.Since)
+
+	case "pty:detach":
+		if session := findPty(req.ID); session != nil {
+			session.mu.Lock()
+			if session.sink == conn {
+				session.sink = nil
+			}
+			session.mu.Unlock()
+		}
+		respond(nil, nil)
 
 	case "pty:write":
 		respond(nil, writePty(req.ID, req.Data))

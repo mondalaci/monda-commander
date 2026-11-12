@@ -3,6 +3,12 @@ package main
 // One pty-backed shell per id. The relay owns the pty and streams its bytes as
 // events; the app's xterm writes back into the same pty. A shell here is as
 // real as one in a terminal — job control, signals, TUIs — because it is one.
+//
+// In a persistent relay the session outlives the connection that started it: on
+// disconnect the sink is cleared but the pty keeps running and its output keeps
+// filling the ring, so a later connection can attach and be replayed what it
+// missed. That is the whole of tmux-style persistence here; see docs/design.md,
+// "The connection is long-lived; the protocol is its guest".
 
 import (
 	"errors"
@@ -13,15 +19,34 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/creack/pty"
 )
+
+// How much of a session's output is kept for a reconnecting client. Bounded so a
+// chatty shell cannot grow the daemon without limit; a client that is away
+// longer than this much output misses the middle and is told so.
+const ptyScrollbackBytes = 256 * 1024
+
+// How long a session that has exited is kept after its end, so a client that
+// reconnects can still learn the exit and read the last of its output.
+const exitedSessionTTL = 10 * time.Minute
 
 type PtySession struct {
 	id   string
 	cmd  *exec.Cmd
 	ptmx *os.File
-	mu   sync.Mutex
+
+	// mu guards the session's output ring, its current sink, and its exit state.
+	// It is held while output is appended *and* sent, so a reattach's snapshot
+	// and any output that follows it cannot be delivered out of order.
+	mu       sync.Mutex
+	out      ringBuffer
+	sink     *Conn
+	exited   bool
+	exitCode int
+	signal   *int
 }
 
 var (
@@ -36,10 +61,12 @@ func defaultShell() string {
 	return "/bin/bash"
 }
 
-// spawnPty starts a shell at cwd with the given size. The reader and waiter
-// goroutines forward output and the exit to the connection; they own the pty
+// spawnPty starts a shell at cwd with the given size. It is left unattached
+// (sink nil) so the caller can attach it: output the shell produces before the
+// client's create is answered — its prompt — is then replayed exactly once,
+// rather than racing a live event. The reader and waiter goroutines own the pty
 // after this returns.
-func spawnPty(conn *Conn, req Request) (*PtySession, error) {
+func spawnPty(req Request) (*PtySession, error) {
 	if req.ID == "" {
 		return nil, fsError("EINVAL", "No pty id")
 	}
@@ -70,22 +97,34 @@ func spawnPty(conn *Conn, req Request) (*PtySession, error) {
 	}
 	_ = pty.Setsize(ptmx, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
 
-	session := &PtySession{id: req.ID, cmd: cmd, ptmx: ptmx}
+	session := &PtySession{
+		id:   req.ID,
+		cmd:  cmd,
+		ptmx: ptmx,
+		out:  newRingBuffer(ptyScrollbackBytes),
+	}
 	ptyMu.Lock()
 	ptyByID[req.ID] = session
 	ptyMu.Unlock()
 
-	go readPtyOutput(conn, session)
-	go waitPty(conn, session)
+	go readPtyOutput(session)
+	go waitPty(session)
 	return session, nil
 }
 
-func readPtyOutput(conn *Conn, session *PtySession) {
+func readPtyOutput(session *PtySession) {
 	buf := make([]byte, 32*1024)
 	for {
 		n, err := session.ptmx.Read(buf)
 		if n > 0 {
-			_ = conn.SendEvent(Event{Type: "pty:data", ID: session.id, Data: string(buf[:n])})
+			// Append and send under the lock so an attach that is taking its
+			// snapshot cannot have a live chunk jump ahead of the replay.
+			session.mu.Lock()
+			offset := session.out.write(buf[:n])
+			if session.sink != nil {
+				_ = session.sink.SendEvent(Event{Type: "pty:data", ID: session.id, Data: string(buf[:n]), Offset: offset})
+			}
+			session.mu.Unlock()
 		}
 		if err != nil {
 			return
@@ -93,32 +132,111 @@ func readPtyOutput(conn *Conn, session *PtySession) {
 	}
 }
 
-func waitPty(conn *Conn, session *PtySession) {
-	err := session.cmd.Wait()
+// exitStatus reads a shell's end the way the local pty does: a normal code, or -1
+// and the signal that killed it.
+func exitStatus(err error) (int, *int) {
 	code := 0
-	var signal *int
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			code = exitErr.ExitCode()
 			if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.Signaled() {
 				sig := int(status.Signal())
-				signal = &sig
-				code = -1
+				return -1, &sig
 			}
 		}
 	}
-	ptyMu.Lock()
-	delete(ptyByID, session.id)
-	ptyMu.Unlock()
+	return code, nil
+}
+
+// waitPty records the session's end rather than forgetting it: a client may be
+// away when it happens, and on reattach it should still be told. The session is
+// kept for a while, then reaped.
+func waitPty(session *PtySession) {
+	code, signal := exitStatus(session.cmd.Wait())
+
+	session.mu.Lock()
+	session.exited = true
+	session.exitCode = code
+	session.signal = signal
+	if session.sink != nil {
+		_ = session.sink.SendEvent(Event{Type: "pty:exit", ID: session.id, ExitCode: &code, Signal: signal})
+	}
+	session.mu.Unlock()
+
 	_ = session.ptmx.Close()
-	_ = conn.SendEvent(Event{Type: "pty:exit", ID: session.id, ExitCode: &code, Signal: signal})
+	time.AfterFunc(exitedSessionTTL, func() { removeSessionIfExited(session) })
 }
 
 func findPty(id string) *PtySession {
 	ptyMu.Lock()
 	defer ptyMu.Unlock()
 	return ptyByID[id]
+}
+
+// attachPty points a session's output at conn and replays what the client missed
+// since offset, as one response-and-blob pair so nothing interleaves between the
+// snapshot and the stream that follows. The session need not be live: an exited
+// one still replays its final output and reports how it ended.
+func attachPty(conn *Conn, id uint32, ptyID string, offset int64) {
+	session := findPty(ptyID)
+	if session == nil {
+		_ = conn.SendResponse(id, Response{Ok: false, Error: fsError("ENOENT", "No such pty")})
+		return
+	}
+
+	session.mu.Lock()
+	data, from, lost := session.out.since(offset)
+	session.sink = conn
+	next := session.out.next
+	exited := session.exited
+	code := session.exitCode
+	signal := session.signal
+	_ = conn.SendResponseWithBlob(id, Response{Ok: true, Data: map[string]any{
+		"offset":   next,
+		"from":     from,
+		"lost":     lost,
+		"exited":   exited,
+		"exitCode": code,
+		"signal":   signal,
+	}}, data)
+	session.mu.Unlock()
+}
+
+// detachConn releases every session a connection was attached to. The ptys keep
+// running and their output keeps buffering in the ring, so a later connection —
+// a re-dial, a new tab, or the app opened again — can attach and be told what it
+// missed. A shell lives until it exits, exactly as it would under tmux; nothing
+// reaps it just because nobody is watching.
+func detachConn(conn *Conn) {
+	ptyMu.Lock()
+	sessions := make([]*PtySession, 0, len(ptyByID))
+	for _, session := range ptyByID {
+		sessions = append(sessions, session)
+	}
+	ptyMu.Unlock()
+
+	for _, session := range sessions {
+		session.mu.Lock()
+		if session.sink == conn {
+			session.sink = nil
+		}
+		session.mu.Unlock()
+	}
+}
+
+func removeSessionIfExited(session *PtySession) {
+	session.mu.Lock()
+	exited := session.exited
+	session.mu.Unlock()
+	if !exited {
+		return
+	}
+	ptyMu.Lock()
+	if ptyByID[session.id] == session {
+		delete(ptyByID, session.id)
+	}
+	ptyMu.Unlock()
 }
 
 func writePty(id, data string) error {
@@ -146,8 +264,13 @@ func resizePty(id string, cols, rows int) error {
 	return pty.Setsize(session.ptmx, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
 }
 
+// killPty ends a session and forgets it at once, so its id can be spawned fresh
+// rather than resolving to a corpse on the next create.
 func killPty(id string) {
-	session := findPty(id)
+	ptyMu.Lock()
+	session := ptyByID[id]
+	delete(ptyByID, id)
+	ptyMu.Unlock()
 	if session == nil {
 		return
 	}
@@ -193,6 +316,7 @@ func killAllPtys() {
 	for _, session := range ptyByID {
 		sessions = append(sessions, session)
 	}
+	ptyByID = map[string]*PtySession{}
 	ptyMu.Unlock()
 	for _, session := range sessions {
 		_ = session.cmd.Process.Kill()

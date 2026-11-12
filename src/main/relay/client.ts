@@ -20,7 +20,7 @@ const FRAME_EVENT = 3
 const MAX_FRAME = 64 * 1024 * 1024
 
 /** Operations whose answer carries a BLOB after its JSON response. */
-const BLOB_RESPONSE_OPS = new Set(['fs:read', 'fs:readImage'])
+const BLOB_RESPONSE_OPS = new Set(['fs:read', 'fs:readImage', 'pty:create', 'pty:attach'])
 /** Operations whose request carries a BLOB after its JSON frame. */
 const BLOB_REQUEST_OPS = new Set(['fs:write'])
 
@@ -100,6 +100,11 @@ export class RelayClient {
   close(): void {
     this.process.kill()
     this.die('relay closed')
+  }
+
+  /** Whether the process has ended, so a caller can tell a live client from a corpse. */
+  get isClosed(): boolean {
+    return this.closed
   }
 
   private die(message: string): void {

@@ -3,8 +3,9 @@ package main
 // Directory watches are polls, not inotify. A poll costs one readdir a second
 // and needs no kernel subscription the remote may not offer; the app's panes
 // already re-list on an event, so a second's delay is the price of a transport
-// that works anywhere. Refcounted per path so two panes on one directory share
-// one poll, exactly as the local watcher shares one inotify watch.
+// that works anywhere. Refcounted per path *per connection*, so two panes on one
+// connection share one poll while a reconnecting connection's watches are its
+// own — when it drops, they go with it, and the new connection asks again.
 
 import (
 	"os"
@@ -19,6 +20,7 @@ type stamp struct {
 }
 
 type watchKey struct {
+	conn *Conn
 	kind string
 	path string
 }
@@ -40,7 +42,7 @@ func startWatch(conn *Conn, path, kind string) error {
 	if err != nil {
 		return err
 	}
-	key := watchKey{kind: kind, path: absolute}
+	key := watchKey{conn: conn, kind: kind, path: absolute}
 	watchMu.Lock()
 	if entry := watchMap[key]; entry != nil {
 		entry.refs++
@@ -55,14 +57,32 @@ func startWatch(conn *Conn, path, kind string) error {
 	return nil
 }
 
-func stopWatch(path, kind string) {
+func stopWatch(conn *Conn, path, kind string) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return
 	}
-	key := watchKey{kind: kind, path: absolute}
+	key := watchKey{conn: conn, kind: kind, path: absolute}
 	watchMu.Lock()
-	defer watchMu.Unlock()
+	releaseWatch(key)
+	watchMu.Unlock()
+}
+
+// stopWatchesFor drops every watch a connection holds, which is what a dropped
+// connection's cleanup runs: the ptys survive, the polls do not.
+func stopWatchesFor(conn *Conn) {
+	watchMu.Lock()
+	for key := range watchMap {
+		if key.conn == conn {
+			close(watchMap[key].stop)
+			delete(watchMap, key)
+		}
+	}
+	watchMu.Unlock()
+}
+
+// releaseWatch is the shared refcount decrement; the caller holds watchMu.
+func releaseWatch(key watchKey) {
 	entry := watchMap[key]
 	if entry == nil {
 		return

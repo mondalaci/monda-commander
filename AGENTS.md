@@ -51,6 +51,13 @@ src/main/ipc/git.ts      IPC: git:status, git:file-base, git:watch, git:unwatch,
                          GIT_TERMINAL_PROMPT=0
 src/main/gitStatus.ts    the `status --porcelain=v2` reader (pure: no Electron)
 src/main/ipc/pty.ts      IPC: pty:create/write/resize/kill/state; pushes pty:data, pty:exit
+                         (the local path; a remote shell's pty lives in the relay)
+src/main/relay/registry.ts  the targets and the connection behind each non-local
+                         one. ssh launches `monda-relay --connect` (the daemon
+                         proxy), root stays an in-process relay
+src/main/relay/connection.ts  one target's relay connection: re-dials a dropped
+                         ssh with a backoff, re-attaches every pty session at its
+                         last output offset, emits target:status
 src/main/ipc/window.ts   IPC: window:minimize/toggle-maximize/close/is-maximized
 src/main/ipc/hide.ts     IPC: hide:get, hide:set
 src/main/hideMode.ts     hide mode persisted in userData/hide-mode.json
@@ -202,9 +209,10 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   and its shell, only the active one is rendered, and a returning tab replays its
   session buffer.
 - **The shell outlives its view.** `TerminalPane` must not kill the shell on
-  unmount — only `shell.dispose()` on tab close does. `attachTerminal` does not
-  drain the output buffer, and a workspace object survives tab switches, so a
-  remount re-attaches instead of respawning.
+  unmount — only `shell.dispose()` on tab close does, and then only for a local
+  shell: a relay shell is detached, not ended. `attachTerminal` does not drain the
+  output buffer, and a workspace object survives tab switches, so a remount
+  re-attaches instead of respawning.
 - **The collapsed strip is the shell, so its input line is state we model.**
   `shell.inputLine` (one per workspace) is fed from `onData`; it decides whether
   `Enter` runs the line or activates the panel entry. It cannot see what readline
@@ -237,6 +245,53 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   plain path is judged — a `~user`, `$VAR`, glob or escape is left to the shell.
   The notice is set after the post-command re-lists land, so they do not wipe the
   notice by clearing a stale error.
+
+### Persistent remote sessions
+
+- **A remote relay is a daemon, not the ssh child.** `monda-relay --server` holds
+  the ptys on a unix socket under the user's home; ssh launches `--connect`, a thin
+  proxy to it, so a dropped channel leaves the shells running. The daemon is
+  started detached (`setsid`) and replaced when its sidecar version file is stale,
+  so an app upgrade never talks a new protocol to an old daemon. Root stays
+  in-process and session-scoped — no always-on privileged daemon. Reasoning in
+  [`docs/design.md`](docs/design.md), "A drop is a reconnect, not an error".
+- **A drop is a reconnect, not an error.** `TargetConnection`
+  (`src/main/relay/connection.ts`) re-dials with a backoff and re-attaches each
+  shell; `pty:attach` resumes from the absolute output offset the app last applied,
+  so the terminal is whole across the gap. Requests made mid-outage wait for the
+  retry rather than dialling their own. The renderer only paints the reconnecting
+  bar and re-lists on the way back — main replays into the same `pty:data` stream,
+  so nothing above the bridge knows a reconnect happened.
+- **A relay watch belongs to the connection.** `stopWatchesFor` drops a
+  connection's watches when it ends, so a pane's `reconnect()` clears its watch
+  bookkeeping to make the re-list re-register both the directory watch and the
+  work-tree watch.
+- **Byte replay cannot make a resize across a gap perfect** — the pty keeps its old
+  size while the link is down, so a full-screen TUI can scramble for one frame
+  until its program repaints. Always-clean resize and attach-from-scratch (an app
+  restart) are the grid model's job; the `pty:attach` handshake is shaped to allow
+  that behind the same door.
+- **One shell per ssh host.** A remote (`kind: 'ssh'`) shell's session name is
+  `session:<target>`, so closing a tab detaches it and opening the host again — a
+  new tab, or the app restarted — attaches back to the same shell; quitting the app
+  only drops the channel. Nothing reaps a live session on a timer: it lives until
+  it exits. `pty:create` is attach-or-create, the way `tmux new -A` is, and a
+  freshly spawned shell is attached only after it is created so its prompt does not
+  race a live event.
+- **A reattach replay is addressed to the view that asked** (`PtySpawnOptions.view`,
+  a token each shell generates), so a second tab on one host does not render the
+  session's history twice; live output is untagged and taken by every tab. Two tabs
+  on a host are two clients of one shell, and the panel ↔ shell cwd sync is per
+  workspace, so they pull each other to the same directory — the common case is one
+  tab per host.
+- **Only ssh is shared.** `root@localhost` speaks the same protocol but its session
+  is the workspace's own and its shell ends with its tab — its relay is the app's
+  own `pkexec` child, not a host daemon, and a privileged shell is the last thing to
+  leave running with no tab to show it. A local shell likewise has no daemon and no
+  replay buffer in main. Both are per-workspace and `pty:kill` on tab close;
+  persistence and the per-host session name are the *ssh* property.
+- **`relayVersion` (`relay/main.go`) and `RELAY_VERSION` (`src/main/relay/paths.ts`)
+  move together**; adding a protocol operation is what bumps them.
 
 ### Directory listing
 

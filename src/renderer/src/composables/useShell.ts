@@ -61,7 +61,19 @@ export interface Shell {
   dispose(): void
 }
 
-export function createShell(id: string, api: McPtyApi): Shell {
+export function createShell(
+  id: string,
+  api: McPtyApi,
+  options: { persistent?: boolean } = {}
+): Shell {
+  const persistent = options.persistent ?? false
+  /**
+   * This view's name, for a shell shared with other tabs on the same host: the
+   * catch-up replayed when the shell is attached is addressed to one view, so an
+   * already-open tab does not render the history a second time. Live output
+   * carries no view and is taken by every tab.
+   */
+  const view = Math.random().toString(36).slice(2, 10)
   const started = ref(false)
   const cwd = ref<string | null>(null)
   const idle = ref(false)
@@ -77,6 +89,7 @@ export function createShell(id: string, api: McPtyApi): Shell {
   let buffer = ''
   let pollTimer: number | null = null
   let startPromise: Promise<void> | null = null
+  let detachListeners: (() => void) | null = null
 
   function handleData(data: string): void {
     // Retain recent output so a terminal opened later can replay it instead of
@@ -123,16 +136,12 @@ export function createShell(id: string, api: McPtyApi): Shell {
     // must not read as this one having already ended.
     exitCode.value = null
 
-    const created = api.create(id, {
-      cwd: spawnCwd,
-      cols: Math.max(cols, 2),
-      rows: Math.max(rows, 1)
-    })
-
     let cancelled = false
 
     const onDataDisposer = api.onData((event) => {
-      if (event.id === id) handleData(event.data)
+      if (event.id !== id) return
+      if (event.view !== undefined && event.view !== view) return
+      handleData(event.data)
     })
 
     const onExitDisposer = api.onExit((event) => {
@@ -147,7 +156,23 @@ export function createShell(id: string, api: McPtyApi): Shell {
       cancelled = true
       onDataDisposer()
       onExitDisposer()
+      detachListeners = null
     }
+
+    // Held so `dispose` can let go even when the shell does *not* exit — a
+    // persistent shell keeps running after its tab closes, and its listeners
+    // must not outlive the view that was reading them.
+    detachListeners = stopListening
+
+    // Asked for after the listeners are up, so the attach catch-up — which a
+    // fresh terminal needs and which comes back tagged with this view — cannot
+    // arrive before anything is listening for it.
+    const created = api.create(id, {
+      cwd: spawnCwd,
+      cols: Math.max(cols, 2),
+      rows: Math.max(rows, 1),
+      view
+    })
 
     startPromise = created.then(() => {
       if (cancelled) return
@@ -232,13 +257,16 @@ export function createShell(id: string, api: McPtyApi): Shell {
 
   function dispose(): void {
     stopPolling()
+    detachListeners?.()
     dataListeners.clear()
     startPromise = null
     started.value = false
     idle.value = false
-    // Main reaps sessions when the window goes away, so this only needs to
-    // cover a workspace the user closed while the app keeps running.
-    api.kill(id)
+    // A persistent shell — a host's, living in the relay daemon — is only
+    // detached by closing its view, never ended: reopening the host reattaches
+    // to it. A local shell has no daemon to live in, so closing its tab ends it
+    // (and main reaps every session when the window goes away regardless).
+    if (!persistent) api.kill(id)
   }
 
   return {

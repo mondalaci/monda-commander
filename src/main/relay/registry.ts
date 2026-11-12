@@ -3,37 +3,29 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { app } from 'electron'
 import { RelayClient } from './client'
+import { TargetConnection } from './connection'
 import { ensureRemoteRelay } from './deploy'
 import { relayBinaryPath } from './paths'
 import type { RelayProgress } from '@shared/api'
 import { LOCAL_TARGET_ID, ROOT_TARGET_ID, type Target } from '@shared/target'
 
 /**
- * The targets a workspace can run on, and the relay connections behind the
- * non-local ones. Local runs in main and needs no relay; root and ssh run the
- * same Go relay, launched differently. See docs/design.md, "One protocol, three
+ * The targets a workspace can run on, and the connections behind the non-local
+ * ones. Local runs in main and needs no relay; root and ssh run the same Go
+ * relay, launched differently. See docs/design.md, "One protocol, three
  * transports".
  *
- * A client is created on first use and kept for the app's life: a root relay is
- * session-scoped by design, and an ssh master is worth keeping up rather than
- * redialling per operation. Closing the app closes every client.
+ * A non-local target is a `TargetConnection`: it owns the relay behind the
+ * target, keeps it up across a dropped channel, and re-attaches the shells when
+ * it comes back. A connection is created on first use and kept for the app's
+ * life.
  */
 
 export type RelayEventSink = (targetId: string, event: Record<string, unknown>) => void
 
-/**
- * How long a failed launch is remembered. A pane's setup is two calls — home,
- * then the first listing — so without this the second call would start a whole
- * new ssh attempt and the pane would sit silent through two timeouts before
- * showing one error.
- */
-const LAUNCH_FAILURE_TTL_MS = 5000
-
 export class TargetRegistry {
   private readonly targets = new Map<string, Target>()
-  private readonly clients = new Map<string, RelayClient>()
-  private readonly pendingClients = new Map<string, Promise<RelayClient>>()
-  private readonly launchFailures = new Map<string, { message: string; at: number }>()
+  private readonly connections = new Map<string, TargetConnection>()
   private sink: RelayEventSink | null = null
   private writeQueue: Promise<void> = Promise.resolve()
 
@@ -111,7 +103,9 @@ export class TargetRegistry {
       throw new Error(hello.error?.message ?? 'The relay did not answer')
     }
 
-    this.clients.set(id, client)
+    // The connection adopts the client that was just verified rather than
+    // dialling the host a second time.
+    this.connectionFor(target).seed(client)
     this.targets.set(id, target)
     await this.persist()
     return target
@@ -120,91 +114,95 @@ export class TargetRegistry {
   async remove(id: string): Promise<void> {
     const target = this.targets.get(id)
     if (!target || target.kind === 'local' || target.kind === 'root') return
-    this.clients.get(id)?.close()
-    this.clients.delete(id)
+    this.connections.get(id)?.close()
+    this.connections.delete(id)
     this.targets.delete(id)
     await this.persist()
   }
 
   /**
-   * The relay behind a target, launched on first use. Null for local, which has
-   * no relay; throws when a non-local relay cannot be reached or installed, so
-   * the caller reports why instead of handing back a dead pipe.
+   * Ask a target's relay something, reconnecting first if the channel has
+   * dropped. Local is refused here because it has no relay — its operations go
+   * through main's own bridge — so the caller reports that rather than a dead
+   * pipe. Routing every request through the connection is what lets it track the
+   * ptys it must re-attach and the offsets their output resumes from.
    */
-  async client(id: string): Promise<RelayClient | null> {
+  async request(
+    id: string,
+    op: string,
+    args: Record<string, unknown>,
+    blob?: Buffer
+  ): Promise<{
+    ok: boolean
+    data?: unknown
+    error?: { code: string; message: string }
+    blob?: Buffer
+  }> {
     const target = this.targets.get(id)
     if (!target) throw new Error(`Unknown target ${id}`)
-    if (target.kind === 'local') return null
-
-    const existing = this.clients.get(id)
-    if (existing) return existing
-
-    // Two panes opening at once share one launch, rather than racing two relays
-    // onto the same target (and two uploads onto the same remote).
-    const pending = this.pendingClients.get(id)
-    if (pending) return pending
-
-    const failed = this.launchFailures.get(id)
-    if (failed && Date.now() - failed.at < LAUNCH_FAILURE_TTL_MS) {
-      throw new Error(failed.message)
+    if (target.kind === 'local') {
+      return {
+        ok: false,
+        error: { code: 'ELOCAL', message: 'The local target runs in main and has no relay' }
+      }
     }
+    return this.connectionFor(target).request(op, args, blob)
+  }
 
-    const launched = this.launch(target, (progress) =>
-      this.forward(id, { type: 'target:progress', phase: progress.phase, value: progress.value })
-    ).then(
-      (client) => {
-        this.launchFailures.delete(id)
-        return client
-      },
-      (error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error)
-        this.launchFailures.set(id, { message, at: Date.now() })
-        throw error
+  closeAll(): void {
+    for (const connection of this.connections.values()) connection.close()
+    this.connections.clear()
+  }
+
+  /** The connection for a target, created once and kept for the app's life. */
+  private connectionFor(target: Target): TargetConnection {
+    const existing = this.connections.get(target.id)
+    if (existing) return existing
+    const connection = new TargetConnection(
+      target,
+      (onProgress) => this.launch(target, onProgress),
+      {
+        onEvent: (event) => this.forward(target.id, event),
+        onState: (state, message) =>
+          this.forward(target.id, {
+            type: 'target:status',
+            state,
+            ...(message ? { message } : {})
+          })
       }
     )
-    this.pendingClients.set(id, launched)
-    try {
-      const client = await launched
-      this.clients.set(id, client)
-      return client
-    } finally {
-      this.pendingClients.delete(id)
-    }
+    this.connections.set(target.id, connection)
+    return connection
   }
 
   /**
    * Launch — and, for a remote, install — the relay behind a target. A failure
-   * here is thrown rather than hidden: the IPC layer turns it into the error the
-   * pane shows, so an unreachable host is a message and not an empty panel.
+   * here is thrown rather than hidden: the connection re-dials with a backoff,
+   * and the caller's first attempt is turned into the error the pane shows, so
+   * an unreachable host is a message and not an empty panel.
    */
   private async launch(
     target: Target,
     onProgress?: (progress: RelayProgress) => void
   ): Promise<RelayClient> {
+    const report =
+      onProgress ??
+      ((progress: RelayProgress) =>
+        this.forward(target.id, {
+          type: 'target:progress',
+          phase: progress.phase,
+          value: progress.value
+        }))
+
     if (target.kind === 'ssh') {
-      await ensureRemoteRelay(target, onProgress)
+      await ensureRemoteRelay(target, report)
     } else if (!existsSync(relayBinaryPath())) {
       throw new Error('The relay binary is missing — run `npm run build:relay`')
     }
 
-    onProgress?.({ phase: 'Starting relay…', value: 0.8 })
+    report({ phase: 'Starting relay…', value: 0.8 })
     const { command, args } = this.launchFor(target)
-    const client = new RelayClient(target, command, args)
-    client.onEvent('fs:changed', (event) => this.forward(target.id, event))
-    client.onEvent('git:changed', (event) => this.forward(target.id, event))
-    client.onEvent('pty:data', (event) => this.forward(target.id, event))
-    client.onEvent('pty:exit', (event) => this.forward(target.id, event))
-    // A client whose process ended is forgotten, so the next request launches a
-    // fresh one — and re-checks the remote relay — instead of talking to a corpse.
-    client.onClose = () => {
-      if (this.clients.get(target.id) === client) this.clients.delete(target.id)
-    }
-    return client
-  }
-
-  closeAll(): void {
-    for (const client of this.clients.values()) client.close()
-    this.clients.clear()
+    return new RelayClient(target, command, args)
   }
 
   private forward(targetId: string, event: Record<string, unknown>): void {
@@ -213,6 +211,8 @@ export class TargetRegistry {
 
   private launchFor(target: Target): { command: string; args: string[] } {
     if (target.kind === 'root') {
+      // Root stays a plain in-process relay: a persistent root daemon would be
+      // an always-on privileged server, which the session-scoped launch avoids.
       return { command: 'pkexec', args: [relayBinaryPath(), '--stdio'] }
     }
     const port = target.port ? ['-p', String(target.port)] : []
@@ -223,6 +223,9 @@ export class TargetRegistry {
       target.relayPath && target.relayPath.startsWith('/')
         ? target.relayPath
         : '~/.monda/monda-relay'
+    // `--connect` reaches the persistent daemon on the host (starting it if it
+    // is not up) rather than being the relay itself, which is what lets a
+    // dropped channel be redialled without taking the sessions with it.
     return {
       command: 'ssh',
       args: [
@@ -236,7 +239,7 @@ export class TargetRegistry {
         ...port,
         `${target.user}@${target.host}`,
         remoteRelay,
-        '--stdio'
+        '--connect'
       ]
     }
   }

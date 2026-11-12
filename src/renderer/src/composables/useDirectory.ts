@@ -231,6 +231,13 @@ export interface PaneController {
   init(): Promise<void>
   navigateTo(dir: string, focusPath?: string): Promise<void>
   refresh(focusPath?: string): Promise<void>
+  /**
+   * The connection dropped and came back. The relay forgot this connection's
+   * watchers when it went, and the directory may have changed meanwhile, so the
+   * watch bookkeeping is forgotten and the listing re-read — which re-registers
+   * the watchers as a side effect.
+   */
+  reconnect(): Promise<void>
   goUp(): Promise<void>
   moveCursor(delta: number): void
   movePage(direction: 1 | -1): void
@@ -1332,6 +1339,18 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     void loadGit()
   }
 
+  function reconnect(): Promise<void> {
+    // The relay dropped this connection's watchers when it went, but the pane's
+    // own bookkeeping still thinks it is watching; clearing it makes the refresh
+    // below re-establish both the directory watch and the work-tree watch.
+    watchedPath = null
+    watchedRepo = null
+    // A pane whose first listing never landed — the connect failed outright —
+    // has no directory to re-read; it needs its home read again, which is what
+    // `init` does. One already showing a directory only needs its listing back.
+    return state.path ? refresh() : init()
+  }
+
   async function goUp(): Promise<void> {
     if (!state.parent) return
     // Leaving an archive's root: the parent is the real directory that holds the
@@ -2202,6 +2221,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     init,
     navigateTo,
     refresh,
+    reconnect,
     goUp,
     moveCursor,
     movePage,

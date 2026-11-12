@@ -45,6 +45,9 @@ type Request struct {
 	ID          string   `json:"id,omitempty"`
 	Data        string   `json:"data,omitempty"`
 	Shell       string   `json:"shell,omitempty"`
+	// Since is the absolute output offset a `pty:attach` wants to resume from:
+	// the client sends the last offset it applied and is replayed what follows.
+	Since int64 `json:"since,omitempty"`
 
 	// Filled by the reader for operations whose payload follows as a BLOB
 	// frame. Never encoded in the JSON frame itself.
@@ -76,6 +79,9 @@ type Event struct {
 	Data     string `json:"data,omitempty"`
 	ExitCode *int   `json:"exitCode,omitempty"`
 	Signal   *int   `json:"signal,omitempty"`
+	// Offset is the session output offset just past this pty:data chunk, so a
+	// client can remember where it is and resume there after a reconnect.
+	Offset int64 `json:"offset,omitempty"`
 }
 
 // Conn frames one duplex stream. Reads happen on one goroutine; writes may come

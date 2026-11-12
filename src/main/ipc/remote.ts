@@ -41,14 +41,12 @@ export function registerRemoteHandlers(): void {
       blob?: Uint8Array
     ) => {
       try {
-        const client = await targetRegistry.client(targetId)
-        if (!client) {
-          return {
-            ok: false,
-            error: { code: 'ELOCAL', message: 'The local target runs in main and has no relay' }
-          }
-        }
-        const response = await client.request(op, args, blob ? Buffer.from(blob) : undefined)
+        const response = await targetRegistry.request(
+          targetId,
+          op,
+          args,
+          blob ? Buffer.from(blob) : undefined
+        )
         return {
           ok: response.ok,
           ...(response.data !== undefined ? { data: response.data } : {}),

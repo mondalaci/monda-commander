@@ -33,15 +33,18 @@ middle (only the small logo/drag area would respond).
 ### The workspace stack
 
 The app is a stack of workspaces — one tab each, shown in the title bar. A
-workspace owns its own pair of file panes and its own shell, so switching tabs
-switches sessions; only the active workspace is rendered, and a tab that comes
-back replays its session buffer (see `useWorkspace.ts`).
+workspace owns its own pair of file panes and its own shell — except on an ssh
+target, where the shell is one per ssh host and shared between tabs (see "One
+shell per ssh host") — so switching tabs switches sessions; only the active
+workspace is rendered, and a tab that comes back replays its session buffer (see
+`useWorkspace.ts`).
 
 ### The shell outlives its view
 
-`TerminalPane` must not kill the shell on unmount — main reaps sessions when the
-window goes away, and a workspace kills its own session only through
-`shell.dispose()` when its tab is closed. Killing it on unmount let any remount
+`TerminalPane` must not kill the shell on unmount — main reaps local sessions when
+the window goes away, and a workspace ends its own session only through
+`shell.dispose()` when its tab is closed, and then only for a local shell (a relay
+shell is detached, not ended). Killing it on unmount let any remount
 (a Vue HMR update, a workspace switch, a reload) race a fresh spawn and take the
 *new* shell down with it. For the same reason `attachTerminal` does not drain the
 output buffer: a view that attaches later replays the session so far. A workspace
@@ -2527,16 +2530,106 @@ rather than jumping and sitting still.
 
 ### The connection is long-lived; the protocol is its guest
 
-The ssh master is kept up rather than redialled. `ControlMaster`/`ControlPersist`
-share one TCP connection and one authentication across every terminal, pane and
-workspace on that host, and keepalive keeps the master from idling out. The
-protocol opens its own channel on that master: listings and file operations are
-request/response on it, and watches are server-push (`fs:changed`) like the local
-watcher, so a pane refreshes on an event and never polls a WAN link. A shell is a
-separate pty channel on the same master, so a second terminal costs a channel,
-not a login. When the master drops the channel dies: the app says so, then
-reconnects by re-opening the master, re-subscribing the watchers and re-listing
-once — a resync, not a reload.
+The ssh master is kept up rather than redialled, and a second terminal costs a
+channel, not a login. Listings and file operations are request/response on it, and
+watches are server-push (`fs:changed`) like the local watcher, so a pane refreshes
+on an event and never polls a WAN link.
+
+But a remote relay is not *itself* that channel's guest. The relay runs as a
+**daemon** on the host and the channel only dials it: `monda-relay --server`
+listens on a unix socket under the user's home (`~/.monda/relay.sock`, 0600 —
+home rather than `$XDG_RUNTIME_DIR` because a later ssh login may have a different
+runtime directory and reattaching must not depend on that), holds every session,
+and is started by the first `--connect` that finds it missing. It is started
+detached (`setsid`, stdio to `/dev/null`), so a hangup on the ssh channel cannot
+reach it. What ssh launches is `monda-relay --connect`: a thin proxy that reaches
+the daemon and shovels bytes to and from it. A dropped ssh therefore kills the
+proxy and nothing else — the shells keep running and their output keeps filling a
+bounded ring — which is what makes both halves below possible. Root is
+deliberately left out: `root@localhost` keeps its in-process relay, session-scoped,
+so there is no always-on privileged daemon.
+
+The daemon is versioned by a sidecar file beside its socket, and `--connect`
+stops a daemon whose version is stale before starting the current one: a
+long-lived server must not survive an app upgrade and answer a new protocol with
+old rules.
+
+### A drop is a reconnect, not an error
+
+`TargetConnection` (`src/main/relay/connection.ts`) owns the relay behind a
+target. When its ssh child exits it does not fail the session; it re-dials with a
+backoff (500ms, 1s, 2s, 5s, then 10s), and everything that arrives while the link
+is down waits for the retry rather than starting one of its own — a burst of
+keystrokes into a dropped terminal is not a burst of ssh attempts.
+
+On the way back it re-attaches every shell it knew about. Each pty event carries
+an **absolute output offset** — a count of bytes ever written, not an index into
+the ring — so the app remembers the last offset it applied and asks to resume
+there; the daemon answers `pty:attach` with the bytes after it as one
+response-and-blob pair, sent while holding the session's own lock so no live chunk
+can jump ahead of the replay. The terminal is thereby whole across the gap: no
+byte lost, none doubled. A session that ended while the app was away is still
+reported — the daemon keeps an exited session for a while, so the reattach
+replays its final output and then says how it ended — and if the gap outran the
+ring, the app says the output was lost rather than pretending the screen is whole.
+
+Above the bridge the seam is small. The workspace paints the same title bar a
+first connect uses (`Reconnecting…`), and when the link is back it re-lists each
+pane and re-establishes its watches: a relay watch belongs to the *connection*,
+so it died with the channel, and the pane clears its own bookkeeping to make the
+re-list re-register both the directory watch and the work-tree watch. The shell
+needs nothing: main replays its output into the same `pty:data` stream the
+renderer already subscribes to.
+
+The one thing byte replay cannot make perfect is a resize across a gap. A pty is
+resized with `TIOCSWINSZ` and the program repaints itself; while the channel is
+down the pty keeps its old size and the replayed bytes were drawn for it. A
+line-oriented shell only reflows, which is invisible; a full-screen TUI whose
+replay holds absolute cursor moves can be briefly scrambled until its program
+repaints at the size the terminal now has — one frame, self-correcting. Making
+that always clean, and letting a *fresh* terminal attach to a screen it never saw
+(an app restart), is what a server-side grid model would buy; the `pty:attach`
+handshake is shaped so a screen model can be added behind it without changing the
+transport.
+
+### One shell per ssh host
+
+A remote shell belongs to its **host**, not to the tab that opened it — as a tmux
+session outlives the terminal that attached to it. The session's name is
+`session:<target>`, fixed, so closing a tab only *detaches* it, quitting the app
+only drops the channel, and any later workspace on that host — a new tab, or the
+app opened again — attaches back to the shell that was already running, wherever
+it was and whatever it had printed. Nothing reaps a live session on a timer: a
+shell lives until the shell itself exits (or the host reboots), exactly as under
+tmux. `pty:create` is therefore attach-or-create, the way `tmux new -A` is — a
+live session with that name is attached and replayed; only an absent or exited one
+is spawned. (A freshly spawned shell is attached only after it is created, so its
+prompt, which may already be in the ring, is replayed to the client once and does
+not race a live event.)
+
+Reattaching a *fresh* terminal is a replay of the session's output ring, so a new
+tab reconstructs the screen from the byte stream. That is exact while the ring
+still holds the session from its start; once a long session has outgrown it, the
+replayed stream begins mid-way and the screen can come back rough — the same
+byte-replay limit the resize case runs into, and the same thing a grid model would
+fix.
+
+A host has one shell but may have more than one tab, so a replay is addressed to
+the view that asked for it (`PtySpawnOptions.view`, a token each shell generates):
+the catch-up on attach goes to that view alone, so a tab already open on the host
+does not render the session's history a second time, while live output — which
+carries no view — is taken by every tab. Two tabs on one host are consequently two
+clients of one shell, as two terminals on a tmux session are: they share its
+screen, its cwd and its size, and typing in either reaches the same prompt. (The
+panel ↔ shell cwd sync is per workspace, so two tabs on a host will pull each other
+to the same directory; the common case is one tab per host.)
+
+Only an ssh target is shared this way. `root@localhost` speaks the same protocol —
+same replay, same attach-or-create — but its session is the workspace's own and its
+shell ends with its tab: its relay is the app's own child rather than a host daemon,
+and a privileged shell is the last thing to leave running with no tab to show it. A
+local shell has no daemon to live in and no replay buffer in main, so it too stays
+the workspace's own.
 
 `pty:state` cannot answer remotely, because `/proc/<pid>` belongs to the local
 ssh process and not the remote shell. A remote shell's cwd has to come from the

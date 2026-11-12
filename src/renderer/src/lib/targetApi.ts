@@ -1,4 +1,4 @@
-import type { McGitApi, McFsApi, McPtyApi, RelayProgress } from '@shared/api'
+import type { McGitApi, McFsApi, McPtyApi, RelayProgress, RelayStatus } from '@shared/api'
 import type { Target, TargetApi } from '@shared/target'
 
 export type { TargetApi } from '@shared/target'
@@ -202,7 +202,8 @@ function remotePty(target: Target): McPtyApi {
         id: ptyId,
         path: options.cwd,
         cols: options.cols,
-        rows: options.rows
+        rows: options.rows,
+        ...(options.view ? { view: options.view } : {})
       })
     },
     write: (ptyId, data) => {
@@ -224,7 +225,11 @@ function remotePty(target: Target): McPtyApi {
       return window.mc.remote.onEvent((event) => {
         if (event.targetId !== id || event.type !== 'pty:data') return
         if (typeof event.id === 'string' && typeof event.data === 'string') {
-          handler({ id: event.id, data: event.data })
+          handler({
+            id: event.id,
+            data: event.data,
+            view: typeof event.view === 'string' ? event.view : undefined
+          })
         }
       })
     },
@@ -283,7 +288,8 @@ export function createTargetApi(target: Target): TargetApi {
       fs: window.mc.fs,
       pty: window.mc.pty,
       git: window.mc.git,
-      onProgress: () => () => {}
+      onProgress: () => () => {},
+      onStatus: () => () => {}
     }
   }
   return {
@@ -291,7 +297,8 @@ export function createTargetApi(target: Target): TargetApi {
     fs: remoteFs(target),
     pty: remotePty(target),
     git: remoteGit(target),
-    onProgress: remoteProgress(target)
+    onProgress: remoteProgress(target),
+    onStatus: remoteStatus(target)
   }
 }
 
@@ -303,5 +310,21 @@ function remoteProgress(target: Target): (handler: (progress: RelayProgress) => 
       if (typeof event.phase === 'string') {
         handler({ phase: event.phase, value: typeof event.value === 'number' ? event.value : 0 })
       }
+    })
+}
+
+/**
+ * The connection's own state, as the workspace paints it. A dropped link is not
+ * an error here: the app re-dials and replays, and the pane only needs to know
+ * to show it is waiting and to re-list when it is back.
+ */
+function remoteStatus(target: Target): (handler: (status: RelayStatus) => void) => () => void {
+  const id = target.id
+  return (handler) =>
+    window.mc.remote.onEvent((event) => {
+      if (event.targetId !== id || event.type !== 'target:status') return
+      const state = event.state
+      if (state !== 'connecting' && state !== 'reconnecting' && state !== 'connected') return
+      handler({ state, message: typeof event.message === 'string' ? event.message : undefined })
     })
 }
