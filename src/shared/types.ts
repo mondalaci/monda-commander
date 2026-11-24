@@ -18,6 +18,16 @@ export interface DirEntry {
   size: number
   mtimeMs: number
   mode: number
+  /**
+   * The names the entry's uid and gid are spelled with, for the status bar. Null
+   * where the metadata has no ids to resolve (a platform without them) and on
+   * rows that are not files of any filesystem — an archive's entries, a quick cd
+   * bookmark — so a reader shows nothing rather than guessing. An id no table
+   * names is reported as its own number, so a name that is all digits is a real
+   * answer and not a missing one.
+   */
+  owner: string | null
+  group: string | null
 }
 
 /**

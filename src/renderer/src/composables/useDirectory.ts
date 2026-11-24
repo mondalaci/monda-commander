@@ -441,6 +441,8 @@ function toRows(
     size: 0,
     mtimeMs: 0,
     mode: 0,
+    owner: null,
+    group: null,
     isParent: true
   }
 
@@ -1516,7 +1518,9 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
       symlinkTarget: null,
       size: 0,
       mtimeMs: 0,
-      mode: 0
+      mode: 0,
+      owner: null,
+      group: null
     }))
   }
 

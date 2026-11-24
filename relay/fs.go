@@ -16,6 +16,7 @@ import (
 	"mime"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -33,6 +34,8 @@ type DirEntry struct {
 	Size          int64   `json:"size"`
 	MtimeMs       float64 `json:"mtimeMs"`
 	Mode          uint32  `json:"mode"`
+	Owner         string  `json:"owner"`
+	Group         string  `json:"group"`
 }
 
 type DirListing struct {
@@ -159,6 +162,56 @@ func rawMode(info os.FileInfo) uint32 {
 	return uint32(info.Mode())
 }
 
+// The names a uid and a gid are spelled with, kept per id: a directory of a
+// thousand files asks about a handful, and the lookup itself is not free. Both
+// caches are filled by identityOf, which every listed entry goes through.
+var (
+	userNames  sync.Map // uint32 -> string
+	groupNames sync.Map // uint32 -> string
+)
+
+// userNameFor answers with the uid's own number when nothing names it. That is
+// not a failure — a name can come from a directory service the lookup does not
+// reach — and a number is what the metadata really holds.
+func userNameFor(uid uint32) string {
+	number := strconv.FormatUint(uint64(uid), 10)
+	if cached, ok := userNames.Load(uid); ok {
+		return cached.(string)
+	}
+	name := number
+	if account, err := user.LookupId(number); err == nil && account.Username != "" {
+		name = account.Username
+	}
+	userNames.Store(uid, name)
+	return name
+}
+
+// groupNameFor is userNameFor's other half, for a gid.
+func groupNameFor(gid uint32) string {
+	number := strconv.FormatUint(uint64(gid), 10)
+	if cached, ok := groupNames.Load(gid); ok {
+		return cached.(string)
+	}
+	name := number
+	if group, err := user.LookupGroupId(number); err == nil && group.Name != "" {
+		name = group.Name
+	}
+	groupNames.Store(gid, name)
+	return name
+}
+
+// identityOf is the owner and group of a stat: the two names the app's status
+// bar shows beside a row's mode, exactly as the local listing resolves them from
+// /etc/passwd and /etc/group. Empty strings where the platform's stat carries no
+// ids at all.
+func identityOf(info os.FileInfo) (owner, group string) {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return "", ""
+	}
+	return userNameFor(stat.Uid), groupNameFor(stat.Gid)
+}
+
 func readEntry(dir, name string) (DirEntry, error) {
 	full := filepath.Join(dir, name)
 	info, err := os.Lstat(full)
@@ -178,6 +231,7 @@ func readEntry(dir, name string) (DirEntry, error) {
 			symlinkTarget = &link
 		}
 	}
+	owner, group := identityOf(targetInfo)
 	return DirEntry{
 		Name:          name,
 		Path:          full,
@@ -187,6 +241,10 @@ func readEntry(dir, name string) (DirEntry, error) {
 		Size:          targetInfo.Size(),
 		MtimeMs:       float64(targetInfo.ModTime().UnixNano()) / 1e6,
 		Mode:          rawMode(targetInfo),
+		// The target's, as the size and the mode above are: a row shows the file
+		// the link leads to.
+		Owner: owner,
+		Group: group,
 	}, nil
 }
 

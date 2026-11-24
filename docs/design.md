@@ -1202,6 +1202,32 @@ number and takes the same colour. The colour rides an inline `color` on the size
 span, so it goes on reading as itself on a marked or cursored row's band, the same
 promise the runnable green makes.
 
+### The status bar says whose the row is
+
+The footer's right group reads the row the way `ls -l` does — permissions, then
+`user:group`, then size and date — because "what is this, who owns it, how big is
+it, when did it change" is one question asked in one glance at a file. Ownership
+is the half a listing cannot answer by itself: stat gives the numeric ids, and a
+name is a lookup. It is resolved in main (`src/main/identity.ts`), where
+`/etc/passwd` and `/etc/group` are read once and kept, so a directory of ten
+thousand files pays for a handful of map gets instead of a lookup per row.
+
+An id nothing names shows as its own number. That is not a hole to fill with a
+`getent` call: a name can live in a directory service those files know nothing
+about, and spawning a process per id would sit on the listing's hot path to learn
+it. The number is what the metadata really has, and showing it never delays a
+listing. For the same reason a **remote** target's ownership is resolved on the
+far side, by the relay, rather than shipped as ids for the app to look up here:
+a uid means what *that* host says it means, and its `/etc/passwd` is the only
+place that answers.
+
+It stays in the footer rather than becoming a column. A name column is wide and
+rarely the thing being sorted by, while the footer already describes the cursor's
+row — and it describes it whole, which is what a status bar is for. Entries with
+no identity of their own have none to show: an archive's entries are not files of
+any filesystem, and a quick cd bookmark is a path rather than a row, so both take
+no span at all rather than an empty one.
+
 ## Git status
 
 ### Git is asked, not reimplemented

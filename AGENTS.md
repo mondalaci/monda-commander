@@ -38,6 +38,9 @@ src/main/ipc/fs.ts       IPC: fs:home, fs:list, fs:dir-size, fs:dir-size-cancel,
                          fs:open-external, fs:reveal, fs:hide-add, fs:hide-remove,
                          fs:mkdir
 src/main/imageSize.ts    header-only image dimensions (PNG/JPEG+EXIF/GIF/BMP/ICO/WebP/SVG)
+src/main/identity.ts     an entry's owner and group: uid/gid -> names from
+                         /etc/passwd and /etc/group, read once and kept (the
+                         number itself where nothing names the id)
 src/main/videoCodec.ts   header-only codec sniff for ISOBMFF (mp4/m4v/mov)
 src/main/media.ts        mc-media scheme: ranged audio/video stream + live ffmpeg transcode
 src/main/pdf.ts          poppler-backed PDF pages: page count and every page's
@@ -688,6 +691,16 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   is deliberately *not* recursive, so an existing name is an `EEXIST` the pane
   reports rather than a silent success; the new folder does not sweep, because
   every pane showing the directory is told the change is the app's own.
+
+- **The status bar names an entry's owner, as `user:group` beside its mode.**
+  `DirEntry.owner`/`group` are the names the ids are spelled with, resolved in
+  `src/main/identity.ts` from `/etc/passwd` and `/etc/group` — read once and kept,
+  so a listing of thousands pays a handful of map gets — and by the relay on the
+  far side for a remote, whose ids mean what *that* host's tables say. An id
+  nothing names reads as its own number rather than costing a `getent` spawn on
+  the listing's hot path. Both are null where there is no identity to show (an
+  archive's entries are not files of any filesystem; a quick cd bookmark is a
+  path), and the footer draws no span at all for those — never an empty one.
 
 ### Transfers: a progress dialog, and a pill when backgrounded
 

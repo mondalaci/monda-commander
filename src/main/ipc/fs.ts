@@ -7,6 +7,7 @@ import { ipcMain, nativeImage, shell, type WebContents } from 'electron'
 import { isArchivePath, splitArchivePath } from '@shared/archive'
 import { HIDE_MARKER } from '@shared/hide'
 import { imageMimeFor } from '@shared/image'
+import { identityOf } from '../identity'
 import { readImageSize } from '../imageSize'
 import {
   archiveDirSize,
@@ -529,7 +530,10 @@ async function readEntry(dir: string, name: string): Promise<DirEntry> {
     symlinkTarget,
     size: stats.size,
     mtimeMs: stats.mtimeMs,
-    mode: stats.mode
+    mode: stats.mode,
+    // A symlink is followed above, exactly as its size and mode are, so the two
+    // names are the target's — the file the row really shows.
+    ...identityOf(stats)
   }
 }
 

@@ -414,7 +414,11 @@ export async function listArchive(archive: string, inner: string): Promise<DirLi
     symlinkTarget: child.symlinkTarget,
     size: child.size,
     mtimeMs: child.mtimeMs,
-    mode: child.isDir ? 0o040755 : child.symlinkTarget !== null ? 0o120777 : 0o100644
+    mode: child.isDir ? 0o040755 : child.symlinkTarget !== null ? 0o120777 : 0o100644,
+    // An archive's entries are not files of any filesystem, so an owner is not
+    // something the archive can say — the same reason there is no real mode.
+    owner: null,
+    group: null
   }))
 
   return {

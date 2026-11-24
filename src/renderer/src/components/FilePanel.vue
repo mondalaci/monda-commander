@@ -5373,6 +5373,17 @@ function footerSizeText(entry: PaneEntry): string {
 }
 
 /**
+ * Who owns the row under the cursor, as `user:group` — the two names the listing
+ * read from the entry's ids (resolved in main, which is where `/etc/passwd` is
+ * known). Empty where the entry has no identity to show: an archive's entries are
+ * not files of any filesystem, and a bookmark is a path rather than a row.
+ */
+function ownerText(entry: PaneEntry): string {
+  if (!entry.owner) return ''
+  return entry.group ? `${entry.owner}:${entry.group}` : entry.owner
+}
+
+/**
  * In-place rename. The input is rendered only for the entry the controller is
  * editing, but it lives inside the v-for, so a string ref would collect an
  * array — a function ref keeps a single element handle. Focus and select the
@@ -6288,6 +6299,12 @@ function onRenameBlur(): void {
 
           <template v-if="entry && !entry.isParent && !quickCdMode">
             <span class="hidden tabular-nums lg:inline">{{ formatMode(entry.mode) }}</span>
+            <!-- Whose the row is, beside what may be done with it — `ls -l`'s own
+                 order. A row with no identity to show (an archive's entry) takes
+                 no span at all, so the group never opens a gap on its own. -->
+            <span v-if="ownerText(entry)" class="hidden tabular-nums lg:inline">
+              {{ ownerText(entry) }}
+            </span>
             <span class="tabular-nums" :style="sizeColorStyle(entry)">
               {{ footerSizeText(entry) }}
             </span>
