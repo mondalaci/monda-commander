@@ -135,6 +135,8 @@ src/renderer/src/components/HoldRing.vue       the ring on a held right press
 src/renderer/src/components/TransferDialog.vue  a running transfer's progress dialog
 src/renderer/src/components/TransferPill.vue    a backgrounded transfer, in the title bar
 src/renderer/src/components/ConflictDialog.vue  a name collision, and what to do about it
+src/renderer/src/components/SelectGroup.vue    the `+`/`-` mask dialog: which names to
+                                               mark or unmark
 src/renderer/src/components/ColumnAddButton.vue    the column editor's gap "+"
 src/renderer/src/components/ColumnDropMarker.vue  the arrow + line insertion point
 src/renderer/src/composables/useWorkspace.ts   one tab: its two panes, its shell, cwd sync
@@ -147,6 +149,8 @@ src/renderer/src/composables/useTransfers.ts    the window's running transfers a
 src/renderer/src/composables/usePdfView.ts      the app-wide PDF fit + magnification
 src/renderer/src/lib/format.ts        size/date/permission formatting
 src/renderer/src/lib/executable.ts    runnable/green rule and `shouldExecute`
+src/renderer/src/lib/selectMask.ts    a `+`/`-` mask compiled to a name matcher:
+                                      `*`, `?`, `[...]`, everything else literal
 src/renderer/src/lib/archive.ts       the archive-support ref (`fs:can-archive`),
                                       asked once so Enter knows what a `.zip` means
 src/renderer/src/lib/preview.ts       preview target, PlaybackClock, stage requests
@@ -593,6 +597,14 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   (gold weave + `box-shadow` frame); the weave's band is `transparent` so it lands
   on the inactive grey, and the weave yields to `flash-row` (both want
   `background-image`).
+- **`+` and `-` mark a group by mask.** `lib/selectMask.ts` compiles a shell
+  pattern (`*`, `?`, `[abc]`, everything else literal) into one name matcher, and
+  the pane runs it over `allRows` (the marks' own source, so a search filter never
+  hides a mark from a transfer). The dialog (`SelectGroup.vue`) carries **Files
+  only** — on, because `*` leaves folders for the hand — and **Case sensitive** —
+  on, as the filesystem is — and remembers both with the mask for the session. The
+  gesture leaves the cursor alone. The keys are claimed only with an empty command
+  line, and the row menu carries *Select group…* / *Unselect group…*.
 - **A right click toggles the mark on the release; a right drag paints one across
   the rows it sweeps; a right press held opens the menu.** None moves the cursor.
   Told apart by time and pointer behaviour (`HOLD_SLOP_PX`, `HOLD_MENU_MS` 450ms,

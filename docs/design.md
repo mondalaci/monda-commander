@@ -753,6 +753,37 @@ delete already follows, whose removed rows take their marks with them while the
 failures keep theirs; only copy had nothing to prune it, because only copy leaves
 the entries behind.
 
+### A group is marked by a mask
+
+`+` and `-` are the commander's pair: each opens a dialog whose field is a shell
+pattern, and `+` marks every name it matches while `-` takes those marks away.
+The matching is a small glob of its own (`lib/selectMask.ts`), not the shell and
+not the search box's substring: `*` is any run of characters, `?` one, a
+`[...]` set is a set, and every other character is itself — so `*.tar.gz` means
+a name ending in a literal `.tar.gz`, and a pattern the regex engine refuses (a
+reversed range) falls back to its own text rather than failing the gesture. It
+is matched against the entry's *name*, never its path, since a name is the only
+thing the field promises and a name holds no separator anyway. The pane compiles
+the mask once and runs that over `allRows`, the same source `toggleSelectAll`
+and `selectionTargets` read: a search filter can hide a row from the eye but not
+from the group, so a mark can never become invisible to the transfer that acts
+on it. The hide mode is the other way round — a covered row is not in `allRows`
+at all, so a mask cannot mark what the folder is hiding.
+
+Two checkboxes are the two questions a commander asks, with this app's answers.
+**Files only** starts on, because `*` reads files the same way: a folder is not
+something a key should sweep into whatever transfer follows, and it is marked by
+hand when it is wanted — with the box off, a group is the one gesture that marks
+folders by a pattern. **Case sensitive** starts on because a Linux filesystem's
+names are, so `*.JPG` and `*.jpg` are different questions until the user says
+otherwise. The mask and both answers are remembered for the session, since `+`
+and `-` are one question asked twice (mark these, unmark those) and making the
+second start over from `*` would make the user type the first answer again.
+Marking a group does not move the cursor: this is a sweep over a listing, not a
+walk down it, and `Insert` remains the per-row gesture that advances. The pane's
+row menu offers both as *Select group…* and *Unselect group…*, carrying their
+keys, because the menu is where a gesture without a pointer is found.
+
 ### The right button: click, drag, hold
 
 A right *click* toggles the row's mark on the release; a right *drag* paints one

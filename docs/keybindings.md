@@ -80,6 +80,18 @@ row that is not a folder, so a symlink counts even when it dangles (a broken
 is a folder like any other — claimed only while the command line holds nothing,
 since a typed `*` is a glob for the shell,
 
+`+` and `-` open the Select/Unselect group dialog: a shell-pattern mask — `*`
+any run of characters, `?` one, `[abc]` a set, everything else itself — matched
+against each entry's *name*, with **Files only** (on by default, so a folder is
+still marked by hand as `*` leaves it) and **Case sensitive** (on by default, as
+a Linux filesystem's names are) deciding which rows the group may touch. The two
+keys are one question asked twice, so the dialog opens with the last mask,
+selected and ready to be replaced, and marking a group leaves the cursor where
+it is rather than walking down the listing as `Insert` does. Both are claimed
+only while the command line holds nothing, since a typed `-` is an option for
+the shell; the row menu's *Select group…* and *Unselect group…* are the same
+gesture by pointer,
+
 a right press marks the row it lands on, on the *release* rather than on the way
 down, and leaves the cursor where it was — the right button marks, the left one
 is where the cursor goes — while dragging the held right button paints that same

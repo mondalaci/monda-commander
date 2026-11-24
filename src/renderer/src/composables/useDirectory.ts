@@ -9,6 +9,7 @@ import { archiveSupported } from '@renderer/lib/archive'
 import { hideMode } from '@renderer/composables/useHideMode'
 import { quickCdDirs, homeDir, quickCdLabel } from '@renderer/composables/useQuickCd'
 import { buildGitView, type GitView } from '@renderer/lib/gitMark'
+import { compileMask } from '@renderer/lib/selectMask'
 import { nextViewMode, stepThumbScale, THUMB_SCALE_DEFAULT_STEP, type ViewMode } from '@shared/viewMode'
 import type { TargetApi } from '@renderer/lib/targetApi'
 import { shouldExecute } from '@renderer/lib/executable'
@@ -301,6 +302,17 @@ export interface PaneController {
   setSelected(path: string, value: boolean): void
   toggleSelection(): void
   toggleSelectAll(): void
+  /**
+   * Mark or unmark every entry whose name matches a shell-pattern mask — the
+   * commander's `+` and `-`. `filesOnly` leaves folders alone (the `*` key's
+   * rule), and `caseSensitive` is the dialog's own answer, since a Linux
+   * filesystem's names are case-sensitive until the user says otherwise.
+   */
+  selectByMask(
+    mask: string,
+    select: boolean,
+    options: { filesOnly: boolean; caseSensitive: boolean }
+  ): void
   clearSelection(): void
   selectionTargets(): PaneEntry[]
   deletionTargets(): PaneEntry[]
@@ -1903,6 +1915,37 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
   }
 
   /**
+   * Mark (or unmark) every entry whose name matches `mask` — the group a
+   * commander asks for with `+` and `-`. A folder is left alone while
+   * `filesOnly` is on, which is the same answer `*` gives and for the same
+   * reason: a group that swept folders up would drag them into whatever transfer
+   * followed, and a folder is marked by hand when it is wanted. With it off, a
+   * folder is an entry like any other — that is the one thing `*` cannot do.
+   *
+   * Drawn from `allRows` rather than the filtered view, exactly as `toggleSelectAll`
+   * and `selectionTargets` are, so a filter can never hide a mark from the
+   * actions. The cursor stays where it is: this is a sweep over a listing, not a
+   * per-row mark that walks down it (that is `Insert`). A quick cd row is a
+   * bookmark and not a thing to transfer, so the mode has no marks to give.
+   */
+  function selectByMask(
+    mask: string,
+    select: boolean,
+    options: { filesOnly: boolean; caseSensitive: boolean }
+  ): void {
+    if (state.quickCd) return
+
+    const matches = compileMask(mask, options.caseSensitive)
+    for (const row of state.allRows) {
+      if (row.isParent) continue
+      if (options.filesOnly && row.kind === 'directory') continue
+      if (!matches(row.name)) continue
+      if (select) state.selected.add(row.path)
+      else state.selected.delete(row.path)
+    }
+  }
+
+  /**
    * What a transfer acts on: the marks if any are set, otherwise the entry
    * under the cursor. The ".." row is never a target, and a filter does not
    * hide a mark — every mark in the pane is used, matched in listing order.
@@ -2251,6 +2294,7 @@ export function useDirectory(side: PanelSide, options: PaneOptions): PaneControl
     setSelected,
     toggleSelection,
     toggleSelectAll,
+    selectByMask,
     clearSelection,
     selectionTargets,
     deletionTargets,

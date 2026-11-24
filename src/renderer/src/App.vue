@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, provide, ref, shallowRe
 import FilePanel from '@renderer/components/FilePanel.vue'
 import ConfirmTransfer from '@renderer/components/ConfirmTransfer.vue'
 import ConfirmMkdir from '@renderer/components/ConfirmMkdir.vue'
+import SelectGroup from '@renderer/components/SelectGroup.vue'
 import ConfirmCommit from '@renderer/components/ConfirmCommit.vue'
 import ConfirmDelete from '@renderer/components/ConfirmDelete.vue'
 import ConfirmDiscard from '@renderer/components/ConfirmDiscard.vue'
@@ -359,6 +360,23 @@ function stepPillFocus(delta: number): void {
  * keyboard, so it is read when the name is confirmed rather than captured.
  */
 const mkdirOpen = ref(false)
+
+/**
+ * The mask dialog `+` and `-` open: which pane it is about, whether it selects
+ * or unselects, and the last answer it was given. The two keys are one question
+ * asked twice — add these rows to the marks, take these away — so the dialog
+ * remembers the mask and its two options for the session rather than starting
+ * from `*` every time, while a fresh launch starts from the plain ones.
+ */
+const selectGroup = ref<{
+  pane: PaneController
+  mode: 'select' | 'unselect'
+  mask: string
+  filesOnly: boolean
+  caseSensitive: boolean
+} | null>(null)
+
+const selectGroupMemory = { mask: '*', filesOnly: true, caseSensitive: true }
 
 /**
  * The pane that is displaying another pane's media, or null when none is. Enter
@@ -914,6 +932,7 @@ function restoreFocus(): void {
     copyJob.value !== null ||
     moveJob.value !== null ||
     mkdirOpen.value ||
+    selectGroup.value !== null ||
     foregroundTasks.value.length > 0
   ) {
     return
@@ -1768,6 +1787,46 @@ function cancelMkdir(): void {
 }
 
 /**
+ * `+` and `-` ask for a mask and mark or unmark every name it matches. The pane
+ * is passed rather than read from `activePane` so the row menu's items act on
+ * the pane they were opened over; a bookmark row has no marks, so the quick cd
+ * mode has no group to select.
+ */
+function requestSelectGroup(
+  mode: 'select' | 'unselect',
+  pane: PaneController = activePane.value
+): void {
+  if (pane.state.quickCd) return
+  selectGroup.value = { pane, mode, ...selectGroupMemory }
+}
+
+function cancelSelectGroup(): void {
+  selectGroup.value = null
+  focusPanes()
+}
+
+/**
+ * Apply the mask to the pane that asked, and keep the answer for the next time
+ * either key is pressed. Marking a group does not move the cursor — unlike
+ * `Insert`, which walks down the listing — so the group can be built from any
+ * row it reaches, and nothing is opened or transferred by the gesture itself.
+ */
+function confirmSelectGroup(
+  mask: string,
+  filesOnly: boolean,
+  caseSensitive: boolean
+): void {
+  const job = selectGroup.value
+  if (job === null) return
+  selectGroup.value = null
+  selectGroupMemory.mask = mask
+  selectGroupMemory.filesOnly = filesOnly
+  selectGroupMemory.caseSensitive = caseSensitive
+  job.pane.selectByMask(mask, job.mode === 'select', { filesOnly, caseSensitive })
+  focusPanes()
+}
+
+/**
  * Make the directory the dialog named. The folder appears in every pane showing
  * the directory it was made in — both panes can show one — and it is the user's
  * own `mkdir`, so none of them sweeps it: they are told the change is the app's
@@ -2148,6 +2207,22 @@ const paneMenuItems = computed<PaneMenuItem[]>(() => {
       label: marked ? 'Unmark' : 'Mark',
       hint: 'Insert',
       run: () => pane.setSelected(entry.path, !marked)
+    },
+    // The group keys are pane-wide rather than about this row, but they are
+    // marks like the item above and the menu is where a key without a pointer
+    // is found. They ask about the pane the menu was opened over, not whichever
+    // pane happens to hold the keyboard when the item runs.
+    {
+      kind: 'action',
+      label: 'Select group…',
+      hint: '+',
+      run: () => requestSelectGroup('select', pane)
+    },
+    {
+      kind: 'action',
+      label: 'Unselect group…',
+      hint: '-',
+      run: () => requestSelectGroup('unselect', pane)
     }
   ]
 
@@ -2658,6 +2733,18 @@ function handlePaneKey(event: KeyboardEvent): void {
       consume(event)
       pane.toggleSelection()
       break
+    case '+':
+    case '-': {
+      // The commander's group selection: `+` asks for a mask to mark with, `-`
+      // for one to unmark. Claimed only while the command line holds nothing —
+      // a typed `-` is an option for the shell, and a search box is where a
+      // printable key belongs — and only on the first press, since holding the
+      // key would otherwise open the dialog again the moment it closed.
+      if (searching || hasInput) return
+      consume(event)
+      if (!event.repeat) requestSelectGroup(event.key === '+' ? 'select' : 'unselect')
+      break
+    }
     case '*': {
       // With nothing typed on the command line the star is "all of this pane":
       // it marks every file — or unmarks them when they are all marked already,
@@ -2871,6 +2958,7 @@ function onKeydown(event: KeyboardEvent): void {
   // Enter activates the focused one) instead of reaching the panes or shell.
   if (
     mkdirOpen.value ||
+    selectGroup.value !== null ||
     deleteTargets.value.length > 0 ||
     copyJob.value !== null ||
     moveJob.value !== null ||
@@ -2879,6 +2967,7 @@ function onKeydown(event: KeyboardEvent): void {
     if (event.key === 'Escape') {
       consume(event)
       if (mkdirOpen.value) cancelMkdir()
+      else if (selectGroup.value !== null) cancelSelectGroup()
       else if (deleteTargets.value.length > 0) cancelDelete()
       else if (moveJob.value !== null) cancelMove()
       else if (commitJob.value !== null) cancelCommit()
@@ -3671,6 +3760,16 @@ onBeforeUnmount(() => {
       v-if="mkdirOpen"
       @confirm="confirmMkdir"
       @cancel="cancelMkdir"
+    />
+
+    <SelectGroup
+      v-if="selectGroup"
+      :mode="selectGroup.mode"
+      :mask="selectGroup.mask"
+      :files-only="selectGroup.filesOnly"
+      :case-sensitive="selectGroup.caseSensitive"
+      @confirm="confirmSelectGroup"
+      @cancel="cancelSelectGroup"
     />
 
     <ConfirmCommit
