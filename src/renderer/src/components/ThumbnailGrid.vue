@@ -58,6 +58,22 @@ const props = defineProps<{
    * they must be unique across both its layouts — and across both panes.
    */
   nameFor: (path: string) => string
+  /**
+   * The path of the entry the pane's status bar is playing, or null. The tile that
+   * matches draws the same progress hairline the listing's row draws, so the wall
+   * shows the sound's position as the row list does — the row list and the wall are
+   * two drawings of one listing, and the player's answer belongs to the entry, not
+   * to the drawing.
+   */
+  audioPath?: string | null
+  /** How far that clip has got, 0 to 1. */
+  audioRatio?: number
+  /**
+   * Whether that clip is actually playing, as opposed to paused with its mark
+   * still up. The playing tile's icon becomes the play triangle the row's icon
+   * becomes, so the wall and the row list read the same way.
+   */
+  audioPlaying?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -637,8 +653,21 @@ function enterStyle(order: number): { animationDelay: string } | null {
           class="relative flex min-h-0 w-full flex-1 items-center justify-center overflow-hidden rounded border border-border-subtle bg-bg [&_svg]:h-8 [&_svg]:w-8"
           :data-model-key="cell.kind === 'model' ? domKey(cell.key) : undefined"
         >
+          <!-- The tile making the sound shows a play triangle in place of its
+               icon while the clip plays, exactly as the row's icon does: the same
+               triangle the footer's button draws, so the wall and the row list
+               read the same way. A paused clip goes back to its icon and keeps
+               its hairline. -->
+          <svg
+            v-if="cell.entry.path === audioPath && audioPlaying"
+            viewBox="0 0 24 24"
+            fill="currentColor"
+            aria-hidden="true"
+          >
+            <path d="M8 5v14l11-7z" />
+          </svg>
           <img
-            v-if="cell.kind !== 'model' && tileUrl(cell.entry)"
+            v-else-if="cell.kind !== 'model' && tileUrl(cell.entry)"
             :src="tileUrl(cell.entry)"
             alt=""
             draggable="false"
@@ -671,6 +700,24 @@ function enterStyle(order: number): { animationDelay: string } | null {
             :style="dotStyle(cell.git, true)"
             :title="markTitle(cell.git.mark, cell.git.count, cell.git.rollup)"
           />
+
+          <!-- The sound's own progress, the same hairline the listing's row draws:
+               the tile the player owns carries the answer without a glance down at
+               the strip. It sits on the picture box's bottom edge, which is the
+               tile's body and clips to its rounded corners, rather than under the
+               name where it would read as an underline. Scaled rather than resized,
+               so a frame of playback never re-lays the tile out. -->
+          <span
+            v-if="cell.entry.path === audioPath"
+            class="pointer-events-none absolute inset-x-0 bottom-0 h-0.5"
+            aria-hidden="true"
+          >
+            <span class="absolute inset-0 bg-fg-bright/25" />
+            <span
+              class="absolute inset-y-0 left-0 w-full origin-left bg-fg-bright"
+              :style="{ transform: `scaleX(${audioRatio ?? 0})` }"
+            />
+          </span>
         </span>
 
         <span

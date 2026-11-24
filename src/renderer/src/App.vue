@@ -2580,7 +2580,14 @@ function handlePaneKey(event: KeyboardEvent): void {
       pane.toggleColumnEdit()
       return
     }
-    // A folder walk is the only thing still working in the background, and
+    // A sound playing in either pane's status bar is stopped and its row put back
+    // as it was before Enter was pressed — a "stop", not a "pause" — so Escape
+    // leaves the row as it found it. Either pane, because a clip keeps playing
+    // while the keyboard moves to the other one.
+    const stoppedLeft = leftPanel.value?.stopPreviewPlayback() ?? false
+    const stoppedRight = rightPanel.value?.stopPreviewPlayback() ?? false
+    if (stoppedLeft || stoppedRight) return
+    // A folder walk is the other thing still working in the background, and
     // Escape is the gesture that takes back whatever is running. Stopping it
     // first keeps the notice below as the last thing Escape has to leave.
     if (stopAllSizeWalks()) return

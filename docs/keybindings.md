@@ -44,7 +44,8 @@ an image, a video, a PDF or a 3D model, which it displays in the other pane inst
 (one there is nothing in the app to render — for a model, a CAD document with no
 FreeCAD to mesh it — is opened like any other file), and except an audio file,
 which starts or stops in the pane's own status bar instead (it has no picture to
-enlarge), and except an archive
+enlarge), and `Escape` takes the sound and the row's mark back to the plain bar
+it was before, and except an archive
 (a `.zip`, a `.tar.gz`, a `.7z`, …), which it *descends into* as if it were a
 directory — the pane title marks it with a chip carrying the archive's name, so
 being inside `foo.zip` reads apart from being inside a folder merely named so, and
@@ -260,8 +261,10 @@ whole transfer. The answer already made is remembered for the rest of it by the
 gone the instant it is over — nothing lingers, so an instantaneous delete is
 instantaneous.
 
-`Escape` stops the size walks: a folder walk is the only thing still working in
-the background, so it is taken back before the pane's notice is dismissed.
+`Escape` stops a sound playing in either pane's status bar and puts its row back
+as it was before `Enter` was pressed — the plain bar, not a paused one — and then
+stops the size walks: a folder walk is the other thing still working in the
+background, so both are taken back before the pane's notice is dismissed.
 
 `Backspace` never navigates: it belongs to the shell's line editor (or the search
 box), so the `..` row is the way up.

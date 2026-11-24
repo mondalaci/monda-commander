@@ -803,8 +803,22 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   arrows seek it. Its position is read from the element's clock every frame and
   carried between readings by the wall clock — a media clock reports in the audio
   device's own period, so a bar drawn straight from it would step — and the bar
-  slides rather than stepping with `timeupdate`. `stageTarget` refuses audio, so
-  no display ever opens for it.
+  slides rather than stepping with `timeupdate`. The playing row carries the same
+  answer in its own right: a 2px hairline along its bottom edge, filled to the
+  played fraction in white on a faint track, so the row the eye is on shows the
+  progress without a glance down at the strip. It is a child of the row, scaled
+  with `scaleX` rather than resized so a frame of playback never re-lays the row
+  out, and it is drawn only once playback has begun (`audioStarted`) so a row the
+  cursor merely passes over stays plain. The wall carries the same hairline on the
+  playing tile's picture box, so the answer belongs to the entry and not to the
+  drawing — the row list and the wall are two drawings of one listing. While the
+  clip plays, the file icon becomes a play triangle — the same one the footer's
+  button draws — in the row and in the tile alike, so the entry reads as the
+  player's without a glance down at the strip. A clip that plays to its end is put
+  back as `Escape` puts it back: the bar and the triangle go and the readout returns
+  to zero, so the plain bar is what remains. `Escape` stops the sound and puts the
+  row back as it was before playback began — a "stop", not a "pause", so the plain
+  bar returns. `stageTarget` refuses audio, so no display ever opens for it.
 - **A pane footer shows a PDF's page, and a display stacks the whole document.**
   A PDF is not one picture, so main renders a *page*: `pdftocairo`
   (`MC_PDFTOCAIRO`) at the width the box needs, as a PNG `data:` URL, alongside

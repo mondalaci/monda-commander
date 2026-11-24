@@ -1151,6 +1151,7 @@ watch(
     audioTime.value = 0
     audioDuration.value = null
     audioPlaying.value = false
+    audioStarted.value = false
     audioWanted.value = false
     audioError.value = false
     audioScrub = null
@@ -3099,6 +3100,12 @@ const audioDuration = ref<number | null>(null)
 const audioPlaying = ref(false)
 const audioError = ref(false)
 /**
+ * Whether playback has begun on the row under the cursor — a play, a seek or a
+ * scrub. The row's own progress line is drawn only from here on, so an audio row
+ * the cursor merely passes over stays as plain as any other row.
+ */
+const audioStarted = ref(false)
+/**
  * A play asked for before the element could take it — a press on Enter or Space
  * while the row is still settling — carried until the element is ready.
  */
@@ -3296,6 +3303,7 @@ function startAudioClock(): void {
 
 function onAudioPlay(): void {
   audioPlaying.value = true
+  audioStarted.value = true
   startAudioClock()
 }
 
@@ -3313,11 +3321,13 @@ function onAudioPause(): void {
   }
 }
 
+/**
+ * The clip has played to its end. The row is put back as Escape puts it back: the
+ * bar and the play icon go, the readout returns to zero and the element rewinds,
+ * so the plain bar is what remains and the next play starts from the beginning.
+ */
 function onAudioEnded(): void {
-  audioPlaying.value = false
-  stopAudioClock()
-  audioAnchor = null
-  audioTime.value = audioDuration.value ?? audioTime.value
+  stopPreviewPlayback()
 }
 
 /**
@@ -3329,8 +3339,35 @@ function onAudioError(): void {
   audioError.value = true
   audioPlaying.value = false
   audioWanted.value = false
+  audioStarted.value = false
   audioAnchor = null
   stopAudioClock()
+}
+
+/**
+ * Stop the audio player and put the row back as it was before playback began: the
+ * element rewound to its start, the readout zeroed, and the row's own progress line
+ * and play triangle gone — the plain status bar, as it stood before Enter was
+ * pressed. Escape's gesture, so it is a "stop" and not a "pause": a pause leaves
+ * the row marked, and Escape is what takes the mark back.
+ *
+ * Answers whether there was anything to stop, so a key that finds nothing playing
+ * here can fall through to its other duties.
+ */
+function stopPreviewPlayback(): boolean {
+  if (!audioStarted.value) return false
+  const element = previewAudio.value
+  if (element instanceof HTMLAudioElement) {
+    element.pause()
+    element.currentTime = 0
+  }
+  audioWanted.value = false
+  audioPlaying.value = false
+  audioStarted.value = false
+  audioTime.value = 0
+  audioAnchor = null
+  stopAudioClock()
+  return true
 }
 
 /**
@@ -3348,6 +3385,7 @@ function seekAudio(delta: number): void {
   const at = Math.min(Math.max(element.currentTime + delta, 0), duration)
   element.currentTime = at
   audioTime.value = at
+  audioStarted.value = true
   audioAnchor = { time: at, at: performance.now() }
   if (wasPlaying) void element.play().catch(() => {})
 }
@@ -3380,6 +3418,7 @@ function scrubAudioTo(position: number, settle: boolean): void {
 
   const at = Math.min(Math.max(position, 0), duration)
   audioTime.value = at
+  if (at > 0) audioStarted.value = true
   if (settle) {
     element.currentTime = at
     audioAnchor = { time: at, at: performance.now() }
@@ -3425,18 +3464,33 @@ function onAudioBarPointerUp(event: PointerEvent): void {
   scrubAudioTo(pending, true)
 }
 
-/** How much of the audio clip the bar has filled. */
-const audioProgress = computed(() => {
+/** How far through the audio clip playback has got, from 0 to 1. */
+const audioRatio = computed(() => {
   const duration = audioDuration.value
-  if (duration === null || duration <= 0) return '0%'
-  const ratio = Math.min(Math.max(audioTime.value / duration, 0), 1)
-  return `${(ratio * 100).toFixed(2)}%`
+  if (duration === null || duration <= 0) return 0
+  return Math.min(Math.max(audioTime.value / duration, 0), 1)
 })
+
+/** How much of the audio clip the bar has filled. */
+const audioProgress = computed(() => `${(audioRatio.value * 100).toFixed(2)}%`)
 
 /** The audio handle's position, held inside the track at both ends. */
 const audioThumbLeft = computed(
   () => `clamp(6px, ${audioProgress.value}, calc(100% - 6px))`
 )
+
+/**
+ * The row whose audio the status bar is playing, or null while none is. The
+ * progress line belongs to that row's own bottom edge, so the row the user is
+ * looking at carries the answer without a second glance at the strip — and it
+ * appears only once playback has begun, so a row the cursor merely passes over
+ * stays as plain as its neighbours.
+ */
+const audioRowPath = computed(() => {
+  const target = previewTarget.value
+  if (!target || target.kind !== 'audio' || !audioStarted.value) return null
+  return target.path
+})
 
 /**
  * Where the enlarged clip has got to, published for the pane that asked for it:
@@ -4308,6 +4362,7 @@ defineExpose({
   seekStage,
   toggleStagePlayback,
   togglePreviewPlayback,
+  stopPreviewPlayback,
   cursorMenuAnchor,
   openColumnPicker,
   addColumnAtFocus,
@@ -5833,6 +5888,9 @@ function onRenameBlur(): void {
         :active="active"
         :enter="viewEnter"
         :name-for="entryName"
+        :audio-path="audioRowPath"
+        :audio-ratio="audioRatio"
+        :audio-playing="audioPlaying"
         @left-down="onRowLeftDown"
         @right-down="onRowRightDown"
         @enter="onRowEnter"
@@ -5860,7 +5918,7 @@ function onRenameBlur(): void {
           v-for="(row, order) in visibleRows"
           :key="row.entry.path"
           :data-path="row.entry.path"
-          class="flex cursor-default items-center gap-1.5 px-3 text-ui"
+          class="relative flex cursor-default items-center gap-1.5 px-3 text-ui"
           :style="[
             { height: `${ROW_HEIGHT}px` },
             { viewTransitionName: entryName(row.entry.path) },
@@ -5873,13 +5931,42 @@ function onRenameBlur(): void {
           @contextmenu.prevent
           @dblclick="onRowDblclick"
         >
+          <!-- The row's own progress line: a hairline along its bottom edge that
+               fills as the audio plays, so the row the eye is on carries the
+               answer without a glance down at the strip. It costs no width, moves
+               nothing, and is scaled rather than resized so a frame of playback
+               never re-lays the row out. -->
+          <span
+            v-if="row.entry.path === audioRowPath"
+            class="pointer-events-none absolute inset-x-0 bottom-0 h-0.5"
+            aria-hidden="true"
+          >
+            <span class="absolute inset-0 bg-fg-bright/25" />
+            <span
+              class="absolute inset-y-0 left-0 w-full origin-left bg-fg-bright"
+              :style="{ transform: `scaleX(${audioRatio})` }"
+            />
+          </span>
           <template v-for="col in displayColumns" :key="col">
             <!-- The name column carries the row's icon, its name and the link
                  that name may point to, so all of it travels together when the
                  column is dragged to another place. -->
             <span v-if="col === 'name'" class="flex min-w-0 flex-1 items-center gap-2">
               <span class="relative flex w-4 shrink-0 items-center justify-center">
-                <FileIcon :entry="row.entry" />
+                <!-- The row making the sound shows a play triangle in place of its
+                     file icon while the clip plays: the ambient clue that this is
+                     the row the status bar is playing. It is the same triangle the
+                     footer's own button draws, so the two agree at a glance. -->
+                <svg
+                  v-if="row.entry.path === audioRowPath && audioPlaying"
+                  viewBox="0 0 24 24"
+                  class="h-3.5 w-3.5"
+                  fill="currentColor"
+                  aria-hidden="true"
+                >
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+                <FileIcon v-else :entry="row.entry" />
                 <!-- The row's whole mark: a dot on its own icon, the colour of the
                      status and nothing else — filled for the entry itself, a ring
                      for a folder that only holds one. What it means in words is in

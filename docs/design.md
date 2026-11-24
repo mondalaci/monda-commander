@@ -1506,6 +1506,44 @@ deliberately stays at its 24px height: there is no box to grow into, so
 never opens for it either — `stageTarget` refuses audio — so there is no second
 element decoding the same file behind the player.
 
+The row the sound belongs to carries the same answer in its own right. A 2px
+hairline runs along its bottom edge, filled to the played fraction in white over a
+faint track, so the row the eye is already on shows how far the clip has got
+without a glance down at the strip. It is a child of the row rather than a change
+to the row's background: the row's band is already saying where the keyboard is
+(`bg-accent` when active, the inactive grey when not) and already carries the
+marked band's weave and the refresh's flash, so a third thing painting the same
+background would be the third claimant to it. The line is scaled with `scaleX`
+rather than resized, so a frame of playback never re-lays the row out — and it is
+drawn only from the moment playback has begun, so an audio row the cursor merely
+passes over stays as plain as its neighbours. The strip's own track stays as the
+pointer's scrubber: the row's line is ambient, not a control.
+
+The wall of thumbnails draws the same hairline on the playing tile's picture box,
+so the answer belongs to the entry and not to the drawing — the row list and the
+wall are two drawings of one listing, and a user who switched to tiles must not
+lose the one cue that says where the sound has got to. It sits on the box's bottom
+edge, inside the rounded border, rather than under the name where it would read as
+an underline; it is scaled the same way, so a frame of playback never re-lays the
+tile out either.
+
+While the clip plays, the file icon becomes a play triangle — the same one the
+footer's button draws — in the row and in the tile alike, so the entry reads as the
+player's without a glance down at the strip. The triangle stands in for the icon
+rather than sitting beside it: a second mark would compete with the git dot and the
+mark's band, and the row already says "here" by its own name. A paused clip goes
+back to its file icon and keeps its hairline, so the two answer different questions
+— the triangle says the sound is playing, the hairline says how far it has got.
+
+A clip that plays to its end is put back as `Escape` puts it back: the bar and the
+triangle go and the readout returns to zero, so the plain bar is what remains and
+the next play starts from the beginning. `Escape` itself stops the sound and puts
+the row back as it was before playback began — a "stop", not a "pause", so the plain
+bar returns. That is a "stop" rather than a "pause" because a pause leaves the row
+marked and Escape is the gesture that takes a mark back. It is offered in either
+pane, not only the active one, because a clip keeps playing while the keyboard moves
+to the other pane; the key walks both and stops whichever is playing.
+
 ### PDFs
 
 A PDF is a document rather than a picture, and the one thing a pane shows of it is
