@@ -2,7 +2,7 @@ node_modules/
 out/
 dist/
 release/
-resources/monda-relay
+resources/monda-relay*
 *.log
 .DS_Store
 .vite/

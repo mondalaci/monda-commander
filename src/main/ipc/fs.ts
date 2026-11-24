@@ -459,44 +459,30 @@ async function deleteTree(
   }
 }
 
-/** A mount point as `/proc` writes it: `\040` for a space, and so on. */
-function decodeMountPath(raw: string): string {
-  return raw.replace(/\\([0-7]{3})/g, (_match, octal: string) =>
-    String.fromCharCode(parseInt(octal, 8))
-  )
-}
-
-/** Whether `target` sits at or under `mount`, on a path boundary. */
-function isWithinMount(target: string, mount: string): boolean {
-  if (mount === '/') return target.startsWith('/')
-  const prefix = mount.endsWith('/') ? mount : `${mount}/`
-  return target === mount || target.startsWith(prefix)
-}
-
 /**
- * The mount point holding a path, matched by the *longest* mount point in
- * `/proc/self/mountinfo` that contains it — so a directory on a nested mount
- * answers with the inner one rather than the root. Null when the file cannot be
- * read, which is how a non-Linux platform or a restricted sandbox answers.
+ * The mount point holding a path, found by walking up while the directory's
+ * `dev` stays the same. A mount *is* a change of device, so the first ancestor
+ * on a different one is where the filesystem begins — which answers with the
+ * inner mount for a directory on a nested filesystem, and the same way on
+ * Linux, macOS and Windows. (This replaces reading `/proc/self/mountinfo`,
+ * which exists only on Linux; `stat.dev` is the fact that file encodes.) Null
+ * when the path cannot be stat'd — a delete racing the read, or a permission
+ * the walk cannot cross.
  */
 async function mountPointFor(target: string): Promise<string | null> {
-  let text: string
+  let current = path.resolve(target)
   try {
-    text = await fs.readFile('/proc/self/mountinfo', 'utf8')
+    if (!(await fs.stat(current)).isDirectory()) current = path.dirname(current)
+    const device = (await fs.stat(current)).dev
+    for (;;) {
+      const parent = path.dirname(current)
+      if (parent === current) return current
+      if ((await fs.stat(parent)).dev !== device) return current
+      current = parent
+    }
   } catch {
     return null
   }
-  const resolved = path.resolve(target)
-  let best: string | null = null
-  for (const line of text.split('\n')) {
-    if (!line) continue
-    const field = line.split(' ')[4]
-    if (!field) continue
-    const mount = decodeMountPath(field)
-    if (!isWithinMount(resolved, mount)) continue
-    if (best === null || mount.length > best.length) best = mount
-  }
-  return best
 }
 
 async function readEntry(dir: string, name: string): Promise<DirEntry> {

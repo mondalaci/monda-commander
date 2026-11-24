@@ -18,6 +18,7 @@ import {
   resolveDirectoryTarget
 } from '@renderer/lib/directoryChange'
 import { isArchivePath, splitArchivePath } from '@shared/archive'
+import { isWindows } from '@renderer/lib/platform'
 import type { Target } from '@shared/target'
 import type { PanelSide } from '@shared/types'
 
@@ -165,6 +166,11 @@ export function createWorkspace(id: string, label: string, target: Target): Work
     }
 
     function pushCwdToShell(): void {
+      // The injected line is a POSIX one — `cd '…' && printf … ; history -d …`
+      // — and Windows' cmd/PowerShell is a different grammar, so the panel does
+      // not drive the shell there. The shell is still the workspace's own; it
+      // just is not steered from the panes (docs/porting.md).
+      if (isWindows) return
       // Never write into a shell that is busy, or into a half-typed command
       // line: the text would be fed to whatever is running, or appended to the
       // command.

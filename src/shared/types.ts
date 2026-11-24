@@ -43,9 +43,9 @@ export interface DiskUsage {
   free: number
   /**
    * The mount point the path's filesystem is mounted at, or null when it cannot
-   * be determined (no `/proc`, or a platform that keeps mounts elsewhere). Read
-   * from `/proc/self/mountinfo` and matched by the longest mount point that
-   * holds the path, so a nested mount answers with the inner one.
+   * be determined. Found by walking up while `stat.dev` is unchanged — a mount
+   * is a change of device — so it is the same fact on Linux, macOS and Windows,
+   * and a nested mount answers with the inner one.
    */
   mount: string | null
 }

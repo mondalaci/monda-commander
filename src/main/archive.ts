@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs'
 import * as path from 'node:path'
 import { joinArchivePath, normalizeInner } from '@shared/archive'
 import type { DirEntry, DirListing } from '@shared/types'
+import { externalBinary } from './platform/binaries'
 
 /**
  * Reading archives by asking `7z`, one memoized probe away from nothing — the
@@ -15,7 +16,7 @@ import type { DirEntry, DirListing } from '@shared/types'
  * Nothing here touches Electron: this module is the pure reader, as
  * `gitStatus.ts` is, and `ipc/fs.ts` is what wires it to the bridge.
  */
-const SEVEN_ZIP = process.env.MC_7Z ?? '7z'
+const SEVEN_ZIP = process.env.MC_7Z ?? externalBinary('7z')
 
 /** Ceiling on a listing. A tree of hundreds of thousands of entries is text in
  * the tens of megabytes; past this the answer is refused rather than streamed

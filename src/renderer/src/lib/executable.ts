@@ -1,5 +1,6 @@
 import type { PaneEntry } from '@renderer/composables/useDirectory'
 import { isKnownName } from '@renderer/lib/fileIcon'
+import { isWindows } from '@renderer/lib/platform'
 
 /**
  * Extensions that name something the user runs: a shell or another interpreter,
@@ -59,6 +60,10 @@ function extensionOf(name: string): string {
  */
 export function isRunnable(entry: PaneEntry): boolean {
   if (entry.kind !== 'file') return false
+  // There is no exec bit on Windows — NTFS has no such permission, and Node
+  // reports a mode without one — so a program is recognized by its extension
+  // alone. The green rule is then `.exe`, `.bat`, `.cmd`, … and nothing else.
+  if (isWindows) return PROGRAM_EXTENSIONS.has(extensionOf(entry.name))
   if ((entry.mode & 0o111) === 0) return false
   if (PROGRAM_EXTENSIONS.has(extensionOf(entry.name))) return true
   return !isKnownName(entry.name)
@@ -69,7 +74,15 @@ export function isRunnable(entry: PaneEntry): boolean {
  * the way an ordinary file is opened. That is the green rule (`isRunnable`) less
  * a desktop entry: a `.desktop` file describes a program rather than being one,
  * and the system is exactly what knows how to launch those.
+ *
+ * Running a file means typing its quoted path into the workspace's own shell,
+ * and that line is POSIX (`docs/porting.md`): the quoting, the `cd` sync and the
+ * erase-echo are the shell's own grammar, and Windows' cmd/PowerShell are a
+ * different one. So on Windows the system's handler is the way a program is
+ * started — which is what `Enter` already does for every other file, and what a
+ * double-click does in Explorer.
  */
 export function shouldExecute(entry: PaneEntry): boolean {
+  if (isWindows) return false
   return isRunnable(entry) && !entry.name.toLowerCase().endsWith('.desktop')
 }

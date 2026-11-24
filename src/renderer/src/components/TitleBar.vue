@@ -2,6 +2,7 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 // The app mark, inlined so it stays a data: URL the renderer's CSP allows.
 import logo from '@renderer/assets/monda-commander.png?inline'
+import { isMac } from '@renderer/lib/platform'
 
 const maximized = ref(false)
 let unsubscribe: (() => void) | null = null
@@ -40,6 +41,7 @@ function onDoubleClick(event: MouseEvent): void {
 <template>
   <header
     class="drag-region flex h-8 shrink-0 items-center border-b border-border bg-surface pr-1.5"
+    :class="{ 'pl-20': isMac }"
     @dblclick="onDoubleClick"
   >
     <div class="flex shrink-0 items-center gap-2 pl-3">
@@ -59,7 +61,10 @@ function onDoubleClick(event: MouseEvent): void {
       <slot name="tasks" />
     </div>
 
-    <div class="no-drag flex h-full shrink-0 items-stretch gap-1">
+    <!-- macOS draws its own traffic lights into the inset title bar, so the
+         custom buttons are Linux/Windows' alone (the header keeps a `pl-20`
+         gutter for the lights above). -->
+    <div v-if="!isMac" class="no-drag flex h-full shrink-0 items-stretch gap-1">
       <button
         type="button"
         class="flex w-7 items-center justify-center text-fg-dim transition-colors hover:bg-hover hover:text-fg"

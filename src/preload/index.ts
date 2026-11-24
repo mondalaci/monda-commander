@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
-import type { McApi, McRemoteEvent, RelayProgress } from '@shared/api'
+import type { AppPlatform, McApi, McRemoteEvent, RelayProgress } from '@shared/api'
 import type {
   ConflictChoice,
   CopyOutcome,
@@ -31,6 +31,9 @@ import type {
 } from '@shared/types'
 
 const api: McApi = {
+  // The one platform fact the renderer needs: which modifier its chords are on.
+  // A plain string, so nothing about the main process crosses the bridge.
+  platform: process.platform as AppPlatform,
   fs: {
     home: () => ipcRenderer.invoke('fs:home'),
     list: (dir: string): Promise<Result<DirListing>> => ipcRenderer.invoke('fs:list', dir),

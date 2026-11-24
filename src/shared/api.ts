@@ -340,7 +340,16 @@ export interface McGitApi {
   onChanged(handler: (event: GitChangeEvent) => void): () => void
 }
 
+/**
+ * The platform `process.platform` reports, narrowed to the three the app ships
+ * for. The renderer reads it once, at `window.mc.platform`, to decide which
+ * modifier its own chords are built on — Command on macOS, Control elsewhere
+ * (see `lib/platform.ts`).
+ */
+export type AppPlatform = 'darwin' | 'linux' | 'win32'
+
 export interface McApi {
+  platform: AppPlatform
   fs: McFsApi
   pty: McPtyApi
   win: McWindowApi

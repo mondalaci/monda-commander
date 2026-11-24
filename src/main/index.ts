@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, Menu, type MenuItemConstructorOptions } from 'electron'
 import { registerFsHandlers } from './ipc/fs'
 import { registerRemoteHandlers } from './ipc/remote'
 import { targetRegistry } from './relay/registry'
@@ -33,8 +33,9 @@ import { killAllThumbnails, registerThumbnailHandlers } from './thumbnail'
 // GBM path) loses the GPU process to it: the decode fails and the rendering of
 // the whole window goes with it. A footer preview is a 64px thumbnail the user
 // is pointing at, never a viewing session, so decoding it in software is the
-// safer trade — a preview must not be able to take the window down with it.
-app.commandLine.appendSwitch('disable-accelerated-video-decode')
+// safer trade — a preview must not be able to take the window down with it. The
+// DMA-BUF path is Linux's, so the switch is only asked for there.
+if (process.platform === 'linux') app.commandLine.appendSwitch('disable-accelerated-video-decode')
 
 const APP_BACKGROUND = '#1e1e1e'
 const APP_ICON = join(import.meta.dirname, '..', '..', 'resources', 'icon.png')
@@ -44,6 +45,47 @@ function resolvePreload(): string {
     join(import.meta.dirname, '..', 'preload', file)
   )
   return candidates.find((candidate) => existsSync(candidate)) ?? candidates[1]!
+}
+
+/**
+ * macOS draws one menu bar for the whole app, and it is also what makes the
+ * standard text-editing keys work at all: with no Edit menu, `Cmd+C`/`Cmd+V`
+ * do nothing in an input or in Monaco. So the app sets its own rather than
+ * leaving Electron's default, which carries a `View>Reload` on `Cmd+R` and a
+ * `File>Close` on `Cmd+W` — both of which are the app's own keys (`Ctrl+R`
+ * re-lists a pane, `Ctrl+W` closes a workspace, and on macOS those chords are
+ * `Cmd`). Those two are left out for exactly that reason, and the wall's tile
+ * zoom keeps `Cmd+=`/`Cmd+-`/`Cmd+0` by leaving out the View zoom roles too.
+ *
+ * Only macOS needs this; elsewhere Electron's default menu is what the app has
+ * always run under, and setting one would change nothing it wants.
+ *
+ * Two standard accelerators do still shadow an app chord, and both are left to
+ * the menu deliberately: `Edit>Copy`/`Cut` own `Cmd+C`/`Cmd+X` (so the panes'
+ * copy-name and transfer-cancel are unavailable on macOS), and the app menu's
+ * Hide owns `Cmd+H` (the video seek). Both are noted in docs/porting.md.
+ */
+function installApplicationMenu(): void {
+  if (process.platform !== 'darwin') return
+  const template: MenuItemConstructorOptions[] = [
+    { role: 'appMenu' },
+    { role: 'editMenu' },
+    {
+      label: 'View',
+      submenu: [{ role: 'toggleDevTools' }, { type: 'separator' }, { role: 'togglefullscreen' }]
+    },
+    { role: 'windowMenu' }
+  ]
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+}
+
+/**
+ * Windows groups taskbar buttons and notifications by AppUserModelID, which has
+ * to be the same id electron-builder installs the app under (`appId`) or the
+ * app appears as a nameless second entry beside its own shortcut.
+ */
+function installWindowsIdentity(): void {
+  if (process.platform === 'win32') app.setAppUserModelId('com.monda.commander')
 }
 
 function createWindow(): BrowserWindow {
@@ -58,7 +100,13 @@ function createWindow(): BrowserWindow {
     title: 'Monda Commander',
     backgroundColor: APP_BACKGROUND,
     icon: APP_ICON,
-    frame: false,
+    // Frameless everywhere, but macOS keeps its traffic lights: `hiddenInset`
+    // leaves them in the inset title bar the app draws under (TitleBar.vue hides
+    // its own buttons and pads a gutter for them), where a plain `frame: false`
+    // would leave the window with no controls at all.
+    ...(process.platform === 'darwin'
+      ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 12, y: 10 } }
+      : { frame: false }),
     webPreferences: {
       preload: resolvePreload(),
       contextIsolation: true,
@@ -125,6 +173,8 @@ if (!gotLock) {
 
   void app.whenReady().then(() => {
     registerMediaProtocol()
+    installApplicationMenu()
+    installWindowsIdentity()
     void targetRegistry.init()
     createWindow()
 

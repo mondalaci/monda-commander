@@ -12,6 +12,7 @@ import { buildGitView, type GitView } from '@renderer/lib/gitMark'
 import { nextViewMode, stepThumbScale, THUMB_SCALE_DEFAULT_STEP, type ViewMode } from '@shared/viewMode'
 import type { TargetApi } from '@renderer/lib/targetApi'
 import { shouldExecute } from '@renderer/lib/executable'
+import { isWindows } from '@renderer/lib/platform'
 import type { DirEntry, PanelSide } from '@shared/types'
 
 export type PaneEntry = DirEntry & { isParent?: boolean }
@@ -33,14 +34,16 @@ export type SortKey = 'name' | 'size' | 'modified' | 'mode' | 'modeNumeric'
  * them. `columnOrder` is a subset of this, one entry per shown column. The two
  * mode columns are the same bits drawn two ways — symbolic (`rw-r--r--`) and
  * numeric (`644`) — so a pane can show one, the other, or both.
+ *
+ * Windows keeps ACLs rather than Unix mode bits, so a mode column there would
+ * always read blank: it is left out of the picker rather than offered. The
+ * default `columnOrder` does not name one, so nothing has to be dropped.
  */
-export const COLUMN_TYPES: readonly SortKey[] = [
-  'name',
-  'size',
-  'modified',
-  'mode',
-  'modeNumeric'
-]
+const ALL_COLUMN_TYPES: readonly SortKey[] = ['name', 'size', 'modified', 'mode', 'modeNumeric']
+
+export const COLUMN_TYPES: readonly SortKey[] = isWindows
+  ? ALL_COLUMN_TYPES.filter((type) => type !== 'mode' && type !== 'modeNumeric')
+  : ALL_COLUMN_TYPES
 
 /** Whether the chosen column runs smallest-to-largest or the other way. */
 export type SortDirection = 'asc' | 'desc'

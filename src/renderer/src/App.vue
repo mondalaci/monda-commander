@@ -30,6 +30,7 @@ import {
   type StageRequest
 } from '@renderer/lib/preview'
 import type { PaneMenuChoice, PaneMenuItem, PaneMenuRequest } from '@renderer/lib/paneMenu'
+import { hasPrimary, isPlainPrimary, isPrimaryShift, isWindows } from '@renderer/lib/platform'
 import { commitBranchLabel, commitEntries, defaultCommitMessage, type CommitEntry } from '@renderer/lib/commit'
 import { archiveDisplay, isArchivePath, splitArchivePath } from '@shared/archive'
 import { targetLabel, type Target } from '@shared/target'
@@ -1974,13 +1975,9 @@ function consume(event: KeyboardEvent): void {
   event.stopPropagation()
 }
 
-function isPlainCtrl(event: KeyboardEvent): boolean {
-  return event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey
-}
-
-function isCtrlShift(event: KeyboardEvent): boolean {
-  return event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey
-}
+// The app's own chords are the *primary* modifier's — Command on macOS, Control
+// elsewhere — so they ask `lib/platform.ts` rather than a raw `ctrlKey`. Every
+// `Ctrl+…` in docs/keybindings.md is `Cmd+…` on macOS.
 
 /**
  * Keys that are only a modifier — never a key the shell has anything to do with,
@@ -2234,13 +2231,7 @@ function handlePaneKey(event: KeyboardEvent): void {
   // Ctrl+R so that an expanded, focused terminal keeps its own Ctrl+U
   // (kill-line): this function only runs once the terminal has been ruled out
   // as the owner of the keyboard.
-  if (
-    event.ctrlKey &&
-    !event.shiftKey &&
-    !event.altKey &&
-    !event.metaKey &&
-    event.key.toLowerCase() === 'u'
-  ) {
+  if (isPlainPrimary(event) && event.key.toLowerCase() === 'u') {
     consume(event)
     swapPanels()
     return
@@ -2256,7 +2247,7 @@ function handlePaneKey(event: KeyboardEvent): void {
   // with a selection of its own, and so does a selected PDF page: there the copy
   // is the *text*, made here rather than left to the browser, so the row's name
   // can never land on the clipboard in its place.
-  if ((isPlainCtrl(event) || isCtrlShift(event)) && event.code === 'KeyC' && !searching) {
+  if ((isPlainPrimary(event) || isPrimaryShift(event)) && event.code === 'KeyC' && !searching) {
     const selected = selectedPdfText()
     if (selected !== null) {
       copyToClipboard(selected)
@@ -2273,7 +2264,7 @@ function handlePaneKey(event: KeyboardEvent): void {
   // the name makes with the mouse. It is claimed only with an empty command line
   // and no search box up, like the other media keys: a typed line, or a search
   // in progress, owns its keys.
-  if (isPlainCtrl(event) && event.key === 'Enter' && !searching && !hasInput) {
+  if (isPlainPrimary(event) && event.key === 'Enter' && !searching && !hasInput) {
     consume(event)
     toggleFullscreen(activeSide.value)
     return
@@ -2285,7 +2276,7 @@ function handlePaneKey(event: KeyboardEvent): void {
   // Ctrl+H is the line editor's backspace, Ctrl+L clears the terminal screen
   // and Ctrl+J accepts the line — and an expanded, focused terminal never
   // reaches here at all.
-  if (isPlainCtrl(event) && !searching && !hasInput) {
+  if (isPlainPrimary(event) && !searching && !hasInput) {
     const step = SEEK_STEPS[event.key.toLowerCase()]
     if (step !== undefined) {
       consume(event)
@@ -2525,11 +2516,7 @@ function onKeydown(event: KeyboardEvent): void {
   if (conflicts.length > 0) {
     const isCancelKey =
       event.key === TRANSFER_BACKGROUND_KEY ||
-      (event.ctrlKey &&
-        !event.shiftKey &&
-        !event.altKey &&
-        !event.metaKey &&
-        event.key.toLowerCase() === TRANSFER_CANCEL_KEY)
+      (isPlainPrimary(event) && event.key.toLowerCase() === TRANSFER_CANCEL_KEY)
     if (isCancelKey) {
       consume(event)
       const first = conflicts[0]
@@ -2556,13 +2543,7 @@ function onKeydown(event: KeyboardEvent): void {
       }
       return
     }
-    if (
-      event.ctrlKey &&
-      !event.shiftKey &&
-      !event.altKey &&
-      !event.metaKey &&
-      event.key.toLowerCase() === TRANSFER_CANCEL_KEY
-    ) {
+    if (isPlainPrimary(event) && event.key.toLowerCase() === TRANSFER_CANCEL_KEY) {
       consume(event)
       if (last) {
         if (last.status !== 'running') dismissTransfer(last)
@@ -2611,12 +2592,7 @@ function onKeydown(event: KeyboardEvent): void {
     }
   }
 
-  const isTerminalToggle =
-    event.ctrlKey &&
-    !event.shiftKey &&
-    !event.altKey &&
-    !event.metaKey &&
-    event.key.toLowerCase() === 'o'
+  const isTerminalToggle = isPlainPrimary(event) && event.key.toLowerCase() === 'o'
 
   if (isTerminalToggle) {
     event.preventDefault()
@@ -2627,7 +2603,7 @@ function onKeydown(event: KeyboardEvent): void {
 
   // Shift+Ctrl+PageUp/PageDown reorder the active tab rather than stepping to
   // another one. Claimed globally, like the plain-Ctrl tab keys below.
-  if (isCtrlShift(event) && (event.key === 'PageUp' || event.key === 'PageDown')) {
+  if (isPrimaryShift(event) && (event.key === 'PageUp' || event.key === 'PageDown')) {
     consume(event)
     moveWorkspace(activeIndex.value, activeIndex.value + (event.key === 'PageUp' ? -1 : 1))
     return
@@ -2637,7 +2613,7 @@ function onKeydown(event: KeyboardEvent): void {
   // claimed like Ctrl+O, above the terminal: a new terminal is wanted from
   // inside the one that is running, and a tab that could not be closed while it
   // was in front would be a tab the terminal owns.
-  if (isPlainCtrl(event)) {
+  if (isPlainPrimary(event)) {
     const key = event.key.toLowerCase()
     if (key === 't') {
       consume(event)
@@ -2743,8 +2719,10 @@ function onKeydown(event: KeyboardEvent): void {
   // Alt+Enter and Alt+A paste the cursor's entry onto the command line: its
   // name, and the directory holding it closed with a separator. They are the
   // pane's own too — the entry they paste is the row under a cursor nobody can
-  // see once the terminal has the room.
+  // see once the terminal has the room. The pasted line is shell-quoted, and
+  // that quoting is POSIX, so on Windows these are left alone (docs/porting.md).
   const isPasteName =
+    !isWindows &&
     event.altKey &&
     !event.ctrlKey &&
     !event.metaKey &&
@@ -2758,6 +2736,7 @@ function onKeydown(event: KeyboardEvent): void {
   }
 
   const isPastePath =
+    !isWindows &&
     event.altKey &&
     !event.ctrlKey &&
     !event.metaKey &&
@@ -2795,7 +2774,7 @@ function onKeydown(event: KeyboardEvent): void {
   // it keeps Ctrl+R below. It is a chord rather than a function key because F9 is
   // the menu bar in every orthodox file manager and the file-operation keys stop
   // at F8.
-  if (isPlainCtrl(event) && event.code === 'KeyG') {
+  if (isPlainPrimary(event) && event.code === 'KeyG') {
     consume(event)
     requestCommit()
     return
@@ -2806,19 +2785,14 @@ function onKeydown(event: KeyboardEvent): void {
   // restores one, exactly as clicking it does (see the pill block above). Claimed
   // here with the panes' keys, below the expanded terminal, so a real terminal
   // keeps its own Ctrl+B (readline's backward-char), as it keeps Ctrl+R below.
-  if (isPlainCtrl(event) && event.code === TRANSFER_PILLS_KEY) {
+  if (isPlainPrimary(event) && event.code === TRANSFER_PILLS_KEY) {
     if (focusPillAt(0)) consume(event)
     return
   }
 
   // Ctrl+R re-lists the pane being browsed (mc's Reread), rather than clearing
   // the shell's screen, which is what Ctrl+L is for.
-  const isRefresh =
-    event.ctrlKey &&
-    !event.shiftKey &&
-    !event.altKey &&
-    !event.metaKey &&
-    event.key.toLowerCase() === 'r'
+  const isRefresh = isPlainPrimary(event) && event.key.toLowerCase() === 'r'
 
   if (isRefresh) {
     consume(event)
@@ -2956,9 +2930,8 @@ function onKeydown(event: KeyboardEvent): void {
   // own key, claimed only where there is a wall to size — in the listing Ctrl+= is
   // left alone.
   const isTileZoomKey =
-    event.ctrlKey &&
+    hasPrimary(event) &&
     !event.altKey &&
-    !event.metaKey &&
     (event.code === 'Equal' ||
       event.code === 'NumpadAdd' ||
       event.code === 'Minus' ||

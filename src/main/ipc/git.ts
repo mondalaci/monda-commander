@@ -13,6 +13,7 @@ import type {
   GitStatus,
   Result
 } from '@shared/types'
+import { externalBinary } from '../platform/binaries'
 import { parseStatus } from '../gitStatus'
 
 /**
@@ -28,7 +29,7 @@ import { parseStatus } from '../gitStatus'
  * configuration change. Nothing here needs a native module either, so no
  * `electron-rebuild` and no second libgit2 in the package.
  */
-const GIT = process.env['MC_GIT'] ?? 'git'
+const GIT = process.env['MC_GIT'] ?? externalBinary('git')
 
 /** How long a single git call may take before it is killed, in milliseconds. */
 const TIMEOUT_MS = 5000

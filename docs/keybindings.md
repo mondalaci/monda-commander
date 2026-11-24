@@ -6,6 +6,13 @@ The panes' keys — everything below — are claimed by the window capture handl
 owns `Tab` and `Escape`. While the terminal is collapsed, printable characters go
 to the shell and the navigation keys still drive the panes.
 
+**macOS:** every `Ctrl+…` chord below is the *primary* modifier's — `Cmd+…` on
+macOS, `Ctrl+…` everywhere else (`lib/platform.ts`). Two are shadowed by the
+system menu there and do not reach the panes: `Cmd+C`/`Cmd+X` are the Edit menu's
+copy and cut, and `Cmd+H` hides the app, so the row-name copy, the transfer
+cancel and the ten-minute-back video seek have no macOS binding. See
+[`porting.md`](porting.md), "macOS track".
+
 ## Panes
 
 `Tab` switches panes, arrows/`Home`/`End`/`PgUp`/`PgDn` move the cursor

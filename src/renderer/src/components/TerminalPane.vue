@@ -3,6 +3,7 @@ import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal } from '@xterm/xterm'
 import type { Shell } from '@renderer/composables/useShell'
+import { isPlainPrimary } from '@renderer/lib/platform'
 
 // Read the mono stack from the theme rather than repeating it, so the terminal
 // and the rest of the UI cannot drift apart (or fall out of sync when the theme
@@ -340,12 +341,7 @@ function startTerminal(): void {
   term.onWriteParsed(() => capturePrompt())
 
   term.attachCustomKeyEventHandler((event) => {
-    const isTerminalToggle =
-      event.type === 'keydown' &&
-      event.ctrlKey &&
-      !event.shiftKey &&
-      !event.altKey &&
-      event.key.toLowerCase() === 'o'
+    const isTerminalToggle = event.type === 'keydown' && isPlainPrimary(event) && event.key.toLowerCase() === 'o'
     return !isTerminalToggle
   })
 

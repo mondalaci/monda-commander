@@ -37,12 +37,18 @@ export class TargetRegistry {
       user,
       host: 'localhost'
     })
-    this.targets.set(ROOT_TARGET_ID, {
-      id: ROOT_TARGET_ID,
-      kind: 'root',
-      user: 'root',
-      host: 'localhost'
-    })
+    // root@localhost is a `pkexec` launch, which is Linux's. macOS would need an
+    // `osascript` shim (docs/porting.md, "macOS track") and Windows has no
+    // equivalent at all, so the target is offered only where it can actually
+    // start — a target that cannot launch is worse than one that is absent.
+    if (process.platform === 'linux') {
+      this.targets.set(ROOT_TARGET_ID, {
+        id: ROOT_TARGET_ID,
+        kind: 'root',
+        user: 'root',
+        host: 'localhost'
+      })
+    }
 
     const saved = await this.readSaved()
     for (const target of saved) this.targets.set(target.id, target)

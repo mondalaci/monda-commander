@@ -5,15 +5,16 @@ import { ipcMain } from 'electron'
 import { isArchivePath } from '@shared/archive'
 import { isPdfName } from '@shared/pdf'
 import type { ImagePreview, PdfInfo, PdfPageText, PdfWord, PixelSize, Result } from '@shared/types'
+import { externalBinary } from './platform/binaries'
 
 /**
  * Where poppler's tools are looked for. Beside `PATH`, an explicit path can be
  * given, for a machine that keeps them somewhere the app's environment does not,
  * as `MC_FFMPEG` does for transcoding.
  */
-const PDFTOCAIRO = process.env['MC_PDFTOCAIRO'] ?? 'pdftocairo'
-const PDFINFO = process.env['MC_PDFINFO'] ?? 'pdfinfo'
-const PDFTOTEXT = process.env['MC_PDFTOTEXT'] ?? 'pdftotext'
+const PDFTOCAIRO = process.env['MC_PDFTOCAIRO'] ?? externalBinary('pdftocairo')
+const PDFINFO = process.env['MC_PDFINFO'] ?? externalBinary('pdfinfo')
+const PDFTOTEXT = process.env['MC_PDFTOTEXT'] ?? externalBinary('pdftotext')
 
 /**
  * How wide a page may be rasterized, in pixels. A page is rendered at the width

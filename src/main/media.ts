@@ -10,6 +10,7 @@ import {
   videoMimeFor
 } from '@shared/video'
 import { videoCodecOf } from './videoCodec'
+import { externalBinary } from './platform/binaries'
 
 /**
  * A range of bytes a media element asked for.
@@ -23,10 +24,10 @@ interface ByteRange {
  * Where ffmpeg is looked for. Beside `PATH`, an explicit path can be given, for
  * a machine that keeps it somewhere the app's environment does not.
  */
-const FFMPEG = process.env['MC_FFMPEG'] ?? 'ffmpeg'
+const FFMPEG = process.env['MC_FFMPEG'] ?? externalBinary('ffmpeg')
 
 /** Where ffprobe is looked for, which is what can say how long a clip is. */
-const FFPROBE = process.env['MC_FFPROBE'] ?? 'ffprobe'
+const FFPROBE = process.env['MC_FFPROBE'] ?? externalBinary('ffprobe')
 
 /**
  * How wide a transcoded clip's output may be. A 4K source is encoded at 720px at

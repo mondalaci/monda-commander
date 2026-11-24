@@ -7,12 +7,14 @@ files:
   - out/**
   - package.json
   - resources/icon.png
-extraResources:
-  - from: resources/monda-relay
-    to: monda-relay
 asarUnpack:
   - node_modules/node-pty/**
 npmRebuild: true
+
+# The relay is a Go binary, so each platform ships its own — `${os}` is
+# `linux`/`mac`/`win` and `${arch}` is `x64`/`arm64`, both expanded in `from`.
+# On Windows the file has to keep its `.exe` or the app cannot launch it, which
+# is why that one `to` differs. See scripts/build-relay.mjs.
 linux:
   icon: resources/icon.png
   target:
@@ -21,3 +23,49 @@ linux:
   category: Utility
   synopsis: Modern dual-pane file manager
   description: A modern orthodox (dual-pane) file manager with a VSCode-inspired interface and an integrated terminal.
+  extraResources:
+    - from: resources/monda-relay-linux-${arch}
+      to: monda-relay
+
+# Signing and notarization: signing comes from `CSC_LINK` — the Developer ID
+# `.p12`, decrypted in CI from scripts/certs/mac-cert.p12.enc — and notarization
+# runs automatically when `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` /
+# `APPLE_TEAM_ID` are set. With none of them the build is simply unsigned (see
+# docs/porting.md, "Signing").
+mac:
+  icon: resources/icon.png
+  category: public.app-category.utilities
+  target:
+    - dmg
+    - zip
+  extraResources:
+    - from: resources/monda-relay-mac-${arch}
+      to: monda-relay
+  # The hardened runtime is what notarization requires, and the entitlements are
+  # what Electron and node-pty need to run under it (build/entitlements.mac.plist).
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+
+win:
+  icon: resources/icon.png
+  target:
+    - nsis
+  extraResources:
+    - from: resources/monda-relay-win-${arch}
+      to: monda-relay.exe
+  # Azure Key Vault signing, through the same credentials the UHK Agent release
+  # uses. The module no-ops when `AZURE_KEY_VAULT_URL` is unset, so a build
+  # without the secrets is unsigned rather than broken (scripts/sign-windows.mjs).
+  # `signingHashAlgorithms` is SHA-256 alone: the default would run the signer a
+  # second time for a SHA-1 signature nobody wants, and each run is serialized
+  # with a gap.
+  signtoolOptions:
+    sign: ./scripts/sign-windows.mjs
+    publisherName: 'ULTIMATE GADGET LABORATORIES KFT.'
+    signingHashAlgorithms:
+      - sha256
+
+nsis:
+  oneClick: false

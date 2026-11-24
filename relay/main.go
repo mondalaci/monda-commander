@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 )
 
@@ -138,7 +139,7 @@ func handle(conn *Conn, req Request, id uint32) {
 			Version:      relayVersion,
 			UID:          os.Getuid(),
 			Home:         home,
-			Platform:     "linux",
+			Platform:     runtime.GOOS,
 			CanTranscode: canExec("ffmpeg"),
 			CanArchive:   canExec("7z") || canExec("7za"),
 		}, nil)

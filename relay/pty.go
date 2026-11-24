@@ -54,13 +54,6 @@ var (
 	ptyByID = map[string]*PtySession{}
 )
 
-func defaultShell() string {
-	if shell := os.Getenv("SHELL"); shell != "" {
-		return shell
-	}
-	return "/bin/bash"
-}
-
 // spawnPty starts a shell at cwd with the given size. It is left unattached
 // (sink nil) so the caller can attach it: output the shell produces before the
 // client's create is answered — its prompt — is then replayed exactly once,

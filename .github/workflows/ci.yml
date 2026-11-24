@@ -1,0 +1,158 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to the same ref cancels the run still going for it — a packaging
+# matrix is minutes long, and only the newest commit's result is worth having.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: relay/go.mod
+          cache-dependency-path: relay/go.sum
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # The relay is one Go source tree that has to build for every platform the
+      # app ships for; `build:relay:all` cross-compiles all five targets, so a
+      # `syscall` that only exists on Linux fails here rather than in a release.
+      - name: Cross-compile the relay for every platform
+        run: npm run build:relay:all
+
+      - name: Vet the relay (linux, darwin, windows)
+        working-directory: relay
+        run: |
+          go vet ./...
+          GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go vet ./...
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go vet ./...
+
+  package:
+    name: Package (${{ matrix.name }})
+    needs: checks
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One platform failing must not hide the others: a macOS-only break is
+      # exactly what this matrix exists to surface.
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-latest
+            command: npm run dist:linux -- --publish never
+            artifact: monda-commander-linux
+            files: |
+              release/*.AppImage
+              release/*.deb
+          # Both mac slices: node-pty ships darwin-x64 and darwin-arm64
+          # prebuilds, and electron-builder copies the relay matching `${arch}`.
+          # An Apple Silicon runner can build the x64 slice too; a failure there
+          # is a real signal, not a flake.
+          - name: macos
+            os: macos-latest
+            command: npm run dist:mac -- --arm64 --x64 --publish never
+            artifact: monda-commander-macos
+            files: |
+              release/*.dmg
+              release/*.zip
+          - name: windows
+            os: windows-latest
+            command: npm run dist:win -- --publish never
+            artifact: monda-commander-windows
+            files: |
+              release/*.exe
+    # Signing credentials, shared with the UHK Agent release. They are read from
+    # the environment by electron-builder and by scripts/sign-windows.mjs; every
+    # one of them is optional, and a build without them is unsigned rather than
+    # broken. The team id is not a secret (it is in every signed app), so it is
+    # written here as the Agent release writes it.
+    env:
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_ID_PASS }}
+      APPLE_TEAM_ID: CMXCBCFHDG
+      AZURE_KEY_VAULT_URL: ${{ secrets.AZURE_KEY_VAULT_URL }}
+      AZURE_KEY_VAULT_CLIENT_ID: ${{ secrets.AZURE_KEY_VAULT_CLIENT_ID }}
+      AZURE_KEY_VAULT_TENANT_ID: ${{ secrets.AZURE_KEY_VAULT_TENANT_ID }}
+      AZURE_KEY_VAULT_SECRET: ${{ secrets.AZURE_KEY_VAULT_SECRET }}
+      AZURE_KEY_VAULT_CERTIFICATE: ${{ secrets.AZURE_KEY_VAULT_CERTIFICATE }}
+      CERT_KEY: ${{ secrets.CERT_KEY }}
+      CERT_IV: ${{ secrets.CERT_IV }}
+      # Never sign with whatever identity a machine happens to have in its
+      # keychain: signing is the decrypted .p12 (CSC_LINK) or nothing.
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: relay/go.mod
+          cache-dependency-path: relay/go.sum
+
+      # The deb target shells out to `fakeroot`; AppImage needs nothing extra.
+      - name: Install Linux packaging tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fakeroot
+
+      # The Developer ID certificate is stored encrypted in the repo (it is the
+      # same file the Agent repo keeps, and AES-256 is its whole protection), so
+      # the build decrypts it to a path electron-builder signs from.
+      - name: Decrypt the macOS signing certificate
+        if: runner.os == 'macOS' && env.CERT_KEY != ''
+        run: |
+          openssl aes-256-cbc -K "$CERT_KEY" -iv "$CERT_IV" \
+            -in scripts/certs/mac-cert.p12.enc \
+            -out scripts/certs/mac-cert.p12 -d
+          echo "CSC_LINK=$PWD/scripts/certs/mac-cert.p12" >> "$GITHUB_ENV"
+
+      # AzureSignTool is a dotnet tool; the sign module finds it on PATH.
+      - name: Install AzureSignTool
+        if: runner.os == 'Windows' && env.AZURE_KEY_VAULT_URL != ''
+        shell: pwsh
+        run: |
+          dotnet tool install --global AzureSignTool
+          echo "$env:USERPROFILE\.dotnet\tools" >> $env:GITHUB_PATH
+
+      - name: Install dependencies
+        run: npm ci
+
+      # `dist:*` builds the relay for this platform, typechecks, bundles the app
+      # and hands it to electron-builder. Signing and notarization are driven by
+      # the environment above; see docs/porting.md, "Signing".
+      - name: Build and package
+        run: ${{ matrix.command }}
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.files }}
+          if-no-files-found: error
+          retention-days: 14

@@ -132,7 +132,7 @@ func ensureServer(sock string) {
 func stopServer() {
 	if pid := readIntFile(pidPath()); pid > 0 {
 		if process, err := os.FindProcess(pid); err == nil {
-			_ = process.Signal(syscall.SIGTERM)
+			_ = terminateProcess(process)
 			deadline := time.Now().Add(3 * time.Second)
 			for time.Now().Before(deadline) {
 				if _, err := net.Dial("unix", socketPath()); err != nil {
@@ -154,7 +154,7 @@ func startServerDetached() {
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = nil
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	detachProcessGroup(cmd)
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintln(os.Stderr, "monda-relay: cannot start the relay daemon:", err)
 		os.Exit(1)

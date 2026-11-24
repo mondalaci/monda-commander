@@ -17,6 +17,10 @@ export const RELAY_VERSION = 7
  */
 export function relayBinaryPath(): string {
   if (process.env.MONDA_RELAY) return process.env.MONDA_RELAY
-  if (app.isPackaged) return path.join(process.resourcesPath, 'monda-relay')
-  return path.join(app.getAppPath(), 'resources', 'monda-relay')
+  // Windows launches a program by its extension, so the packaged copy keeps its
+  // `.exe` (electron-builder.yml renames it there) and a dev build writes it
+  // (scripts/build-relay.mjs). Both sides have to agree on the name.
+  const name = process.platform === 'win32' ? 'monda-relay.exe' : 'monda-relay'
+  if (app.isPackaged) return path.join(process.resourcesPath, name)
+  return path.join(app.getAppPath(), 'resources', name)
 }

@@ -6,6 +6,7 @@ import { ipcMain } from 'electron'
 import { isArchivePath } from '@shared/archive'
 import { isCadModelName, isModelName, meshFormatFor } from '@shared/model'
 import type { ModelData, Result } from '@shared/types'
+import { externalBinary } from './platform/binaries'
 
 /**
  * A 3D model preview, read here and parsed in the renderer.
@@ -27,7 +28,7 @@ import type { ModelData, Result } from '@shared/types'
  * (`exec .../FreeCAD.AppImage freecadcmd "$@"`) named `freecadcmd` on `PATH`, or
  * pointed at by this variable, is what it resolves to.
  */
-const FREECAD = process.env['MC_FREECAD'] ?? 'freecadcmd'
+const FREECAD = process.env['MC_FREECAD'] ?? externalBinary('freecadcmd')
 
 /** How long a conversion may run. A big assembly meshed for a preview is seconds. */
 const CONVERT_TIMEOUT_MS = 120_000

@@ -17,7 +17,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -149,15 +148,8 @@ func kindFromMode(mode os.FileMode) string {
 	}
 }
 
-// rawMode returns the Unix mode bits the way Node's `stats.mode` does, type
-// bits included. Go's FileMode is a portable representation, so the raw value
-// is read from the syscall stat when it is available.
-func rawMode(info os.FileInfo) uint32 {
-	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
-		return stat.Mode
-	}
-	return uint32(info.Mode())
-}
+// rawMode is the platform's: the Unix mode bits live in `syscall.Stat_t` on
+// Unix and have no Windows counterpart. See stat_unix.go / stat_windows.go.
 
 func readEntry(dir, name string) (DirEntry, error) {
 	full := filepath.Join(dir, name)
@@ -775,8 +767,9 @@ func canExec(name string) bool {
 // DiskUsage is the occupancy of the filesystem holding a path, in bytes. It
 // mirrors the local answer: `used` is what `df` calls used (the total less the
 // free blocks), while `free` is what the running user may still write. `mount`
-// is the mount point the path's filesystem is mounted at, matched by the longest
-// one that holds it, or null when `/proc` is not available.
+// is the mount point the path's filesystem is mounted at, or null when it cannot
+// be determined. The platform's half — `filesystemSpace` and `mountPointFor` —
+// lives in stat_unix.go / stat_windows.go.
 type DiskUsage struct {
 	Total int64   `json:"total"`
 	Used  int64   `json:"used"`
@@ -789,78 +782,11 @@ func diskUsage(input string) (*DiskUsage, error) {
 	if err != nil {
 		return nil, err
 	}
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(path, &stat); err != nil {
+	total, used, free, err := filesystemSpace(path)
+	if err != nil {
 		return nil, err
 	}
-	blockSize := int64(stat.Bsize)
-	return &DiskUsage{
-		Total: blockSize * int64(stat.Blocks),
-		Used:  blockSize * (int64(stat.Blocks) - int64(stat.Bfree)),
-		Free:  blockSize * int64(stat.Bavail),
-		Mount: mountPointFor(path),
-	}, nil
-}
-
-// mountPointFor reads the longest mount point in /proc/self/mountinfo that holds
-// the path, so a directory on a nested mount answers with the inner one rather
-// than the root. Null when the file cannot be read.
-func mountPointFor(target string) *string {
-	data, err := os.ReadFile("/proc/self/mountinfo")
-	if err != nil {
-		return nil
-	}
-	best := ""
-	for _, line := range strings.Split(string(data), "\n") {
-		if line == "" {
-			continue
-		}
-		fields := strings.Split(line, " ")
-		if len(fields) < 5 {
-			continue
-		}
-		mount := decodeMountPath(fields[4])
-		if !isWithinMount(target, mount) {
-			continue
-		}
-		if len(mount) > len(best) {
-			best = mount
-		}
-	}
-	if best == "" {
-		return nil
-	}
-	return &best
-}
-
-// decodeMountPath undoes the octal escapes /proc uses for a path (`\040` for a
-// space, and so on).
-func decodeMountPath(raw string) string {
-	var out strings.Builder
-	for i := 0; i < len(raw); i++ {
-		if raw[i] == '\\' && i+3 < len(raw) {
-			if value, err := strconv.ParseInt(raw[i+1:i+4], 8, 32); err == nil {
-				out.WriteByte(byte(value))
-				i += 3
-				continue
-			}
-		}
-		out.WriteByte(raw[i])
-	}
-	return out.String()
-}
-
-// isWithinMount reports whether target sits at or under mount, on a path
-// boundary.
-func isWithinMount(target, mount string) bool {
-	if mount == "/" {
-		return strings.HasPrefix(target, "/")
-	}
-	prefix := mount
-	if !strings.HasSuffix(prefix, "/") {
-		prefix += "/"
-	}
-	return target == mount || strings.HasPrefix(target, prefix)
+	return &DiskUsage{Total: total, Used: used, Free: free, Mount: mountPointFor(path)}, nil
 }
 
 // decodeBlobJSON is a small helper for operations whose response is only JSON;

@@ -486,8 +486,9 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   archive file itself inside an archive and by the relay's `syscall.Statfs` on a
   remote. The pane re-reads it on every navigation and refresh, token-guarded so
   a slow answer for a directory already left cannot land, and its tooltip names
-  the filesystem's mount point (`/proc/self/mountinfo`, longest match, so a nested
-  mount answers with the inner one). `DiskUsage.vue` is one progress bar with
+  the filesystem's mount point (the first ancestor on a different `stat.dev` —
+  a mount is a change of device — so a nested mount answers with the inner one).
+  `DiskUsage.vue` is one progress bar with
   `used / total` (`2.1T / 4T`) written *inside* it, filled green → gold → red (a
   darker green than the runnable hue, since the label is white); the label is
   fixed white, on a dark track, so the same reading holds over the empty stretch
@@ -602,12 +603,16 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
 - **A file the user can run is named in green** — `isRunnable` needs both an exec
   bit and a name the icon table has not recognized as data. The color goes on the
   name span (`nameClass`); `text-selected` overrides it on the cursor-over-mark row.
+  Windows has no exec bit, so there the rule is the extension alone, and the two
+  mode columns are not offered at all ([`docs/porting.md`](docs/porting.md)).
 - **A broken symlink's target is red** — `kind` is `symlink` only when `stat`
   through the link failed; only the target span takes the color.
 - **A runnable file is run on `Enter`, in the panes' own shell.** `shouldExecute`
   is the green rule less a `.desktop`; `runInShell` types the quoted path and
   submits it, so it echoes and reaches history. The terminal is shown for as long
   as it runs; the run ends on `shell.idle`. A busy shell refuses a second command.
+  The typed line is POSIX, so on Windows `shouldExecute` is false and `Enter` hands
+  the program to the system's own handler instead.
 - **`Space` on a folder adds up what it holds.** A listing knows a file's size
   but not a folder's, so the row's size column is blank until the gesture asks:
   `fs:dir-size` walks the tree in main and the pane keeps the answer by path

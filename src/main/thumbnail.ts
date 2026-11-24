@@ -6,6 +6,7 @@ import { isArchivePath, splitArchivePath } from '@shared/archive'
 import { imageMimeFor } from '@shared/image'
 import { needsTranscode, videoMimeFor } from '@shared/video'
 import { readArchiveEntry } from './archive'
+import { externalBinary } from './platform/binaries'
 import { ffmpegAvailable } from './media'
 import type { ImagePreview, Result } from '@shared/types'
 
@@ -190,7 +191,7 @@ export function killAllThumbnails(): void {
 function ffmpegPoster(target: string, at: number, max: number): Promise<Buffer | null> {
   return new Promise((resolve) => {
     const child = spawn(
-      process.env['MC_FFMPEG'] ?? 'ffmpeg',
+      process.env['MC_FFMPEG'] ?? externalBinary('ffmpeg'),
       [
         '-hide_banner',
         '-loglevel',
