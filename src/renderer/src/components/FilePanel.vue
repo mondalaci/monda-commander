@@ -881,7 +881,10 @@ const settled = ref(false)
  * strip, and a page of prose at thumbnail size would say nothing.
  */
 const footerTall = computed(
-  () => previewTarget.value !== null && previewTarget.value.kind !== 'doc'
+  () =>
+    previewTarget.value !== null &&
+    previewTarget.value.kind !== 'doc' &&
+    previewTarget.value.kind !== 'audio'
 )
 
 /**
@@ -892,7 +895,7 @@ const footerTall = computed(
  */
 const previewVisible = computed(() => {
   if (previewTarget.value === null) return false
-  if (previewTarget.value.kind === 'doc') return false
+  if (previewTarget.value.kind === 'doc' || previewTarget.value.kind === 'audio') return false
   // A clip a display has taken over keeps the space its box had — the footer
   // must not move under the cursor — even though there is nothing to draw in it.
   if (props.transferred === true) return true
@@ -935,6 +938,17 @@ const videoUrl = computed(() => {
   return mediaUrlFor(target.path, target.encode ? footerFrom.value : 0)
 })
 
+/**
+ * The stream URL for an audio clip. Audio is a whole file the element's own
+ * stack decodes, so there is no encode and no seek offset to carry: the element
+ * reads the file as it stands and seeks within it.
+ */
+const audioUrl = computed(() => {
+  const target = previewTarget.value
+  if (!target || target.kind !== 'audio') return null
+  return mediaUrlFor(target.path)
+})
+
 const showImage = computed(() => previewTarget.value?.kind === 'image' && frame.value !== null)
 const showVideo = computed(
   () =>
@@ -942,6 +956,12 @@ const showVideo = computed(
     settled.value &&
     previewState.value !== 'failed'
 )
+/**
+ * Whether the status bar's audio player is up. It is the one preview kind with
+ * no picture, so it has no box and no tall footer: the player sits in the plain
+ * strip, and the element plays the file where the row is shown.
+ */
+const showAudio = computed(() => previewTarget.value?.kind === 'audio')
 /** The current page of the PDF under the cursor, once main has rasterized it. */
 const showPdf = computed(() => previewTarget.value?.kind === 'pdf' && pdfFrame.value !== null)
 /**
@@ -1128,6 +1148,15 @@ watch(
     clipLength.value = null
     clipLengthKey = null
     footerFrom.value = 0
+    audioTime.value = 0
+    audioDuration.value = null
+    audioPlaying.value = false
+    audioWanted.value = false
+    audioError.value = false
+    audioScrub = null
+    audioScrubbing.value = false
+    audioAnchor = null
+    stopAudioClock()
 
     const target = previewTarget.value
     if (key === null || !target) {
@@ -1142,10 +1171,12 @@ watch(
     // blinks between rows nor flashes a width it is about to leave.
     settled.value = false
     previewState.value = 'probing'
-    // A document is typeset in a display rather than previewed in the strip, so
-    // its footer is not a box at all: nothing is measured, nothing is read, and
-    // the state is settled at once so no spinner is promised anywhere.
-    if (target.kind === 'doc') {
+    // A document is typeset in a display rather than previewed in the strip, and
+    // an audio clip is played in the plain strip itself: neither has a box to
+    // measure or a picture to read, so both are settled at once and no spinner is
+    // promised anywhere. The audio element is mounted by the player's own `v-if`
+    // and reads its metadata there.
+    if (target.kind === 'doc' || target.kind === 'audio') {
       sizeHint.value = null
       settled.value = true
       previewState.value = 'ready'
@@ -2996,13 +3027,38 @@ function togglePlayback(element: HTMLElement | null): boolean {
   return true
 }
 
+/**
+ * Pause or resume the status bar's audio player, answering whether there was an
+ * audio row to toggle. The element may not be mounted yet — the player's button
+ * is up as soon as the row is — so a press before then is remembered and taken
+ * as soon as the element can play.
+ */
+function toggleAudioPlayback(): boolean {
+  if (previewTarget.value?.kind !== 'audio') return false
+  // A file the element could not decode is not playable here: answer false so
+  // the caller can fall back to handing it to the system's own player.
+  if (audioError.value) return false
+
+  const element = previewAudio.value
+  if (!(element instanceof HTMLAudioElement)) {
+    audioWanted.value = !audioWanted.value
+    return true
+  }
+
+  audioWanted.value = false
+  if (element.paused) void element.play().catch(() => {})
+  else element.pause()
+  return true
+}
+
 /** Space: the clip this pane is displaying, when there is one. */
 function toggleStagePlayback(): boolean {
   return togglePlayback(stageMedia.value)
 }
 
-/** Space without a display: the footer's own preview of the cursor's clip. */
+/** Space without a display: the cursor's clip, or the status bar's audio player. */
 function togglePreviewPlayback(): boolean {
+  if (previewTarget.value?.kind === 'audio') return toggleAudioPlayback()
   return togglePlayback(previewVideo.value)
 }
 
@@ -3014,6 +3070,9 @@ const previewEl = ref<HTMLElement | null>(null)
 
 /** The footer's own clip, while one is playing there. */
 const previewVideo = ref<HTMLVideoElement | null>(null)
+
+/** The status bar's audio element, while the cursor is on an audio clip. */
+const previewAudio = ref<HTMLAudioElement | null>(null)
 
 /**
  * Whether an element is reading a clip main has to encode, which is a stream
@@ -3029,6 +3088,21 @@ function isStream(element: HTMLVideoElement): boolean {
 /** Where the footer's clip has got to, and how long it is once that is knowable. */
 const videoTime = ref(0)
 const videoLength = ref<number | null>(null)
+
+/**
+ * The audio player's own clock. It is the same kind of answer as the video's —
+ * a position and a length — but it belongs to the plain status bar rather than
+ * to a preview box, so it is kept apart from the clip's.
+ */
+const audioTime = ref(0)
+const audioDuration = ref<number | null>(null)
+const audioPlaying = ref(false)
+const audioError = ref(false)
+/**
+ * A play asked for before the element could take it — a press on Enter or Space
+ * while the row is still settling — carried until the element is ready.
+ */
+const audioWanted = ref(false)
 
 /**
  * The length of a clip main has to encode, asked of the file: while it is being
@@ -3107,6 +3181,262 @@ function readVideoClock(): void {
   const target = previewTarget.value
   if (clock.length === null && target) ensureClipLength(target)
 }
+
+/**
+ * The audio element has its metadata: its length is now knowable, and a play
+ * pressed while the row was still loading is taken. An audio file is a whole
+ * ranged file, so its own `duration` is the answer — no separate probe.
+ */
+function onAudioMetadata(): void {
+  const element = previewAudio.value
+  if (!(element instanceof HTMLAudioElement)) return
+  audioDuration.value = Number.isFinite(element.duration) ? element.duration : null
+  if (Number.isFinite(element.currentTime)) {
+    audioAnchor = { time: element.currentTime, at: performance.now() }
+    // While the sound plays the frame loop owns the readout, and a raw reading
+    // here would only drag the bar back to the element's last report. A length
+    // arriving mid-playback is common for a ranged file, so this is not a
+    // once-only case.
+    if (element.paused) audioTime.value = element.currentTime
+  }
+  audioError.value = false
+  if (audioWanted.value) {
+    audioWanted.value = false
+    void element.play().catch(() => {})
+  }
+}
+
+/** Follow the audio element's own clock for the status bar's readout. */
+function onAudioTime(): void {
+  const element = previewAudio.value
+  if (!(element instanceof HTMLAudioElement)) return
+  if (audioDuration.value === null && Number.isFinite(element.duration)) {
+    audioDuration.value = element.duration
+  }
+  // A drag owns the readout while it is in flight.
+  if (audioScrubbing.value) return
+  // The frame loop owns the readout while the sound plays; the element's own
+  // coarse `timeupdate` would only step it back a frame. A loop that is not
+  // running while the element is — a resume the `play` event did not announce —
+  // is picked up here rather than left to step with the element's own reports.
+  if (audioClockFrame !== null) return
+  if (!element.paused) {
+    startAudioClock()
+    return
+  }
+  if (Number.isFinite(element.currentTime)) audioTime.value = element.currentTime
+}
+
+/**
+ * The element's own position, and the wall clock it was read at. A media clock
+ * reports in the audio device's own period — a tenth of a second or so — so the
+ * readings it gives step even though the sound does not. The wall clock carries
+ * the position between them: every reading re-anchors it, and the frames in
+ * between advance it by the time that has passed.
+ */
+let audioAnchor: { time: number; at: number } | null = null
+
+/**
+ * Where the audio element is, as the bar should draw it: the position its own
+ * clock last reported, carried forward by the wall clock. A clock that reports
+ * every frame re-anchors every frame, so this is its own reading; a coarse one
+ * is filled in between its steps, which is what keeps the bar sliding instead of
+ * advancing in the device's tenth-of-a-second jumps.
+ */
+function readAudioPosition(): number {
+  const element = previewAudio.value
+  if (!(element instanceof HTMLAudioElement)) return audioTime.value
+
+  const measured = element.currentTime
+  if (!Number.isFinite(measured)) return audioTime.value
+
+  const now = performance.now()
+  if (audioAnchor === null || measured !== audioAnchor.time) {
+    audioAnchor = { time: measured, at: now }
+    return measured
+  }
+
+  const carried = audioAnchor.time + (now - audioAnchor.at) / 1000
+  const duration = audioDuration.value
+  return duration !== null && carried > duration ? duration : carried
+}
+
+/**
+ * The frame driving the audio readout while it plays. The element's own
+ * `timeupdate` fires only a few times a second — a bar that follows it steps
+ * rather than slides — so the position is read from the element's clock every
+ * frame the display offers, carried between its readings by the wall clock, and
+ * the bar moves as smoothly as the sound does.
+ */
+let audioClockFrame: number | null = null
+
+function stopAudioClock(): void {
+  if (audioClockFrame === null) return
+  cancelAnimationFrame(audioClockFrame)
+  audioClockFrame = null
+}
+
+function startAudioClock(): void {
+  if (audioClockFrame !== null) return
+  const tick = (): void => {
+    audioClockFrame = null
+    const element = previewAudio.value
+    if (!(element instanceof HTMLAudioElement) || element.paused) {
+      stopAudioClock()
+      return
+    }
+    if (!audioScrubbing.value) audioTime.value = readAudioPosition()
+    if (audioDuration.value === null && Number.isFinite(element.duration)) {
+      audioDuration.value = element.duration
+    }
+    audioClockFrame = requestAnimationFrame(tick)
+  }
+  audioClockFrame = requestAnimationFrame(tick)
+}
+
+function onAudioPlay(): void {
+  audioPlaying.value = true
+  startAudioClock()
+}
+
+function onAudioPause(): void {
+  audioPlaying.value = false
+  stopAudioClock()
+  audioAnchor = null
+  const element = previewAudio.value
+  if (
+    element instanceof HTMLAudioElement &&
+    !audioScrubbing.value &&
+    Number.isFinite(element.currentTime)
+  ) {
+    audioTime.value = element.currentTime
+  }
+}
+
+function onAudioEnded(): void {
+  audioPlaying.value = false
+  stopAudioClock()
+  audioAnchor = null
+  audioTime.value = audioDuration.value ?? audioTime.value
+}
+
+/**
+ * The element could not play the file. Nothing is retried and nothing is
+ * announced in the pane's notice: the player's own button simply stays off, and
+ * the file remains an ordinary one Enter opens with the system.
+ */
+function onAudioError(): void {
+  audioError.value = true
+  audioPlaying.value = false
+  audioWanted.value = false
+  audioAnchor = null
+  stopAudioClock()
+}
+
+/**
+ * Step the audio player by a seek's worth. The element is a whole file, so its
+ * own `currentTime` is the only place a position lives — no encode, no stream
+ * rebasing, and no reload.
+ */
+function seekAudio(delta: number): void {
+  const element = previewAudio.value
+  if (!(element instanceof HTMLAudioElement)) return
+  const duration = Number.isFinite(element.duration) ? element.duration : audioDuration.value
+  if (duration === null || duration <= 0) return
+
+  const wasPlaying = !element.paused
+  const at = Math.min(Math.max(element.currentTime + delta, 0), duration)
+  element.currentTime = at
+  audioTime.value = at
+  audioAnchor = { time: at, at: performance.now() }
+  if (wasPlaying) void element.play().catch(() => {})
+}
+
+/** A drag on the audio player's track, in flight. */
+let audioScrub: { duration: number; pending: number } | null = null
+
+/** Whether the audio track is being dragged, so its handle stays visible. */
+const audioScrubbing = ref(false)
+
+/** How far through the audio track the pointer is, from 0 to 1. */
+function audioRatioAt(event: PointerEvent): number {
+  const bar = event.currentTarget
+  if (!(bar instanceof HTMLElement)) return 0
+  const rect = bar.getBoundingClientRect()
+  if (rect.width <= 0) return 0
+  return Math.min(Math.max((event.clientX - rect.left) / rect.width, 0), 1)
+}
+
+/**
+ * Move the audio player's position to `position` seconds. The element is seeked
+ * only when the drag settles — a live seek for every pixel would stutter the
+ * sound — while the readout follows the pointer throughout.
+ */
+function scrubAudioTo(position: number, settle: boolean): void {
+  const element = previewAudio.value
+  if (!(element instanceof HTMLAudioElement)) return
+  const duration = audioScrub?.duration ?? audioDuration.value
+  if (duration === null || duration <= 0) return
+
+  const at = Math.min(Math.max(position, 0), duration)
+  audioTime.value = at
+  if (settle) {
+    element.currentTime = at
+    audioAnchor = { time: at, at: performance.now() }
+  }
+}
+
+function onAudioBarPointerDown(event: PointerEvent): void {
+  if (event.button !== 0) return
+
+  const element = previewAudio.value
+  if (!(element instanceof HTMLAudioElement)) return
+  const duration = audioDuration.value ?? (Number.isFinite(element.duration) ? element.duration : null)
+  if (duration === null || duration <= 0) return
+
+  event.preventDefault()
+  event.stopPropagation()
+
+  const bar = event.currentTarget
+  if (bar instanceof HTMLElement) bar.setPointerCapture(event.pointerId)
+
+  audioScrub = { duration, pending: duration * audioRatioAt(event) }
+  audioScrubbing.value = true
+  scrubAudioTo(audioScrub.pending, false)
+}
+
+function onAudioBarPointerMove(event: PointerEvent): void {
+  if (audioScrub === null) return
+  audioScrub.pending = audioScrub.duration * audioRatioAt(event)
+  scrubAudioTo(audioScrub.pending, false)
+}
+
+function onAudioBarPointerUp(event: PointerEvent): void {
+  if (audioScrub === null) return
+  const pending = audioScrub.pending
+  audioScrub = null
+  audioScrubbing.value = false
+
+  const bar = event.currentTarget
+  if (bar instanceof HTMLElement && bar.hasPointerCapture(event.pointerId)) {
+    bar.releasePointerCapture(event.pointerId)
+  }
+
+  scrubAudioTo(pending, true)
+}
+
+/** How much of the audio clip the bar has filled. */
+const audioProgress = computed(() => {
+  const duration = audioDuration.value
+  if (duration === null || duration <= 0) return '0%'
+  const ratio = Math.min(Math.max(audioTime.value / duration, 0), 1)
+  return `${(ratio * 100).toFixed(2)}%`
+})
+
+/** The audio handle's position, held inside the track at both ends. */
+const audioThumbLeft = computed(
+  () => `clamp(6px, ${audioProgress.value}, calc(100% - 6px))`
+)
 
 /**
  * Where the enlarged clip has got to, published for the pane that asked for it:
@@ -3419,6 +3749,11 @@ function seekPreview(delta: number): void {
   const target = previewTarget.value
   if (target?.kind === 'pdf') {
     if (props.transferred !== true) stepPdfPage(target, delta < 0 ? -1 : 1)
+    return
+  }
+  // An audio clip is a clock in the plain status bar, not a display's.
+  if (target?.kind === 'audio') {
+    seekAudio(delta)
     return
   }
   seek(previewVideo.value, delta)
@@ -4440,6 +4775,7 @@ onBeforeUnmount(() => {
   pdfScrollObserver = null
   releaseStageSeek()
   cancelPreviewRead()
+  stopAudioClock()
   cancelAnimationFrame(scrollAnimation)
   window.removeEventListener('mouseup', endPointerDrag)
   window.removeEventListener('mousemove', onHoldMove)
@@ -5715,6 +6051,87 @@ function onRenameBlur(): void {
               class="h-3.5 w-3.5 animate-spin rounded-full border border-fg border-t-transparent"
             />
           </span>
+
+          <!-- An audio clip has no picture to preview, so its player lives in the
+               plain status bar: play/pause, the position, a seek track and the
+               length. The element itself is hidden and ranged like a clip's. -->
+          <div
+            v-if="showAudio"
+            class="flex min-w-0 shrink-0 items-center gap-2 tabular-nums text-ui-sm text-fg-dim"
+          >
+            <button
+              type="button"
+              class="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-dim transition-colors hover:bg-hover hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-dim"
+              :aria-label="audioError ? 'Cannot play' : audioPlaying ? 'Pause' : 'Play'"
+              :title="audioError ? 'This audio file cannot be played' : audioPlaying ? 'Pause' : 'Play'"
+              :disabled="audioError"
+              @click="togglePreviewPlayback"
+            >
+              <svg
+                v-if="audioPlaying"
+                viewBox="0 0 24 24"
+                class="h-3 w-3"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path d="M7 5h4v14H7zM13 5h4v14h-4z" />
+              </svg>
+              <svg
+                v-else
+                viewBox="0 0 24 24"
+                class="h-3 w-3"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path d="M8 5v14l11-7z" />
+              </svg>
+            </button>
+            <span class="shrink-0">{{ formatDuration(audioTime) }}</span>
+            <div
+              class="group relative h-4 w-20 shrink-0 cursor-pointer touch-none"
+              role="slider"
+              aria-label="Audio position"
+              :aria-valuemin="0"
+              :aria-valuemax="audioDuration ?? 0"
+              :aria-valuenow="Math.round(audioTime)"
+              @pointerdown="onAudioBarPointerDown"
+              @pointermove="onAudioBarPointerMove"
+              @pointerup="onAudioBarPointerUp"
+              @pointercancel="onAudioBarPointerUp"
+            >
+              <span
+                class="absolute top-1/2 h-1 w-full -translate-y-1/2 overflow-hidden rounded-full bg-border"
+              >
+                <span
+                  class="block h-full rounded-full bg-accent-strong"
+                  :style="{ width: audioProgress }"
+                />
+              </span>
+              <span
+                class="absolute top-1/2 h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border border-surface bg-accent-strong transition-opacity"
+                :class="audioScrubbing ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'"
+                :style="{ left: audioThumbLeft }"
+              />
+            </div>
+            <span class="shrink-0">{{
+              audioDuration !== null ? formatDuration(audioDuration) : '--:--'
+            }}</span>
+            <audio
+              :key="previewKeyFor(previewTarget) ?? 'audio'"
+              ref="previewAudio"
+              :src="audioUrl ?? undefined"
+              preload="metadata"
+              class="hidden"
+              @loadedmetadata="onAudioMetadata"
+              @durationchange="onAudioMetadata"
+              @timeupdate="onAudioTime"
+              @seeked="onAudioTime"
+              @play="onAudioPlay"
+              @pause="onAudioPause"
+              @ended="onAudioEnded"
+              @error="onAudioError"
+            ></audio>
+          </div>
 
           <!-- Where the clip has got to: its position, a bar for how far that is
                through it, and its length — the last two only when the clip is a

@@ -408,6 +408,9 @@ const stageTarget = computed(() => {
   const side = stageSource.value
   if (side === null) return null
   const target = previewTargetFor((side === 'left' ? left.value : right.value).current())
+  // Audio has no picture to enlarge: it plays where its row is, in the pane's
+  // own status bar, so a display has nothing to show for it.
+  if (target && target.kind === 'audio') return null
   // As in the footer: a clip's stream is main's local file, so a remote target
   // offers no display for it. Images and documents travel through the target's
   // API, so both preview safely.
@@ -540,7 +543,25 @@ function activateRow(side: PanelSide, again: boolean, force = false): void {
     return
   }
 
-  if (previewTargetFor(pane.current()) === null) {
+  const target = previewTargetFor(pane.current())
+  if (target === null) {
+    void pane.activate()
+    return
+  }
+
+  // Audio has no picture to enlarge: Enter is its play/pause, in the pane's own
+  // status bar. A remote target has no stream to play, so there the row opens
+  // the way an ordinary file always did.
+  if (target.kind === 'audio') {
+    if (activeWorkspace.value.target.kind !== 'local') {
+      void pane.activate()
+      return
+    }
+    if (stageSide.value !== null) exitStage()
+    const panel = side === 'left' ? leftPanel : rightPanel
+    if (panel.value?.togglePreviewPlayback() === true) return
+    // The element could not decode the file, so there is nothing to play here:
+    // hand it to the system's own player instead.
     void pane.activate()
     return
   }
@@ -600,6 +621,10 @@ function followDocLink(path: string): void {
 function showStage(side: PanelSide): void {
   if (stageSide.value !== null) return
 
+  const pane = side === 'left' ? left.value : right.value
+  const target = previewTargetFor(pane.current())
+  if (target === null || target.kind === 'audio') return
+
   const asking = side === 'left' ? leftPanel : rightPanel
   // Taken before the display exists, because the display is what takes the
   // element that was playing the clip away.
@@ -628,8 +653,11 @@ function exitStage(): void {
 function toggleFullscreen(side: PanelSide): void {
   if (stageSide.value === null) {
     const pane = side === 'left' ? left.value : right.value
-    if (previewTargetFor(pane.current()) === null) return
+    const target = previewTargetFor(pane.current())
+    if (target === null || target.kind === 'audio') return
     showStage(side)
+  } else if (stageTarget.value === null) {
+    return
   }
 
   stageFullscreen.value = !stageFullscreen.value
@@ -645,8 +673,11 @@ function toggleFullscreen(side: PanelSide): void {
 function openFullscreen(side: PanelSide): void {
   if (stageSide.value === null) {
     const pane = side === 'left' ? left.value : right.value
-    if (previewTargetFor(pane.current()) === null) return
+    const target = previewTargetFor(pane.current())
+    if (target === null || target.kind === 'audio') return
     showStage(side)
+  } else if (stageTarget.value === null) {
+    return
   }
 
   stageFullscreen.value = true

@@ -1,5 +1,6 @@
 import { ref } from 'vue'
 import { isArchivePath } from '@shared/archive'
+import { audioMimeFor } from '@shared/audio'
 import { isDocName } from '@shared/doc'
 import { imageMimeFor } from '@shared/image'
 import { isCadModelName, meshFormatFor } from '@shared/model'
@@ -66,10 +67,13 @@ export async function loadModelSupport(): Promise<void> {
 }
 
 /**
- * What a pane can show of the cursor's row: an image, a video, a PDF page, a 3D
- * model, or a typeset document (markdown or mermaid).
+ * What a pane can show of the cursor's row: an image, a video, an audio clip, a
+ * PDF page, a 3D model, or a typeset document (markdown or mermaid). Audio is
+ * the one kind a pane plays in its own status bar rather than handing to a
+ * display: there is no picture to enlarge, so Enter starts it where the player
+ * already is.
  */
-export type PreviewKind = 'image' | 'video' | 'pdf' | 'model' | 'doc'
+export type PreviewKind = 'image' | 'video' | 'audio' | 'pdf' | 'model' | 'doc'
 
 /**
  * The video codec inside a container Chromium demuxes, by the identity of the
@@ -134,11 +138,21 @@ export function previewKindFor(entry: PaneEntry): PreviewKind | null {
   // before the archive's refusal.
   if (isDocName(entry.name)) return 'doc'
 
-  // A video inside an archive is not streamable: the ranged stream serves a real
-  // file on disk, and an entry is not one. An image still previews, since it
-  // travels as a data URL main can extract — so only the video answer is given up.
-  // A PDF is rendered from a real file too, so it goes with the video.
-  if (isArchivePath(entry.path)) return null
+  const archived = isArchivePath(entry.path)
+
+  // An audio clip is served as a ranged file, exactly as a video is, and played
+  // by the element's own audio stack. It has no picture, so a pane keeps it in
+  // its status bar rather than handing it to a display. Its kind is decided
+  // before the archive's refusal, so a clip is recognized wherever it is found
+  // — and refused here when it is inside one, since the ranged stream serves a
+  // real file on disk and an entry is not one.
+  if (audioMimeFor(entry.name) !== null) return archived ? null : 'audio'
+
+  // A video or a PDF inside an archive is not streamable either: the ranged
+  // stream serves a real file on disk, and a PDF is rendered from one. An image
+  // still previews, since it travels as a data URL main can extract — so only
+  // the streamed answers are given up.
+  if (archived) return null
 
   // A PDF is media only where main has poppler to rasterize a page; without it,
   // the file is an ordinary one and Enter opens it with the system's viewer.

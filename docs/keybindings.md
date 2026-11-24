@@ -17,7 +17,8 @@ terminal is asked about rather than the keystroke model — or in an open search
 box, the arrows are the line's own keys again and the Ctrl steps belong to the
 shell, whose `Ctrl+H` is backspace, `Ctrl+L` clear-screen and `Ctrl+J`
 accept-line; `Space` pauses or resumes the clip being watched there — the
-display's, or the footer preview if none is up — and with no clip it walks the
+display's, the footer preview if none is up, or the status bar's audio player —
+and with no clip it walks the
 folder under the cursor, counting the total up in the row's size column as
 subdirectories are traversed, and steps to the next row so a column of folders can
 be sized in one pass — or, from the `..` row, sizes every folder in the listing
@@ -41,7 +42,9 @@ the green name is a promise, and the shell is where it is kept, shown for as lon
 as the program runs — or opens anything else with the system default app, except
 an image, a video, a PDF or a 3D model, which it displays in the other pane instead
 (one there is nothing in the app to render — for a model, a CAD document with no
-FreeCAD to mesh it — is opened like any other file), and except an archive
+FreeCAD to mesh it — is opened like any other file), and except an audio file,
+which starts or stops in the pane's own status bar instead (it has no picture to
+enlarge), and except an archive
 (a `.zip`, a `.tar.gz`, a `.7z`, …), which it *descends into* as if it were a
 directory — the pane title marks it with a chip carrying the archive's name, so
 being inside `foo.zip` reads apart from being inside a folder merely named so, and

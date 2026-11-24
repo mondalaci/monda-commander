@@ -1480,6 +1480,32 @@ its frames reach the compositor as DMA-BUFs that a Linux session without a worki
 GBM path cannot import, which takes the GPU process down with the decode and
 disturbs the window's rendering over a preview nobody asked to watch.
 
+### Audio
+
+Audio has no picture, so it is the one preview kind that does not use the display
+at all: it plays in the pane's own status bar, beside the row it belongs to. The
+extension->MIME map lives in `src/shared/audio.ts` and lists only containers
+Chromium's audio stack decodes; main serves those as ranged bytes over the same
+`mc-media` scheme a video uses, so a long file is read only as far as it is played.
+A format Chromium cannot decode is not audio here at all, exactly as an
+untranscodable video is not: Enter opens it with the system's own player.
+
+The player is a plain `<audio>` element, hidden, plus the strip's own controls: a
+play/pause button, the position, a seek track and the length. The element is
+mounted with the row, not after the settle delay — it reads only metadata, and a
+cursor resting on a file should not have to wait to press play. Enter, Space and a
+double-click on the row start and stop it; the arrows seek it as they seek a clip.
+Its position is read from the element's own clock every frame the display offers,
+not from the element's coarse `timeupdate`, so the bar slides with the sound
+rather than stepping a few times a second. The clock's own readings are carried
+forward by the wall clock between them — a media clock reports in the audio
+device's period, about a tenth of a second, so a bar drawn straight from it would
+advance in those jumps — and each new reading re-anchors the position. The footer
+deliberately stays at its 24px height: there is no box to grow into, so
+`footerTall` and `previewVisible` both stand down for the audio kind. A display
+never opens for it either — `stageTarget` refuses audio — so there is no second
+element decoding the same file behind the player.
+
 ### PDFs
 
 A PDF is a document rather than a picture, and the one thing a pane shows of it is

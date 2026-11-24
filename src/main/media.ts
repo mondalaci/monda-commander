@@ -2,6 +2,7 @@ import { createReadStream, promises as fs, type Stats } from 'node:fs'
 import { Readable } from 'node:stream'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { ipcMain, protocol } from 'electron'
+import { audioMimeFor } from '@shared/audio'
 import {
   codecNeedsTranscode,
   MEDIA_SCHEME,
@@ -396,22 +397,27 @@ async function serveEncoded(target: string, method: string, url: URL): Promise<R
 }
 
 /**
- * Serve a previewable video. A clip Chromium demuxes *and* decodes goes over as
- * its own bytes, ranged; anything else only ffmpeg can make playable is
+ * Serve a previewable video or audio clip. A file Chromium demuxes *and* decodes
+ * goes over as its own bytes, ranged; a video only ffmpeg can make playable is
  * transcoded first, and refused outright when there is no ffmpeg to do it with.
  * Either way only regular files with a previewable extension are served, so this
  * cannot be turned into a reader for anything the bar would not have offered.
+ *
+ * Audio is always served as its own bytes: a container the element's audio stack
+ * decodes needs no encode, and one it does not is not audio at all (see
+ * `audioMimeFor`). A clip's picture is what needs transcoding, not its sound.
  */
 export function registerMediaProtocol(): void {
   protocol.handle(MEDIA_SCHEME, async (request) => {
     const target = mediaPathFromUrl(request.url)
     if (target === null) return new Response('Bad request', { status: 400 })
 
+    const audioMime = audioMimeFor(target)
     const mime = videoMimeFor(target)
     // Whether the extension alone names a container Chromium has nothing for,
     // which needs no reading to know: nothing inside it could be playable.
     const byExtension = mime === null
-    if (byExtension && !needsTranscode(target)) {
+    if (audioMime === null && byExtension && !needsTranscode(target)) {
       return new Response('Not previewable', { status: 403 })
     }
 
@@ -421,6 +427,12 @@ export function registerMediaProtocol(): void {
       if (!stats.isFile()) return new Response('Not a file', { status: 403 })
     } catch {
       return new Response('Not found', { status: 404 })
+    }
+
+    // An audio file is a whole file the element's own audio stack decodes, so it
+    // is ranged and served as it stands — the same bytes a player would read.
+    if (audioMime !== null) {
+      return serveFile(target, audioMime, stats.size, request.headers.get('range'), request.method)
     }
 
     // A container Chromium demuxes is still not on its own playable: the stream

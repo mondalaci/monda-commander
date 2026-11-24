@@ -39,7 +39,7 @@ src/main/ipc/fs.ts       IPC: fs:home, fs:list, fs:dir-size, fs:dir-size-cancel,
                          fs:mkdir
 src/main/imageSize.ts    header-only image dimensions (PNG/JPEG+EXIF/GIF/BMP/ICO/WebP/SVG)
 src/main/videoCodec.ts   header-only codec sniff for ISOBMFF (mp4/m4v/mov)
-src/main/media.ts        mc-media scheme: ranged video stream + live ffmpeg transcode
+src/main/media.ts        mc-media scheme: ranged audio/video stream + live ffmpeg transcode
 src/main/pdf.ts          poppler-backed PDF pages: page count and every page's
                          shape (pdfinfo), page -> PNG rasterization (pdftocairo),
                          a page's word boxes for the selection layer (pdftotext
@@ -85,6 +85,7 @@ src/shared/model.ts      the two model families by extension: mesh formats the
                          renderer parses (stl/3mf/obj/ply/gltf) and CAD documents
                          main meshes through FreeCAD (step/iges/fcstd)
 src/shared/video.ts      video MIME map, ffmpeg-only extensions, decodable codecs, scheme name
+src/shared/audio.ts      audio MIME map: only the containers Chromium's audio stack decodes
 src/shared/hide.ts       the `.mchide` name, the toggle key, the two tooltips
 src/shared/viewMode.ts   the pane's two view modes (details/thumbnails), the cycle
                          key and the button's tooltip, the tile-size ladder, and the
@@ -794,6 +795,16 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   bar shows position/length (`fs:video-duration` for an encoded clip). A `.mov` is
   served as `video/mp4` (`videoMimeFor`). The element mounts only after the cursor
   settles. The hardware video decoder is disabled in `src/main/index.ts`.
+- **Audio plays in the status bar, not in a display.** It has no picture, so the
+  footer stays at its 24px height and the player — play/pause, position, a seek
+  track and the length — sits beside the row. `src/shared/audio.ts` lists only the
+  containers Chromium's audio stack decodes; `mc-media` serves them ranged and
+  main does no transcoding. Enter, Space and a double-click start/stop it; the
+  arrows seek it. Its position is read from the element's clock every frame and
+  carried between readings by the wall clock — a media clock reports in the audio
+  device's own period, so a bar drawn straight from it would step — and the bar
+  slides rather than stepping with `timeupdate`. `stageTarget` refuses audio, so
+  no display ever opens for it.
 - **A pane footer shows a PDF's page, and a display stacks the whole document.**
   A PDF is not one picture, so main renders a *page*: `pdftocairo`
   (`MC_PDFTOCAIRO`) at the width the box needs, as a PNG `data:` URL, alongside
