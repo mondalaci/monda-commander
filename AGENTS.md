@@ -35,7 +35,8 @@ src/main/index.ts        window lifecycle, single-instance lock
 src/main/windowState.ts  remembered window size/position/maximized flag
 src/main/ipc/fs.ts       IPC: fs:home, fs:list, fs:dir-size, fs:dir-size-cancel,
                          fs:read, fs:write, fs:read-image, fs:image-size, fs:open,
-                         fs:reveal, fs:hide-add, fs:hide-remove, fs:mkdir
+                         fs:open-external, fs:reveal, fs:hide-add, fs:hide-remove,
+                         fs:mkdir
 src/main/imageSize.ts    header-only image dimensions (PNG/JPEG+EXIF/GIF/BMP/ICO/WebP/SVG)
 src/main/videoCodec.ts   header-only codec sniff for ISOBMFF (mp4/m4v/mov)
 src/main/media.ts        mc-media scheme: ranged video stream + live ffmpeg transcode
@@ -76,6 +77,9 @@ src/shared/types.ts      DirEntry/DirListing/Result/ImagePreview/PixelSize/Pty* 
 src/shared/api.ts        McApi interface (the preload contract)
 src/shared/image.ts      extension -> previewable image MIME map
 src/shared/pdf.ts        the one PDF extension the panes render in-app, and its MIME
+src/shared/doc.ts        the documents the app typesets itself: markdown and mermaid
+                         by extension, and how a reference inside one resolves
+                         (relative to its own place, inside an archive too)
 src/shared/model.ts      the two model families by extension: mesh formats the
                          renderer parses (stl/3mf/obj/ply/gltf) and CAD documents
                          main meshes through FreeCAD (step/iges/fcstd)
@@ -118,6 +122,10 @@ src/renderer/src/components/ModelWall.vue     the thumbnail wall's 3D tiles: one
                                                WebGL renderer painting every model
                                                through a scissor box (all turning)
 src/renderer/src/components/FileViewer.vue     Monaco overlay: read-only (F3) or edit (F4)
+src/renderer/src/components/MarkdownViewer.vue a typeset document for the display:
+                                               markdown through marked + DOMPurify,
+                                               mermaid fences and `.mmd` through
+                                               mermaid (both lazy-loaded)
 src/renderer/src/components/PaneContextMenu.vue  a row's menu
 src/renderer/src/components/HoldRing.vue       the ring on a held right press
 src/renderer/src/components/TransferDialog.vue  a running transfer's progress dialog
@@ -173,7 +181,8 @@ src/renderer/src/lib/paneMenu.ts      the context menu's model
 
 Styles are referenced inline below: `styles/mark.css`, `hold.css`, `notice.css`,
 `flash.css`, `hide.css`, `osd.css`, `swap.css`, `transfer.css`, `view.css`,
-`viewer.css`, `diff.css`, `columns.css`, all under `src/renderer/src/`.
+`viewer.css`, `diff.css`, `columns.css`, `markdown.css`, all under
+`src/renderer/src/`.
 
 ## Gotchas
 
@@ -796,6 +805,11 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   pages by scrolling to them. The page in view is shared state (`lib/pdf.ts`), not
   handed across like a clip: a page costs nothing to show twice, and a display and
   a footer have to agree on which one is on screen.
+- **A typeset document keeps no footer box.** A markdown or mermaid file is read
+  for the display, not for the strip: a page of prose at 160×64 says nothing, so
+  `footerTall` and `previewVisible` stand down for the `doc` kind and the cursor
+  move reads nothing. In the wall a display still grows out of the cursor's tile
+  (`previewRect`), since the tile is what the user is looking at.
 
 ### Display and full-screen
 
@@ -878,7 +892,7 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   why a PDF display has **no double-click-to-enlarge** (a double-click on a page is
   a word selection, as in any text; `Ctrl+Enter` and the row's triple-click still
   enlarge), why the panes' `Ctrl+C` keeps the *selection's* text rather than the
-  row's name (`pdfSelection` in `App.vue`; the row copy is what it stands aside
+  row's name (`documentSelection` in `App.vue`; the row copy is what it stands aside
   for), and why the focus model stands down too: a press on the text layer must not
   have `restoreFocus` put the keyboard
   back on the command line, which folds the selection away as it focuses. The
@@ -925,6 +939,63 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   browser then dispatches the click to their nearest common ancestor, where a handler
   on the row would never hear it. `countEntryClick` counts three within
   `TRIPLE_CLICK_MS`, from the events' own `timeStamp`s.
+
+### Documents
+
+- **`Enter` on a `.md` or `.mmd` typesets it in the display; nothing has to be
+  installed.** The `doc` preview kind (`lib/preview.ts`) is decided by
+  `shared/doc.ts`'s extension lists — markdown (`md`, `markdown`, `mdown`, `mkdn`,
+  `mkd`, `mdwn`, `mdx`) and mermaid (`mmd`, `mermaid`). Unlike a PDF or a clip it
+  needs no binary and no real file on disk, so it previews inside an archive as
+  readily as beside it, and a remote target reads it over the relay. The display
+  is the only place it shows: the footer keeps its compact size (see "The preview
+  footer"), and its surface is an opaque `bg-bg` — a page of prose must not have
+  the blurred listing behind an ordinary display showing through it.
+- **The document is read whole and typeset in the renderer.** `loadStage` reads it
+  through the target's `fs:read`, and `MarkdownViewer.vue` — a
+  `defineAsyncComponent`, so marked, DOMPurify and mermaid sit in a lazy chunk —
+  draws it. Markup is parsed by marked and then **sanitized by DOMPurify**: a
+  document is untrusted input, so its raw HTML, event handlers and scripts are
+  stripped before any of it reaches the display. `ready` is emitted only after the
+  typesetting (and every diagram) is done, which is also the reveal. A file past
+  the reader's limit is shown as far as it goes, with a note at its end saying so.
+- **Mermaid is drawn in place of its source.** A `mermaid` fence in markdown
+  and a whole `.mmd` file both go through one `mermaid.render` per diagram, with
+  `securityLevel: 'strict'` (its labels are sanitized and click handlers ignored)
+  and the app's own theme colours — the node fill and border are `surface-2` and
+  `border`, and `dropShadow: 'none'` with `useGradient: false` remove the dark
+  theme's white-ish glow and light-to-dark gradient stroke, which read as a glare
+  around every rectangle on a flat reading surface. A diagram that will not parse
+  is shown as its source with a note instead of taking the document down.
+  `mermaid` is imported only when a diagram is actually drawn — a folder of prose
+  never pays for it.
+  A drawing gets its **own viewport**: a diagram inside prose is fitted to the
+  column when it appears, while a standalone `.mmd` — the diagram *is* the
+  document — opens at its own size. The bar in its corner (`−`, the percentage,
+  `+`; the percentage refits) plus `Ctrl+wheel` zooms it about the pointer, while
+  a drag pans it once it is bigger than the box. A zoomed drawing scrolls inside
+  that viewport rather than growing the page; a fitted one follows a resized
+  pane, and the standalone page is pinned to the display's height
+  (`height: 100%` with `min-height: 0` down the flex chain) so the viewport has
+  two bounded edges and a drag pans both ways. The SVG's own
+  `width`/`height`/`max-width` are discarded in favour of its viewBox, so the
+  zoom is a true proportion of the drawing.
+- **A document's own references are resolved by `shared/doc.ts`.** A relative
+  image is read through the pane's target (`fs:read-image`) and handed to the
+  `<img>` as a `data:` URL — inside an archive too — so a screenshot beside the
+  file shows; an absolute URL or a missing sibling is left as its alt text. A
+  `#fragment` scrolls to the heading (headings are given GitHub-style slugs), a
+  page goes to the system's browser through `fs:open-external` (only
+  `http`/`https`/`mailto` are accepted), and a relative link is followed **in the
+  app**: `doc-link` reaches `App.vue`, which moves the asking pane's cursor to the
+  linked file (or into it, when the link ends in `/`), so a link between two
+  documents opens the next one in the same display.
+- **The display scrolls natively and its text is selectable.** `onStageWheel`
+  leaves a document's wheel to the browser (as it does a PDF's), the box carries
+  `data-doc-scroll` so a press keeps the keyboard there, and the typeset text is
+  `data-doc-text`, which is what `selectingText` and `documentSelection` in
+  `App.vue` look for: `Ctrl+C` copies the selection rather than the row's name,
+  and the focus model stands down rather than folding it away.
 
 ### Models
 
@@ -980,10 +1051,11 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   `stageMedia` is the wrapper `div` the reveal measures and moves, the canvas inside
   it being what draws.
 - **`three` is pure JS, bundled by Vite**, so the renderer CSP is untouched — no
-  `wasm-unsafe-eval`, no new scheme. It is the app's one large renderer
-  dependency, so `ModelViewer` is a `defineAsyncComponent` (`FilePanel.vue`):
-  three and its loaders sit in their own lazy chunk, fetched when a row really is
-  a model, exactly as Monaco is kept out of the main chunk.
+  `wasm-unsafe-eval`, no new scheme. It is one of the app's large renderer
+  dependencies (mermaid is the other), so `ModelViewer` is a
+  `defineAsyncComponent` (`FilePanel.vue`): three and its loaders sit in their own
+  lazy chunk, fetched when a row really is a model, exactly as Monaco is kept out
+  of the main chunk.
 
 ### Media codecs
 

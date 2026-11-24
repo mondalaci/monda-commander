@@ -207,6 +207,8 @@ const EXTENSION_ICONS: Record<string, IconName> = {
   markdown: 'markdown',
   mdx: 'markdown',
   rst: 'markdown',
+  mmd: 'markdown',
+  mermaid: 'markdown',
   txt: 'text',
   text: 'text',
   log: 'text',

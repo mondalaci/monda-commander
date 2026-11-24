@@ -162,6 +162,13 @@ export interface McFsApi {
    */
   write(target: string, text: string): Promise<Result<string>>
   open(target: string): Promise<string>
+  /**
+   * Hand an addressed page to the system's browser — what a link in a
+   * typeset document does. Only `http:`, `https:` and `mailto:` are accepted;
+   * anything else is refused rather than passed on, so a document cannot make
+   * the app launch an arbitrary local handler. Answers whether it was opened.
+   */
+  openExternal(url: string): Promise<boolean>
   reveal(target: string): Promise<void>
   rename(source: string, target: string): Promise<Result<string>>
   /**

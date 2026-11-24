@@ -70,6 +70,8 @@ const api: McApi = {
     write: (target: string, text: string): Promise<Result<string>> =>
       ipcRenderer.invoke('fs:write', target, text),
     open: (target: string) => ipcRenderer.invoke('fs:open', target),
+    openExternal: (url: string): Promise<boolean> =>
+      ipcRenderer.invoke('fs:open-external', url),
     reveal: (target: string) => ipcRenderer.invoke('fs:reveal', target),
     rename: (source: string, target: string): Promise<Result<string>> =>
       ipcRenderer.invoke('fs:rename', source, target),

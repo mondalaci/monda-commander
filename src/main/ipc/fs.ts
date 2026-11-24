@@ -1282,6 +1282,29 @@ export function registerFsHandlers(): void {
     return shell.openPath(target)
   })
 
+  /**
+   * A link in a typeset document, handed to the system's browser. Only the three
+   * schemes a document may reasonably point at are accepted: the renderer is not
+   * allowed to make the app launch an arbitrary local handler, and `file:` in
+   * particular would be a way around the archive and path rules.
+   */
+  ipcMain.handle('fs:open-external', async (_event, url: string): Promise<boolean> => {
+    if (typeof url !== 'string' || url.length === 0) return false
+    let protocol: string
+    try {
+      protocol = new URL(url).protocol
+    } catch {
+      return false
+    }
+    if (protocol !== 'http:' && protocol !== 'https:' && protocol !== 'mailto:') return false
+    try {
+      await shell.openExternal(url)
+      return true
+    } catch {
+      return false
+    }
+  })
+
   ipcMain.handle('fs:read', async (_event, target: string): Promise<Result<FileContent>> => {
     if (typeof target !== 'string' || target.length === 0) {
       return { ok: false, error: { code: 'EINVAL', message: 'No file to read' } }

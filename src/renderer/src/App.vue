@@ -32,6 +32,7 @@ import {
 import type { PaneMenuChoice, PaneMenuItem, PaneMenuRequest } from '@renderer/lib/paneMenu'
 import { commitBranchLabel, commitEntries, defaultCommitMessage, type CommitEntry } from '@renderer/lib/commit'
 import { archiveDisplay, isArchivePath, splitArchivePath } from '@shared/archive'
+import { docParentDir } from '@shared/doc'
 import { targetLabel, type Target } from '@shared/target'
 import { targetApiKey } from '@renderer/lib/targetContext'
 import type { McGitApi } from '@shared/api'
@@ -369,8 +370,16 @@ const stageTarget = computed(() => {
   if (side === null) return null
   const target = previewTargetFor((side === 'left' ? left.value : right.value).current())
   // As in the footer: a clip's stream is main's local file, so a remote target
-  // offers no display for it. Images travel through the target's API.
-  if (target && target.kind !== 'image' && activeWorkspace.value.target.kind !== 'local') return null
+  // offers no display for it. Images and documents travel through the target's
+  // API, so both preview safely.
+  if (
+    target &&
+    target.kind !== 'image' &&
+    target.kind !== 'doc' &&
+    activeWorkspace.value.target.kind !== 'local'
+  ) {
+    return null
+  }
   return target
 })
 
@@ -382,27 +391,28 @@ const stageTarget = computed(() => {
  * nothing grew out of a thumbnail in the first place.
  */
 /**
- * The text last selected in a PDF page's text layer, remembered so that `Ctrl+C`
- * does not depend on the selection still being intact when it arrives: a press in
- * a pane drops the keyboard, and any focus change — the focus model's own answer
- * to that, or a typed key handed back to the shell — folds a document selection
- * away. It is dropped when a press lands outside a text layer (the user saying
- * they are done with it), when a key goes to the shell, and when the display is
- * left or moves to another file.
+ * The text last selected in a displayed document — a PDF page's text layer or a
+ * typeset markdown page — remembered so that `Ctrl+C` does not depend on the
+ * selection still being intact when it arrives: a press in a pane drops the
+ * keyboard, and any focus change — the focus model's own answer to that, or a
+ * typed key handed back to the shell — folds a document selection away. It is
+ * dropped when a press lands outside a selectable document (the user saying they
+ * are done with it), when a key goes to the shell, and when the display is left
+ * or moves to another file.
  */
-let pdfSelectionText = ''
+let documentSelectionText = ''
 
 const stageAnimation = ref(0)
 
 watch(stageSide, (side) => {
   if (side !== null) stageAnimation.value += 1
-  else pdfSelectionText = ''
+  else documentSelectionText = ''
 })
 
 // A remembered selection belongs to the file it was made in, and to the display
 // being up at all: another file's text is not what a copy should bring.
 watch(stageTarget, () => {
-  pdfSelectionText = ''
+  documentSelectionText = ''
 })
 
 const leftPanel = ref<InstanceType<typeof FilePanel> | null>(null)
@@ -513,6 +523,26 @@ function stepShownPane(delta: number): void {
 
   const pane = side === 'left' ? left.value : right.value
   pane.moveCursor(delta)
+}
+
+/**
+ * A relative link inside a displayed document. The display follows the asking
+ * pane's cursor, so the answer is to move that cursor: the pane goes to the
+ * linked file's own folder with the file focused (or into it, when the link ends
+ * in a slash and so names a folder), and the display swaps to whatever that row
+ * is. That keeps a link between two documents inside the app, and makes a link
+ * to a picture or a PDF show that instead, which is what following a link in a
+ * document should mean.
+ */
+function followDocLink(path: string): void {
+  const side = stageSource.value
+  if (side === null) return
+  const pane = side === 'left' ? left.value : right.value
+  if (path.endsWith('/')) {
+    void pane.navigateTo(path)
+    return
+  }
+  void pane.navigateTo(docParentDir(path), path)
 }
 
 /**
@@ -2000,14 +2030,14 @@ const MODIFIER_KEYS = new Set([
 ])
 
 /**
- * The document selection when it is a PDF page's text layer's — the only
- * selection the panes can make, since everything else is `select-none`. Null for
- * none, a collapsed one, or the terminal's own, which xterm's DOM renderer mirrors
- * into the document selection and which is not the panes' to copy. The terminal is
- * excluded rather than the text layer required, so a selection whose spans were
- * re-rendered under it — leaving its anchor detached — is still recognised.
+ * The document selection when it is text the panes own — a PDF page's layer or
+ * a typeset document — or null for none, a collapsed one, or the terminal's own,
+ * which xterm's DOM renderer mirrors into the document selection and which is
+ * not the panes' to copy. The terminal is excluded rather than a document layer
+ * required, so a selection whose spans were re-rendered under it — leaving its
+ * anchor detached — is still recognised.
  */
-function pdfSelection(): Selection | null {
+function documentSelection(): Selection | null {
   const selection = document.getSelection()
   if (selection === null || selection.isCollapsed) return null
 
@@ -2017,56 +2047,61 @@ function pdfSelection(): Selection | null {
   return selection
 }
 
-/** Whether a PDF page's text is selected, which is the panes' copy to stand aside for. */
+/** Whether a document's text is selected, which is the panes' copy to stand aside for. */
 function hasTextSelected(): boolean {
-  return pdfSelection() !== null
+  return documentSelection() !== null
 }
 
-/** The text a PDF page's selection holds, or null when there is none. */
-function selectedPdfText(): string | null {
-  const live = pdfSelection()?.toString() ?? ''
+/** The text a document's selection holds, or null when there is none. */
+function selectedDocumentText(): string | null {
+  const live = documentSelection()?.toString() ?? ''
   if (live.length > 0) return live
-  return pdfSelectionText.length > 0 ? pdfSelectionText : null
+  return documentSelectionText.length > 0 ? documentSelectionText : null
 }
 
 /**
- * Whether the pointer is down on a PDF page's text layer. A selection is drawn by
- * dragging, and a click in a pane drops the keyboard to the body, so
- * `restoreFocus` would put it back on the command line — which folds the selection
- * away in the same breath. So the gesture, and the selection it leaves, stand
- * `restoreFocus` down; the command line comes back on the next click anywhere
- * else. The scroll box is focusable (`tabindex="-1"`) for the same reason: a press
- * inside it leaves the keyboard there rather than on the body.
+ * Whether the pointer is down on selectable document text. A selection is drawn
+ * by dragging, and a click in a pane drops the keyboard to the body, so
+ * `restoreFocus` would put it back on the command line — which folds the
+ * selection away in the same breath. So the gesture, and the selection it
+ * leaves, stand `restoreFocus` down; the command line comes back on the next
+ * click anywhere else. The scroll boxes are focusable (`tabindex="-1"`) for the
+ * same reason: a press inside one leaves the keyboard there rather than on the
+ * body.
  */
 let selectingText = false
 
 function onPointerDownSelect(event: PointerEvent): void {
   if (event.button !== 0) return
   const target = event.target
-  const inLayer = target instanceof Element && target.closest('[data-pdf-text]') !== null
+  const inLayer =
+    target instanceof Element && target.closest('[data-pdf-text], [data-doc-text]') !== null
   selectingText = inLayer
-  if (!inLayer) pdfSelectionText = ''
+  if (!inLayer) documentSelectionText = ''
 }
 
 function onPointerUpSelect(): void {
   selectingText = false
 }
 
-/** Remember what a PDF selection holds, while it holds it. */
+/** Remember what a document selection holds, while it holds it. */
 function onSelectionChange(): void {
-  const selection = pdfSelection()
-  if (selection !== null) pdfSelectionText = selection.toString()
+  const selection = documentSelection()
+  if (selection !== null) documentSelectionText = selection.toString()
 }
 
 /**
- * Whether the keyboard is on a PDF page's scroll box rather than on a real input.
- * That box is the only such element (it is `data-pdf-scroll`, focusable for the
- * selection's sake), so this is what tells an unclaimed key to go back to the
- * shell instead of dying on a div.
+ * Whether the keyboard is on a displayed document's scroll box rather than on a
+ * real input. Those boxes are the only such elements (they are `data-pdf-scroll`
+ * and `data-doc-scroll`, focusable for the selection's sake), so this is what
+ * tells an unclaimed key to go back to the shell instead of dying on a div.
  */
 function documentHasKeyboard(): boolean {
   const active = document.activeElement
-  return active instanceof Element && active.hasAttribute('data-pdf-scroll')
+  return (
+    active instanceof Element &&
+    (active.hasAttribute('data-pdf-scroll') || active.hasAttribute('data-doc-scroll'))
+  )
 }
 
 /** Whether a key is being handed to the terminal, so its echo is not re-handled. */
@@ -2253,11 +2288,11 @@ function handlePaneKey(event: KeyboardEvent): void {
   // Ctrl+O expands it, and an expanded, focused terminal never reaches this
   // function — so a Ctrl+C with the panes in front is always the copy, whatever
   // the shell is doing. A search box keeps the key, since it is a text field
-  // with a selection of its own, and so does a selected PDF page: there the copy
-  // is the *text*, made here rather than left to the browser, so the row's name
-  // can never land on the clipboard in its place.
+  // with a selection of its own, and so does text selected in a displayed
+  // document: there the copy is the *text*, made here rather than left to the
+  // browser, so the row's name can never land on the clipboard in its place.
   if ((isPlainCtrl(event) || isCtrlShift(event)) && event.code === 'KeyC' && !searching) {
-    const selected = selectedPdfText()
+    const selected = selectedDocumentText()
     if (selected !== null) {
       copyToClipboard(selected)
       consume(event)
@@ -2999,7 +3034,7 @@ function onKeydown(event: KeyboardEvent): void {
   // expanded) — and the key is handed over to be encoded there. A typed key is
   // also the end of the selection's usefulness: the text is only remembered for
   // the copy that is no longer coming.
-  pdfSelectionText = ''
+  documentSelectionText = ''
   terminalRef.value?.focusTerminal()
   forwardingToShell = true
   try {
@@ -3205,6 +3240,7 @@ onBeforeUnmount(() => {
           @stage-off="exitStage()"
           @context-menu="openPaneMenu('left', $event)"
           @commit="requestCommitFrom('left')"
+          @doc-link="followDocLink"
         />
         <!-- The boundary between the panes, and the handle that moves it: the
              line stays a pixel, while an invisible band around it is what the
@@ -3271,6 +3307,7 @@ onBeforeUnmount(() => {
           @stage-off="exitStage()"
           @context-menu="openPaneMenu('right', $event)"
           @commit="requestCommitFrom('right')"
+          @doc-link="followDocLink"
         />
         <!-- The workspace is one connection, so both panes come up together and
              their two titles would repeat the same stage. While they do, this bar

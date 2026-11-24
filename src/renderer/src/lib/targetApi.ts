@@ -150,6 +150,7 @@ function remoteFs(target: Target): McFsApi {
       const response = await request(id, 'fs:open', { path })
       return response.ok ? String(response.data ?? '') : ''
     },
+    openExternal: (url) => window.mc.fs.openExternal(url),
     reveal: async (path) => {
       const response = await request(id, 'fs:reveal', { path })
       if (!response.ok) throw new Error(response.error?.message ?? 'reveal failed')

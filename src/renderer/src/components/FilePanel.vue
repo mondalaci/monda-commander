@@ -54,6 +54,7 @@ import PlaybackOsd from '@renderer/components/PlaybackOsd.vue'
 import { hideMode } from '@renderer/composables/useHideMode'
 import { pdfView, setPdfFit, setPdfZoom } from '@renderer/composables/usePdfView'
 import { archiveDisplay } from '@shared/archive'
+import { docFormatFor, type DocFormat } from '@shared/doc'
 import { HIDE_MODE_OFF_TOOLTIP, HIDE_MODE_TOOLTIP } from '@shared/hide'
 import { COMMIT_TOOLTIP } from '@shared/git'
 import { QUICK_CD_LEAVE_TOOLTIP, QUICK_CD_TOOLTIP } from '@shared/quickCd'
@@ -90,6 +91,16 @@ import type {
  * any other preview is read.
  */
 const ModelViewer = defineAsyncComponent(() => import('@renderer/components/ModelViewer.vue'))
+
+/**
+ * The markdown/mermaid viewer is fetched on demand for the same reason: marked,
+ * DOMPurify and mermaid are a large chunk, and a folder of ordinary files should
+ * never load them. A document shows the pane's spinner until the component is
+ * here and has typeset what main read.
+ */
+const MarkdownViewer = defineAsyncComponent(
+  () => import('@renderer/components/MarkdownViewer.vue')
+)
 
 const ROW_HEIGHT = 22
 
@@ -158,6 +169,12 @@ const emit = defineEmits<{
    * The app owns the dialog and the write; the pane only says which pane asked.
    */
   (event: 'commit'): void
+  /**
+   * A relative link inside a displayed document: the path it points at, which
+   * the app turns into a move of the asking pane's cursor — so a link between
+   * documents opens the next one in the same display.
+   */
+  (event: 'doc-link', path: string): void
 }>()
 
 // The target this pane lives on, so a preview reads the file where it actually
@@ -743,9 +760,12 @@ function cellText(entry: PaneEntry, key: SortKey): string {
 const previewTarget = computed(() => {
   const target = previewTargetFor(entry.value)
   // A clip is streamed by main from a real local file (`mc-media`); on a remote
-  // target that stream would serve a same-named local file. Images are read
-  // through the target's own API, so they preview safely; a clip does not.
-  if (target && target.kind !== 'image' && api.target.kind !== 'local') return null
+  // target that stream would serve a same-named local file. An image and a
+  // document are read through the target's own API, so they preview safely; a
+  // clip does not.
+  if (target && target.kind !== 'image' && target.kind !== 'doc' && api.target.kind !== 'local') {
+    return null
+  }
   // The wall already draws the cursor's model in its own tile, with the one
   // renderer it holds. A footer viewer would mount a *second* WebGL context and
   // read and parse the file again on every step between two models — and that
@@ -844,9 +864,13 @@ const settled = ref(false)
 /**
  * Whether the footer is at its tall size. It is, from the moment the cursor is
  * on media — the extension says so, before anything has been read — so stepping
- * between clips never collapses the strip and pushes the list back up.
+ * between clips never collapses the strip and pushes the list back up. A
+ * typeset document is the exception: it is read for a display, not for the
+ * strip, and a page of prose at thumbnail size would say nothing.
  */
-const footerTall = computed(() => previewTarget.value !== null)
+const footerTall = computed(
+  () => previewTarget.value !== null && previewTarget.value.kind !== 'doc'
+)
 
 /**
  * Whether the preview box itself is on screen. It is up while a preview loads or
@@ -856,6 +880,7 @@ const footerTall = computed(() => previewTarget.value !== null)
  */
 const previewVisible = computed(() => {
   if (previewTarget.value === null) return false
+  if (previewTarget.value.kind === 'doc') return false
   // A clip a display has taken over keeps the space its box had — the footer
   // must not move under the cursor — even though there is nothing to draw in it.
   if (props.transferred === true) return true
@@ -1105,6 +1130,15 @@ watch(
     // blinks between rows nor flashes a width it is about to leave.
     settled.value = false
     previewState.value = 'probing'
+    // A document is typeset in a display rather than previewed in the strip, so
+    // its footer is not a box at all: nothing is measured, nothing is read, and
+    // the state is settled at once so no spinner is promised anywhere.
+    if (target.kind === 'doc') {
+      sizeHint.value = null
+      settled.value = true
+      previewState.value = 'ready'
+      return
+    }
     // A video's shape comes from the element's own metadata, but *which* stream
     // to mount is settled by a header read: a container Chromium demuxes holds
     // a codec it cannot decode as often as one it can. The probe is issued here,
@@ -1393,6 +1427,14 @@ const stageFrame = ref<string | null>(null)
 const stageModel = ref<ModelData | null>(null)
 
 /**
+ * The document being displayed on behalf of another pane: its text, which of
+ * the two documents it is, and whether the reader stopped short of the end. It
+ * is read whole rather than paged — a markdown file is prose, not a stack of
+ * pages — and typeset by the viewer once it is here.
+ */
+const stageDoc = ref<{ format: DocFormat; text: string; truncated: boolean } | null>(null)
+
+/**
  * Where the display has got to. It is kept out of sight until the frame itself
  * is there — an element has no size until its media does, and the reveal is
  * measured off that size — and a failure leaves the pane empty rather than
@@ -1412,6 +1454,14 @@ const showStageVideo = computed(
  */
 const showStagePdf = computed(
   () => shownStage.value?.target.kind === 'pdf' && stageState.value !== 'failed'
+)
+/**
+ * The displayed document: typeset prose or a diagram, in the pane's own box. It
+ * is not a raster and has nothing to page, so it is up as soon as it is read —
+ * the viewer itself reports when the typesetting is done.
+ */
+const showStageDoc = computed(
+  () => shownStage.value?.target.kind === 'doc' && stageDoc.value !== null
 )
 
 /** The reveal already played for this entry into the mode, so a swap in place is not re-animated. */
@@ -1802,6 +1852,7 @@ watch(
     stageDismissal = null
     shownStage.value = null
     stageModel.value = null
+    stageDoc.value = null
     stageState.value = 'idle'
     clearStageClock()
     emit('stage-clock', null)
@@ -1814,7 +1865,26 @@ async function loadStage(stage: StageRequest): Promise<void> {
   const token = (stageToken += 1)
   stageFrame.value = null
   stageModel.value = null
+  stageDoc.value = null
   stageState.value = key === null ? 'idle' : 'loading'
+
+  if (stage.target.kind === 'doc') {
+    // A document is read whole and typeset in the renderer — no binary to run,
+    // no page to rasterize, so an archive entry reads as readily as a file. The
+    // state stays `loading` until the viewer has actually drawn it, which is
+    // also the moment it is revealed.
+    const format = docFormatFor(stage.target.name)
+    const result = await api.fs.read(stage.target.path)
+    if (token !== stageToken) return
+    if (result.ok && format !== null) {
+      stageDoc.value = {
+        format,
+        text: result.data.text,
+        truncated: result.data.truncated
+      }
+    } else stageState.value = 'failed'
+    return
+  }
 
   if (stage.target.kind === 'model') {
     // A model is not a raster: main hands over the bytes (a CAD document meshed
@@ -2755,6 +2825,7 @@ async function runDismissal(): Promise<void> {
   if (stage === null || element === null) {
     shownStage.value = null
     stageModel.value = null
+    stageDoc.value = null
     stageState.value = 'idle'
     fullscreenPresentation.value = false
     clearStageClock()
@@ -2798,6 +2869,7 @@ async function runDismissal(): Promise<void> {
 
   shownStage.value = null
   stageModel.value = null
+  stageDoc.value = null
   stageState.value = 'idle'
   fullscreenPresentation.value = false
   clearStageClock()
@@ -3724,8 +3796,9 @@ function onStageWheel(event: WheelEvent): void {
   // A displayed PDF is a document: the wheel scrolls the page stack natively, so
   // it is left to the browser rather than turned into a folder step or a page
   // flip. The press is still noted, so a scroll with a button held does not read
-  // as a click that leaves the mode.
-  if (shownStage.value?.target.kind === 'pdf') {
+  // as a click that leaves the mode. A typeset document is the same, one box of
+  // prose instead of a stack of pages.
+  if (shownStage.value?.target.kind === 'pdf' || shownStage.value?.target.kind === 'doc') {
     noteWheelPress(event)
     return
   }
@@ -5686,7 +5759,7 @@ function onRenameBlur(): void {
     <div
       v-if="displaying || shownStage"
       class="flex flex-col"
-      :class="stagePresentation"
+      :class="[stagePresentation, shownStage?.target.kind === 'doc' ? 'bg-bg' : '']"
       @mousedown="onStagePointerDown"
       @mouseup="onStagePointerUp"
       @click.stop
@@ -6105,6 +6178,35 @@ function onRenameBlur(): void {
                 </button>
               </div>
             </div>
+          </div>
+
+          <!-- A displayed document is typeset prose or a diagram rather than a
+               picture. The box scrolls it natively (the wheel is left to the
+               browser, as it is for a PDF), and the viewer reports `ready` when
+               the markup and every diagram are on screen — which is also the
+               reveal, so the document grows out of its row like any other
+               media. The scroll box is focusable and marked `data-doc-scroll`
+               for the same reason a PDF's is: a press inside it must keep the
+               keyboard there, or a text selection would be folded away by the
+               focus model. -->
+          <div
+            v-else-if="showStageDoc && stageDoc"
+            ref="stageMedia"
+            tabindex="-1"
+            data-doc-scroll
+            class="pane-scrollbar relative min-h-0 w-full grow self-stretch origin-top-left overflow-x-auto overflow-y-auto outline-none [scrollbar-gutter:stable]"
+            :class="stageState === 'ready' ? '' : 'invisible'"
+          >
+            <MarkdownViewer
+              :key="previewKeyFor(shownStage?.target ?? null) ?? undefined"
+              :text="stageDoc.text"
+              :format="stageDoc.format"
+              :path="shownStage?.target.path ?? ''"
+              :truncated="stageDoc.truncated"
+              @ready="onStageShown"
+              @error="onStageError"
+              @navigate="emit('doc-link', $event)"
+            />
           </div>
 
           <img

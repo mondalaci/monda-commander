@@ -1,5 +1,6 @@
 import { ref } from 'vue'
 import { isArchivePath } from '@shared/archive'
+import { isDocName } from '@shared/doc'
 import { imageMimeFor } from '@shared/image'
 import { isCadModelName, meshFormatFor } from '@shared/model'
 import { isPdfName } from '@shared/pdf'
@@ -64,8 +65,11 @@ export async function loadModelSupport(): Promise<void> {
   convertModel.value = await window.mc.fs.canRenderModel()
 }
 
-/** What a pane can show of the cursor's row: an image, a video, a PDF page, or a model. */
-export type PreviewKind = 'image' | 'video' | 'pdf' | 'model'
+/**
+ * What a pane can show of the cursor's row: an image, a video, a PDF page, a 3D
+ * model, or a typeset document (markdown or mermaid).
+ */
+export type PreviewKind = 'image' | 'video' | 'pdf' | 'model' | 'doc'
 
 /**
  * The video codec inside a container Chromium demuxes, by the identity of the
@@ -123,6 +127,13 @@ export function probeVideoCodec(target: PreviewTarget | null): void {
 export function previewKindFor(entry: PaneEntry): PreviewKind | null {
   if (imageMimeFor(entry.name)) return 'image'
 
+  // A document is read as text and typeset in the renderer, so it needs no
+  // binary on the machine and no real file on disk: it previews inside an
+  // archive as readily as beside it. Nothing below gives that — a clip is a
+  // ranged stream and a PDF page is rasterized — so the answer is taken here,
+  // before the archive's refusal.
+  if (isDocName(entry.name)) return 'doc'
+
   // A video inside an archive is not streamable: the ranged stream serves a real
   // file on disk, and an entry is not one. An image still previews, since it
   // travels as a data URL main can extract — so only the video answer is given up.
@@ -165,8 +176,8 @@ export interface PreviewTarget {
    * an ffmpeg encode rather than the file. True for a container Chromium has
    * nothing for, and for one it demuxes whose stream it cannot decode — so it is
    * the same flag that carries the seek that a live stream needs and the length
-   * only the file itself can report. False for an image or a PDF page, neither of
-   * which is a stream.
+   * only the file itself can report. False for an image, a PDF page or a typeset
+   * document, none of which is a stream.
    */
   encode: boolean
   path: string

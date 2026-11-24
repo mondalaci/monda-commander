@@ -1622,7 +1622,7 @@ display being *reloaded*, which the panes used to cause on every re-list, since
 treated a new object as a new thing to show. The second is fixed at its source: a
 request naming the same media (same kind, same `encode`, same
 `previewKeyFor` — `sameMedia`) is the same display, so the pages are not torn down
-and rebuilt under the reader's selection. (`pdfSelection` is the scoped read: a
+and rebuilt under the reader's selection. (`documentSelection` is the scoped read: a
 non-collapsed document selection that is not the terminal's own, which xterm's DOM
 renderer mirrors into the document selection; the terminal is excluded rather than
 the text layer required, so a selection whose spans were re-rendered under it is
@@ -1670,6 +1670,121 @@ stream a remote target would need is the relay's business, so as with a clip a P
 on a remote is left to the system. It is left out of an archive for the same reason,
 and the page-count read is left out of one too — there is no real path for poppler to
 open either way.
+
+### A document is typeset in the renderer, not handed to a program
+
+Markdown and mermaid are the two written formats a file manager meets often enough
+to owe a decent view of, and both are *text*: unlike a PDF page or a clip frame
+there is nothing to render outside the app, no binary to find, and no system
+viewer to fall back on when the binary is missing. So the viewer is native in the
+strict sense — the file is read as text and typeset in the renderer — and that is
+also why it can be offered where the other media cannot be: an entry inside an
+archive is a text read away, and a remote target's `fs:read` crosses the relay as
+readily as a local one.
+The `doc` preview kind is therefore answered *before* the archive refusal in
+`previewKindFor`, the way an image is: the refusal is about streams and rasters,
+not about files.
+
+It is shown in the **display** rather than the F3 editor overlay because it is
+media rather than source: F3 is Monaco, a cursor and a save, and rendering a
+document there would either take editing away from a file the user may well want
+to edit or make one overlay two things. The display already has the gestures a
+reader wants — `Enter` to enlarge, `Ctrl+Enter` for the whole window, `Escape` to
+leave, the arrows still browsing the folder — and a PDF shows it was the right
+home for a page of prose. F3 still opens the raw markdown, which is the right
+answer for someone about to change it.
+
+The footer is deliberately not given a thumbnail. Every other preview's box is a
+*look* at what is in the file; a page of prose at 160×64 is a grey smear, and
+drawing it would mean typesetting the whole document on every cursor step, with
+mermaid's measuring pass in the bill. The footer therefore keeps its compact
+size for the kind, nothing is read on the cursor move, and the reveal in the wall
+still grows out of the tile — the one place a doc has a thumbnail-sized picture
+already.
+
+The reading surface is the display's own, and for a document it is painted
+opaque. Every other media covers itself — a picture is a picture, and a PDF page
+is a white raster — so the display can sit over the blurred listing with nothing
+of its own to paint. Prose does not cover itself: the margin of a page, the space
+between two lines and the gap after the last line are all the background, and
+letting the blurred folder show through them is the difference between reading a
+document and reading it through another picture. So the display takes `bg-bg` for
+the kind, which is also the colour a full-screen display's backdrop already is,
+and the page is a page rather than a window.
+
+A mermaid drawing is the one part of a document that cannot simply flow with the
+prose: a flowchart is often wider and taller than the column, and shrinking it to
+the column is what makes its labels unreadable. So each drawing gets its own
+*viewport* — a scroll container of its own, inside the document's — and its own
+tiny bar. A diagram inside prose is fitted to the column when it appears, so it
+does not knock the page out of shape; a standalone `.mmd` opens at the drawing's
+own size, because there the diagram *is* the document and its labels are meant to
+be read. The bar zooms from there in the same rungs the PDF display uses;
+`Ctrl+wheel` zooms about the pointer so a label can be chased without hunting for
+the button, and a drawing bigger than its box is dragged like a map. Everything
+is sized from the SVG's viewBox rather than from the `width`/`height`/`max-width`
+mermaid writes, which is what makes a percentage in the bar mean the drawing's
+own size. The viewport scrolls instead of the page growing, so zooming a diagram
+in a long document does not shove the paragraphs after it miles down; a drawing
+left at its fit follows a resized pane, and one the reader has zoomed keeps the
+size they chose.
+
+The standalone page is *pinned* to the display's height rather than merely at
+least as tall — `height: 100%` on the page, `min-height: 0` on the flex chain
+down to the viewport — and that is load-bearing rather than tidy. With only a
+`min-height`, a drawing taller than the box stretched its viewport down with it,
+leaving the *outer* document box as the thing that scrolled vertically; a drag
+pans the viewport, so it panned sideways and not down. The bounded viewport is
+what gives the drag two edges to move against.
+
+The diagrams are also drawn **flat**: mermaid's dark theme hangs a white-ish
+`drop-shadow` behind every node and strokes its shapes with a light-to-dark
+gradient, which on the app's flat reading surface read as glare around each
+rectangle rather than as depth. So `themeVariables.dropShadow` is `'none'` and
+`useGradient` is `false`, and the node fill, border and edge-label background are
+pinned to the app's own `surface-2`, `border` and `bg` rather than left at
+mermaid's `#1f2020` fill and `#ccc` border. The unused `<filter>` definitions
+mermaid still emits are not referenced by anything.
+
+The rendering pipeline is deliberately three libraries rather than one. `marked`
+turns markdown into HTML; DOMPurify then decides which of that HTML may be put on
+screen, because a document is untrusted input like any other file and raw HTML,
+`onerror=` handlers and links are all part of the format. Mermaid is separate
+again because it is large and most documents have no diagram: it is imported only
+when one is actually drawn, and `securityLevel: 'strict'` makes it sanitize its
+own labels and ignore the click handlers a diagram can carry. A diagram that will
+not parse is a syntax error in the reader's own source, so it is shown as that
+source with a note — a document is not made unreadable by one broken fence.
+
+The viewer is a `defineAsyncComponent` for the same reason `ModelViewer` is: a
+folder of ordinary files must not download a markdown parser, a sanitizer and a
+diagram engine. It reports `ready` only after every diagram has been measured and
+drawn, which is what keeps the reveal honest — the display must not grow into a
+box whose content is still arriving — and it is also what lets the pane treat the
+document like any other media for the flight.
+
+References inside a document are the document's own, not the pane's: a relative
+`shot.png` belongs beside the markdown file, in an archive entry as much as on
+disk, which is what `resolveDocRef` in `shared/doc.ts` answers for both shapes of
+path. An image is read through the target's `fs:read-image` (so it travels the
+same road as any other picture) and swapped in as a `data:` URL; an absolute URL
+is left alone rather than fetched, because the renderer's CSP is the app's and a
+document should not be able to widen it. Headings get GitHub-style slugs so a
+table of contents written as `#anchors` works; a page link goes to the system's
+browser through `fs:open-external`, which accepts only `http`, `https` and
+`mailto` — a document must not be able to make the app launch an arbitrary local
+handler — and a relative link is followed *in the app*: the display is driven by
+the asking pane's cursor, so the link is answered by moving that cursor to the
+linked file (`doc-link` → `App.vue` → `navigateTo`), and a link between two
+documents reads as following a link rather than as leaving the program.
+
+Finally, the text is real text, unlike a PDF's invisible layer over a raster, so
+the browser's own selection is correct and no highlight has to be drawn. What it
+does need is the same focus discipline: the box is focusable and marked
+`data-doc-scroll`, the typeset body is marked `data-doc-text`, and `App.vue`
+treats both document kinds alike — the press stands `restoreFocus` down so the
+selection survives it, `Ctrl+C` copies the selection rather than the row's name,
+and the wheel is the browser's so the page scrolls like a page.
 
 ### Models
 
