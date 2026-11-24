@@ -1100,7 +1100,9 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   the other pane, `stageTarget` is the session's document rather than the
   cursor's, and `StageRequest.text` carries the buffer. A changed `text` on the
   same target is the same display re-typesetting in place (`sameMedia` in
-  `FilePanel`), never a reload.
+  `FilePanel`), never a reload. The pane's editor carries **no minimap**: it is
+  half a window wide, so the strip costs more than the overview it gives, while
+  the full-window overlay viewer still has room for it.
 - **The editor hands its buffer over on a throttle** (`PREVIEW_INTERVAL_MS`,
   180ms) and once more on unmount, so the preview follows typing a few times a
   second without typesetting every keystroke, and a session that ends between two

@@ -352,7 +352,10 @@ onMounted(async () => {
     automaticLayout: true,
     fontFamily: monoFontStack(),
     fontSize: 12,
-    minimap: { enabled: true },
+    // A pane's editor is half a window wide, so the minimap's strip costs more
+    // than the overview it gives; the full-window overlay viewer still has room
+    // for it. This is the in-pane editor's own setting, not a global one.
+    minimap: { enabled: !editable.value },
     scrollBeyondLastLine: false,
     renderWhitespace: 'selection',
     // A viewer has no caret to point the current line out with (see below), so
