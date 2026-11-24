@@ -359,9 +359,9 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
 - **The columns can also be built, not only rearranged.** `Alt+E` (or the icon
   pinned to the right edge of the header, shown on hover) puts the pane's
   `columnEdit` mode on: each header becomes one bordered, rounded capsule holding
-  a grip, a `<select>` of column types — Name, Size, Modified, Mode, Mode (num)
-  — and a remove button (hairline dividers between the three), with an add
-  button *outside* the capsule in every gap (before each column and after the
+  a grip, a `<select>` of column types — Name, Size, Modified, Mode, Mode (num),
+  User, Group — and a remove button (hairline dividers between the three), with an
+  add button *outside* the capsule in every gap (before each column and after the
   last). The name
   column cannot be removed. Adding opens the new column's picker (a `showPicker`
   on the next tick, the add being a real click). The grip is what drags a column
@@ -700,7 +700,12 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   nothing names reads as its own number rather than costing a `getent` spawn on
   the listing's hot path. Both are null where there is no identity to show (an
   archive's entries are not files of any filesystem; a quick cd bookmark is a
-  path), and the footer draws no span at all for those — never an empty one.
+  path), and the footer draws no span at all for those — never an empty one. They
+  are also two column types, `User` and `Group`, which a pane does not start with:
+  the footer already answers for the cursor's row, and a column is for the
+  directory where ownership *is* the question. Either leads its width like the name
+  does, since a name reads from its start, and both sort through the listing's
+  collator — `alice` before `bob`, not by id.
 
 ### Transfers: a progress dialog, and a pill when backgrounded
 

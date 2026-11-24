@@ -433,7 +433,9 @@ const COLUMN_LABELS: Record<SortKey, string> = {
   size: 'Size',
   modified: 'Modified',
   mode: 'Mode',
-  modeNumeric: 'Mode (num)'
+  modeNumeric: 'Mode (num)',
+  owner: 'User',
+  group: 'Group'
 }
 
 /** Whether the pane is building its columns, rather than reading them. */
@@ -454,7 +456,9 @@ const canAddColumn = computed(() =>
 /**
  * How a column's header is laid out: the name takes the room left over and its
  * text leads, while the metadata columns keep their measured widths and align
- * their text, matching the cells below them.
+ * their text, matching the cells below them. The owner and the group are names
+ * rather than numbers, so they lead like the name does — inside a width of their
+ * own, since they are still one narrow column and not the room-left-over one.
  */
 function headerClass(key: SortKey): string {
   switch (key) {
@@ -464,6 +468,9 @@ function headerClass(key: SortKey): string {
       return 'w-16 shrink-0 justify-end gap-1'
     case 'modified':
       return 'w-24 shrink-0 justify-end gap-1'
+    case 'owner':
+    case 'group':
+      return 'w-24 shrink-0 justify-start gap-1'
     default:
       return 'w-20 shrink-0 justify-end gap-1'
   }
@@ -748,21 +755,32 @@ function onColumnTypeChange(index: number, event: Event): void {
 /**
  * How the mode column's own cell is laid out, matching the header above it so the
  * columns line up whichever of them are shown. It is set in the mono font, which
- * is what keeps the permission groups over one another.
+ * is what keeps the permission groups over one another. The owner and group
+ * columns have a shape of their own (names, not digits), drawn where they are.
  */
 function cellClass(): string {
   return 'w-20 shrink-0 text-right font-mono text-fg'
 }
 
 /**
- * The mode column's text for a row: the permission bits, drawn symbolically or
- * in octal depending on which of the two mode columns this is. The ".." row
- * carries none of it — it names the folder above rather than an entry in this one
- * — so it reads blank.
+ * The text a column gives a row. The mode columns are the permission bits, drawn
+ * symbolically or in octal depending on which of the two this is; the owner and
+ * group columns are the names the entry's ids were resolved to, blank inside an
+ * archive where nothing names them. The ".." row carries none of it — it names the
+ * folder above rather than an entry in this one — so it reads blank.
  */
 function cellText(entry: PaneEntry, key: SortKey): string {
   if (entry.isParent) return ''
-  return key === 'modeNumeric' ? formatModeNumeric(entry.mode) : formatMode(entry.mode)
+  switch (key) {
+    case 'owner':
+      return entry.owner ?? ''
+    case 'group':
+      return entry.group ?? ''
+    case 'modeNumeric':
+      return formatModeNumeric(entry.mode)
+    default:
+      return formatMode(entry.mode)
+  }
 }
 
 /**
@@ -6041,8 +6059,21 @@ function onRenameBlur(): void {
               {{ row.entry.isParent ? '' : formatRelativeDate(row.entry.mtimeMs) }}
             </span>
 
-            <!-- The mode column, the one header left that is not the name, size or
-                 date. The ".." row carries none of it and stays blank. -->
+            <!-- The owner and the group are names, so they lead in their column
+                 rather than running up against it as a number does — and a name
+                 too long for the width is cut with an ellipsis, its whole text in
+                 the hover. -->
+            <span
+              v-else-if="col === 'owner' || col === 'group'"
+              class="w-24 shrink-0 truncate text-left text-fg"
+              :title="cellText(row.entry, col) || undefined"
+            >
+              {{ cellText(row.entry, col) }}
+            </span>
+
+            <!-- The mode columns, the headers left that are not the name, size,
+                 date or an owner. The ".." row carries none of it and stays
+                 blank. -->
             <span v-else :class="cellClass()">
               {{ cellText(row.entry, col) }}
             </span>

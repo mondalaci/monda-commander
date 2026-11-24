@@ -27,20 +27,25 @@ export type ScrollAlign = 'nearest' | 'start' | 'end'
  * the sort still shows its own value — sorting and showing are the same list of
  * questions a listing already answers.
  */
-export type SortKey = 'name' | 'size' | 'modified' | 'mode' | 'modeNumeric'
+export type SortKey = 'name' | 'size' | 'modified' | 'mode' | 'modeNumeric' | 'owner' | 'group'
 
 /**
  * Every column a pane can show, in the order the column editor's pickers offer
  * them. `columnOrder` is a subset of this, one entry per shown column. The two
  * mode columns are the same bits drawn two ways — symbolic (`rw-r--r--`) and
- * numeric (`644`) — so a pane can show one, the other, or both.
+ * numeric (`644`) — so a pane can show one, the other, or both; the owner and the
+ * group are two columns rather than one `user:group`, since which of the two a
+ * listing is read for is the question being asked (who wrote it, or what a group
+ * of people shares).
  */
 export const COLUMN_TYPES: readonly SortKey[] = [
   'name',
   'size',
   'modified',
   'mode',
-  'modeNumeric'
+  'modeNumeric',
+  'owner',
+  'group'
 ]
 
 /** Whether the chosen column runs smallest-to-largest or the other way. */
@@ -359,6 +364,11 @@ const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'bas
  * a runnable file follows a plain one, matching the order the column shows. The
  * two mode columns are one question — the bits — so they order alike whichever
  * way they are drawn.
+ *
+ * The owner and the group sort as the names they are, through the listing's
+ * collator, so `alice` comes before `bob` rather than wherever their ids happen to
+ * fall. A row with no name to offer — an entry inside an archive — orders as the
+ * empty string and collects at the top, as its column draws it.
  */
 function compareByKey(a: DirEntry, b: DirEntry, key: SortKey, sizes: Map<string, number>): number {
   switch (key) {
@@ -366,6 +376,10 @@ function compareByKey(a: DirEntry, b: DirEntry, key: SortKey, sizes: Map<string,
       return sizeFor(a, sizes) - sizeFor(b, sizes)
     case 'modified':
       return a.mtimeMs - b.mtimeMs
+    case 'owner':
+      return collator.compare(a.owner ?? '', b.owner ?? '')
+    case 'group':
+      return collator.compare(a.group ?? '', b.group ?? '')
     case 'mode':
     case 'modeNumeric':
       return a.mode - b.mode

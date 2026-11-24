@@ -1221,12 +1221,20 @@ far side, by the relay, rather than shipped as ids for the app to look up here:
 a uid means what *that* host says it means, and its `/etc/passwd` is the only
 place that answers.
 
-It stays in the footer rather than becoming a column. A name column is wide and
-rarely the thing being sorted by, while the footer already describes the cursor's
-row — and it describes it whole, which is what a status bar is for. Entries with
-no identity of their own have none to show: an archive's entries are not files of
-any filesystem, and a quick cd bookmark is a path rather than a row, so both take
-no span at all rather than an empty one.
+It is also a column type — **User** and **Group**, separately — but not one a pane
+starts with. The footer already describes the cursor's row whole, so ownership is
+there for the asking without costing a column's width; the columns are for the
+directory where ownership *is* the question, and there one column per question is
+what makes them useful, since "who wrote it" and "what a group shares" are asked
+apart and sort apart. They lead their width like the name does, because a name
+reads from its start while a number reads from its end, and a name too long for
+the column is cut with the hover holding the rest — the same bargain the size and
+mode columns strike with their own widths. Both order through the listing's
+collator rather than by id, so `alice` comes before `bob`; a row with no name to
+offer — an entry inside an archive — sorts as the empty string, as it draws, and
+collects at the top. Entries with no identity at all still draw nothing in the
+footer's span, because an archive's entries are not files of any filesystem and a
+quick cd bookmark is a path rather than a row.
 
 ## Git status
 

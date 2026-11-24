@@ -152,13 +152,13 @@ the rendered page, because it is a clone of the whole pane — so the editor mov
 to the other side and the rendered document to the one it left,
 
 `Alt+E` builds the active pane's columns: each column's label becomes a picker of
-the column types — Name, Size, Modified, Mode, Mode (num) — beside a grip
-and a remove button, and an add button sits in every gap, before each column and
-after the last (the first type not already shown is what an add inserts, and its
-picker opens at once). The grip drags the column to another place, so a column can
-be re-ordered while it is being built; the name column is the one that cannot be
-removed. The pane's own edit icon is pinned to the right edge of the header,
-appearing on hover and toggling the same mode. The whole mode is the keyboard's
+the column types — Name, Size, Modified, Mode, Mode (num), User, Group — beside a
+grip and a remove button, and an add button sits in every gap, before each column
+and after the last (the first type not already shown is what an add inserts, and
+its picker opens at once). The grip drags the column to another place, so a
+column can be re-ordered while it is being built; the name column is the one that
+cannot be removed. The pane's own edit icon is pinned to the right edge of the
+header, appearing on hover and toggling the same mode. The whole mode is the keyboard's
 too: the arrows move between the columns (a highlight marks the one the keys act
 on, and a click puts the same highlight on a column), `Home`/`End` jump to the
 first and last, `Enter` opens the focused column's picker, `Insert` adds a column
