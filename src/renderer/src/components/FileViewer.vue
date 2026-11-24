@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type * as MonacoApi from 'monaco-editor'
 import type { FileContent } from '@shared/types'
 import { languageFor, loadMonaco } from '@renderer/lib/monaco'
+import { editorWrap, toggleEditorWrap } from '@renderer/composables/useEditorWrap'
+import { EDITOR_WRAP_OFF_TOOLTIP, EDITOR_WRAP_ON_TOOLTIP } from '@shared/editorWrap'
 import {
   diffDecorations,
   diffLineArrays,
@@ -158,6 +160,13 @@ const MAX_REMOVED_LINES = 1000
 
 const editable = computed(() => props.mode === 'edit')
 const name = computed(() => props.path.split(/[\\/]/).pop() ?? props.path)
+
+// The wrap preference is app-wide, so a change made in one surface follows into
+// the next. The editor is created with the current answer; this keeps an editor
+// that is already up in step when the gesture flips it.
+watch(editorWrap, (on) => {
+  editor?.updateOptions({ wordWrap: on ? 'on' : 'off' })
+})
 
 // Resolve the mono stack from the theme, exactly as the terminal does, so the
 // editor and the shell cannot drift apart.
@@ -356,6 +365,10 @@ onMounted(async () => {
     // than the overview it gives; the full-window overlay viewer still has room
     // for it. This is the in-pane editor's own setting, not a global one.
     minimap: { enabled: !editable.value },
+    // Wrapped by default: a long line that runs off the edge is the common
+    // nuisance, and the gesture (`Alt+Z`, or the header's Wrap button) turns it
+    // off where code reads better unwrapped. See `useEditorWrap`.
+    wordWrap: editorWrap.value ? 'on' : 'off',
     scrollBeyondLastLine: false,
     renderWhitespace: 'selection',
     // A viewer has no caret to point the current line out with (see below), so
@@ -365,6 +378,19 @@ onMounted(async () => {
     smoothScrolling: true,
     padding: { top: 6, bottom: 6 }
   })
+
+  // The wrap gesture is the editor's in either mode: a long line runs off the
+  // edge in a viewer as readily as in a buffer. `Alt+Z` is the chord every
+  // editor that wraps uses, and the same toggle is the header's Wrap button.
+  viewKeyDisposables.push(
+    editor.addAction({
+      id: 'mc.editor.wrap',
+      label: 'Toggle Word Wrap',
+      keybindings: [monaco.KeyMod.Alt | monaco.KeyCode.KeyZ],
+      precondition: 'textInputFocus',
+      run: () => toggleEditorWrap()
+    })
+  )
 
   if (!editable.value) {
     // Viewing has no cursor — the caret is hidden by CSS (styles/viewer.css) —
@@ -574,6 +600,21 @@ defineExpose({ isDirty, focusEditor, save })
       </span>
 
       <div class="min-w-0 flex-1"></div>
+
+      <button
+        type="button"
+        class="shrink-0 rounded px-1.5 py-0.5 text-ui-sm transition-colors"
+        :class="
+          editorWrap
+            ? 'bg-hover text-fg-bright'
+            : 'text-fg-dim hover:bg-hover hover:text-fg'
+        "
+        :title="editorWrap ? EDITOR_WRAP_ON_TOOLTIP : EDITOR_WRAP_OFF_TOOLTIP"
+        :aria-pressed="editorWrap"
+        @click="toggleEditorWrap"
+      >
+        Wrap
+      </button>
 
       <button
         v-if="editable"

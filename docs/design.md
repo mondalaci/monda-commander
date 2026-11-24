@@ -2311,6 +2311,23 @@ the mouse still selects and copies; the current-line highlight goes too, via
 `renderLineHighlight: 'none'`, since with no caret there is nothing for it to point
 out.
 
+### The editor wraps its lines by default
+
+A long line that runs off the edge is the common nuisance in a file manager's
+editor: prose is written to a width, and a sentence that continues past the edge
+is read by dragging the horizontal scrollbar. So the editor wraps by default.
+Code is where the opposite is true — an unwrapped line is easier to scan as a unit
+— so the gesture is a choice rather than a rule: `Alt+Z`, the chord every editor
+that wraps uses, and the header's **Wrap** button turn it off and on again. The
+key and the two tooltips are spelled once in `shared/editorWrap.ts`, so the
+action, the button and the documentation cannot drift apart.
+
+The preference is one for the whole app (`useEditorWrap`), shared by the overlay
+and a pane's in-place editor, so switching it in one is the answer the next one
+opens with. It is a session preference rather than a remembered one: the next
+launch opens wrapped again, which is what "by default" means for a viewer used for
+prose as often as for code.
+
 ### The changed-line gutter is diffed in the renderer
 
 A changed file opened in the viewer shows what its working copy has done to HEAD,

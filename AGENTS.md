@@ -1133,6 +1133,14 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   `addCommand`, at the core `scroll*` ids, gated on `'textInputFocus'`. `addCommand`
   leaks a global keybinding that outlives the view and swallows a later F4 editor's
   arrows. The caret is hidden by `styles/viewer.css`.
+- **The editor wraps its lines by default, and `Alt+Z` turns that off.** A long
+  line that runs off the edge is the common nuisance — prose is written to a
+  width — while code is where an unwrapped line reads better, so the gesture is a
+  choice rather than a rule. The preference is one for the whole app
+  (`useEditorWrap`), shared by the overlay and a pane's in-place editor, and its
+  key and two tooltips are spelled once in `shared/editorWrap.ts`. The header's
+  **Wrap** button is the same gesture by pointer, and the state is a session
+  preference: the next launch opens wrapped again.
 - **Monaco is imported lazily**, workers answered by `MonacoEnvironment.getWorker`
   via Vite `?worker` imports; `fs:read` uses `O_RDONLY | O_NONBLOCK` + a NUL test +
   an 8 MiB ceiling. The language is the **name first, the shebang second**
