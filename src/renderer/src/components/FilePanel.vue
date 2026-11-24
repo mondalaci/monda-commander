@@ -45,6 +45,7 @@ import {
   type GitRowMark
 } from '@renderer/lib/gitMark'
 import FileIcon from '@renderer/components/FileIcon.vue'
+import FileViewer from '@renderer/components/FileViewer.vue'
 import ThumbnailGrid from '@renderer/components/ThumbnailGrid.vue'
 import DiskUsage from '@renderer/components/DiskUsage.vue'
 import ColumnAddButton from '@renderer/components/ColumnAddButton.vue'
@@ -78,6 +79,7 @@ import { MEDIA_SCHEME } from '@shared/video'
 import type {
   DiskUsage as DiskUsageInfo,
   ModelData,
+  PaneEditor,
   PdfPageText,
   PdfWord,
   PixelSize
@@ -143,6 +145,12 @@ const props = defineProps<{
    * changes, and only while there is something being displayed.
    */
   fullscreen?: boolean
+  /**
+   * A document this pane is editing in place, read by the app and handed down:
+   * the pane becomes the editor and the other pane the live preview. Absent for
+   * every pane that is not the edit session's.
+   */
+  editor?: PaneEditor | null
 }>()
 
 const emit = defineEmits<{
@@ -175,6 +183,10 @@ const emit = defineEmits<{
    * documents opens the next one in the same display.
    */
   (event: 'doc-link', path: string): void
+  /** The embedded editor's close button: the app answers it, discard and all. */
+  (event: 'editor-close'): void
+  /** The embedded editor's buffer, on its own debounce, for the live preview. */
+  (event: 'editor-change', text: string): void
 }>()
 
 // The target this pane lives on, so a preview reads the file where it actually
@@ -1410,6 +1422,9 @@ const shownStage = ref<StageRequest | null>(null)
 /** The pane's own content — bar, listing, footer — which a display blurs. */
 const paneContent = ref<HTMLElement | null>(null)
 
+/** The in-pane editor, when this pane is a document's edit session. */
+const embeddedEditor = ref<InstanceType<typeof FileViewer> | null>(null)
+
 /** The blur in flight on the pane's own content, so a change of mode can replace it. */
 let contentBlur: Animation | null = null
 
@@ -1818,7 +1833,21 @@ watch(
         previous.target.kind === stage.target.kind &&
         previous.target.encode === stage.target.encode &&
         previewKeyFor(previous.target) === previewKeyFor(stage.target)
-      if (sameMedia) return
+      if (sameMedia) {
+        // A live document changes without becoming another target: the edit
+        // session's *text* is what moves, so the same display re-typesets it
+        // in place rather than being torn down and built again under the
+        // reader's scroll.
+        if (
+          stage.target.kind === 'doc' &&
+          stage.text !== undefined &&
+          stage.text !== previous?.text
+        ) {
+          const format = docFormatFor(stage.target.name)
+          if (format !== null) stageDoc.value = { format, text: stage.text, truncated: false }
+        }
+        return
+      }
 
       // A clip main has to encode is asked for from where the mode began; a clip
       // Chromium plays is loaded as it is and moved to that position.
@@ -1870,10 +1899,15 @@ async function loadStage(stage: StageRequest): Promise<void> {
 
   if (stage.target.kind === 'doc') {
     // A document is read whole and typeset in the renderer — no binary to run,
-    // no page to rasterize, so an archive entry reads as readily as a file. The
-    // state stays `loading` until the viewer has actually drawn it, which is
-    // also the moment it is revealed.
+    // no page to rasterize, so an archive entry reads as readily as a file. A
+    // *live* document (an edit session's buffer) arrives with its text already,
+    // which is the one case where nothing is read at all.
     const format = docFormatFor(stage.target.name)
+    if (stage.text !== undefined) {
+      if (format !== null) stageDoc.value = { format, text: stage.text, truncated: false }
+      else stageState.value = 'failed'
+      return
+    }
     const result = await api.fs.read(stage.target.path)
     if (token !== stageToken) return
     if (result.ok && format !== null) {
@@ -3912,6 +3946,24 @@ function cursorMenuAnchor(): PaneMenuRequest | null {
   }
 }
 
+/**
+ * The in-pane editor's own state and gestures, for the app that owns the edit
+ * session: whether there is unsaved work to ask about, the focus to give back
+ * after a cancelled discard, and the save a Ctrl+S makes while the keyboard is
+ * on the preview rather than in the buffer.
+ */
+function editorIsDirty(): boolean {
+  return embeddedEditor.value?.isDirty() ?? false
+}
+
+function editorFocus(): void {
+  embeddedEditor.value?.focusEditor()
+}
+
+function editorSave(): void {
+  void embeddedEditor.value?.save()
+}
+
 defineExpose({
   contentEl,
   previewRect,
@@ -3925,7 +3977,10 @@ defineExpose({
   openColumnPicker,
   addColumnAtFocus,
   stepPdfZoom,
-  toggleView
+  toggleView,
+  editorIsDirty,
+  editorFocus,
+  editorSave
 })
 
 // Kept out of the <ul> on purpose: the row list must contain exactly the
@@ -6271,6 +6326,22 @@ function onRenameBlur(): void {
         <span class="text-ui-sm text-fg-dim">Esc or right-click to exit</span>
       </div>
     </div>
+
+    <!-- A document being edited in place: this pane *is* the editor, and the
+         other pane is its live preview. It covers the pane the way the display
+         does, and the app owns the session — Escape, Ctrl+S and the discard
+         question are answered there, not here. -->
+    <FileViewer
+      v-if="editor"
+      ref="embeddedEditor"
+      :key="`doc-edit:${editor.path}`"
+      :path="editor.path"
+      mode="edit"
+      :content="editor.content"
+      :base="editor.base"
+      @close="emit('editor-close')"
+      @change="emit('editor-change', $event)"
+    />
 
     <!-- The right button held on a row, with nothing decided yet: the ring fills
          over the rest of the hold, and what the hold is waiting for depends on

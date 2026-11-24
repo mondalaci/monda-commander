@@ -39,6 +39,60 @@ export function isDocName(name: string): boolean {
 }
 
 /**
+ * A markdown document's front matter: the metadata block some markdown files
+ * open with, fenced by `---` (YAML) or `+++` (TOML). Split off before the prose
+ * is parsed, because its opening fence is otherwise just a setext heading
+ * underline — the very thing that turned a title into a heading of `date: …`.
+ */
+export interface FrontMatter {
+  /** The block's own text, between the fences. */
+  source: string
+  /** Everything after the block; the whole document when there is no block. */
+  body: string
+  /** Which fence family opened it. */
+  format: 'yaml' | 'toml'
+}
+
+/**
+ * The front matter a document opens with, or null when it has none. The block
+ * must start at the very beginning (a BOM is allowed) and have a closing fence
+ * of its own kind, so an ordinary document that happens to start with a
+ * horizontal rule is left alone.
+ */
+export function splitFrontMatter(text: string): FrontMatter | null {
+  const start = text.startsWith('\uFEFF') ? 1 : 0
+  const firstEnd = text.indexOf('\n', start)
+  if (firstEnd < 0) return null
+
+  const first = text
+    .slice(start, firstEnd)
+    .replace(/\r$/, '')
+    .replace(/[ \t]+$/, '')
+  const format = first === '---' ? 'yaml' : first === '+++' ? 'toml' : null
+  if (format === null) return null
+  const closers = format === 'yaml' ? ['---', '...'] : ['+++']
+
+  let from = firstEnd + 1
+  for (;;) {
+    const end = text.indexOf('\n', from)
+    const lineEnd = end < 0 ? text.length : end
+    const line = text
+      .slice(from, lineEnd)
+      .replace(/\r$/, '')
+      .replace(/[ \t]+$/, '')
+    if (closers.includes(line)) {
+      return {
+        source: text.slice(firstEnd + 1, from),
+        body: end < 0 ? '' : text.slice(end + 1),
+        format
+      }
+    }
+    if (end < 0) return null
+    from = end + 1
+  }
+}
+
+/**
  * The directory a location sits in, in the same shape the location uses — the
  * pane's own `navigateTo` takes it, so a link to another document can move the
  * cursor to it rather than handing the file to the system. An archive's inner

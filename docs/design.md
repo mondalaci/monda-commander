@@ -1756,6 +1756,21 @@ own labels and ignore the click handlers a diagram can carry. A diagram that wil
 not parse is a syntax error in the reader's own source, so it is shown as that
 source with a note — a document is not made unreadable by one broken fence.
 
+A markdown document's **front matter** is the one part of the file that is not
+prose, and treating it as prose is exactly what the format punishes: an opening
+`---` is also a setext heading underline, so a blog post's `date:` and `title:`
+became one heading (and the rest a paragraph) across the top of the page. So the
+block is split off before marked sees anything (`splitFrontMatter` in
+`shared/doc.ts`, fenced by `---` or `+++` and required to close) and shown as a
+card of key/value rows above the body. YAML is parsed with js-yaml's **failsafe**
+schema, which keeps every scalar the string it was written as — the standard
+schema turns `2013-01-26` into a `Date`, and printing that would show a locale and
+a timezone the file never had. Lists are joined, nested maps flattened to
+`key: value` pairs, and a block the app cannot parse (TOML, broken YAML) is shown
+as its source rather than dropped or turned into broken prose. The card is built
+from parsed data with `textContent`, not from HTML, so it is not a second place a
+document could inject markup.
+
 The viewer is a `defineAsyncComponent` for the same reason `ModelViewer` is: a
 folder of ordinary files must not download a markdown parser, a sanitizer and a
 diagram engine. It reports `ready` only after every diagram has been measured and
@@ -1778,6 +1793,18 @@ the asking pane's cursor, so the link is answered by moving that cursor to the
 linked file (`doc-link` → `App.vue` → `navigateTo`), and a link between two
 documents reads as following a link rather than as leaving the program.
 
+Every link also carries its target as a tooltip, so a hover answers where the
+click will go before it is made. The chip is drawn by the app rather than left to
+the platform's native `title`: the native one waits about a second before it
+appears and is styled by the desktop, while a document is a reading surface whose
+links are checked constantly — a chip that appears at once and reads in the
+document's own colours is the one that belongs there. It is fixed to the window,
+so the document's scroll box cannot clip it, and it takes no pointer, so it cannot
+swallow the click it describes; a scroll hides it, because it is placed against the
+link's place on screen. A title the document wrote itself is kept as the chip's
+leading line, above the URL, since the author's description and the destination
+are both worth having.
+
 Finally, the text is real text, unlike a PDF's invisible layer over a raster, so
 the browser's own selection is correct and no highlight has to be drawn. What it
 does need is the same focus discipline: the box is focusable and marked
@@ -1785,6 +1812,55 @@ does need is the same focus discipline: the box is focusable and marked
 treats both document kinds alike — the press stands `restoreFocus` down so the
 selection survives it, `Ctrl+C` copies the selection rather than the row's name,
 and the wheel is the browser's so the page scrolls like a page.
+
+### Editing a document is the pane and its neighbour
+
+Editing a document wants the two things a side-by-side preview has — the source
+and the rendered page — and the app already *has* both, one per pane: the panes
+are a pair, with a display mode that shows one pane's subject in the other. So F4
+on a markdown or mermaid file does not open the viewer overlay, which covers the
+very half of the screen a preview would need; it reads the file exactly as the
+overlay would (baseline and all) and hands it to a `DocEditSession`. The pane
+that asked renders `FileViewer` in place over its own listing, and the *other*
+pane becomes the display through the machinery a display already uses. `stageSide`
+is that other pane, `stageTarget` is the session's document instead of the
+cursor's (there is no cursor to follow — an editor covers it), and the stage
+request carries the buffer as its text.
+
+That `text` is the whole live-preview design. A display normally reads a document
+from its target; a session's display never does, because the text it should show
+may not exist on disk yet. The target's identity stays put — the session is the
+same document however it is typed into — so the display is not reloaded. Only its
+text moves, and `FilePanel` treats a changed text on the same target as a
+re-typeset in place. Remounting instead would tear down `MarkdownViewer` for
+every keystroke's worth of change, losing its scroll, its diagram zooms and its
+loaded images along with the caret's place on the page.
+
+The hand-over is throttled twice, for two different reasons: the editor sends the
+buffer at most every 180ms (typesetting is much more expensive than painting
+Monaco's gutter, and a trailing send carries the latest text), and the viewer
+waits a further short moment so two sends in a row become one render. A live
+re-render then restores the reading box's scroll position and reuses what the
+previous render already knew — the `data:` URLs of the document's own images,
+mermaid's markup for a fence whose source did not change, and each diagram's
+zoom. Without those, typing in the first paragraph of a long document would jump
+the preview to the top, and editing prose around a diagram would silently undo
+the reader's zoom in it.
+
+The session is as modal as the overlay, for the same reason: an unsaved buffer is
+the user's work. `Escape` leaves through `isDirty()` and the same `ConfirmDiscard`
+the overlay uses, `Ctrl+S` saves wherever the keyboard is (the preview as readily
+as the buffer), and the display's own leave gestures — a right-click on the
+preview — ask the same question rather than closing half of it. Every other key is
+Monaco's, save `Ctrl+U`: the editor and its preview *are* the two panes, so the
+panes' exchange is the gesture that puts the editor on the other side, and it is
+the same card shuffle as anywhere else. The ghost is a clone of the whole pane, so
+the editor overlay and the rendered page are what travel; a clone is inert and
+gone in 260ms, and the real panes keep their state. A workspace change is refused
+while the buffer is dirty, because the editor is rendered *inside* the pane:
+switching tabs would unmount it and take the unsaved text with it. A clean session
+steps aside and lets the tab change happen, which is the least surprising
+behaviour for a change that cannot lose work.
 
 ### Models
 

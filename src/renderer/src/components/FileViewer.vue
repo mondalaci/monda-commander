@@ -32,7 +32,16 @@ const props = defineProps<{
   base: string | null
 }>()
 
-const emit = defineEmits<{ (event: 'close'): void }>()
+const emit = defineEmits<{
+  (event: 'close'): void
+  /**
+   * The buffer as it now stands, sent on a short debounce while editing. The
+   * overlay ignores it; a pane editing a document hands it to the other pane so
+   * the rendered preview follows the typing. The final buffer is sent once more
+   * on unmount, so a session that ends between two debounces is not lost.
+   */
+  (event: 'change', text: string): void
+}>()
 
 // The file's target, so a save goes back to the host the file lives on rather
 // than to a same-named path on the local disk.
@@ -101,6 +110,44 @@ let disposed = false
 
 /** How long after the last edit the changed-line gutter is brought up to date. */
 const DIFF_DEBOUNCE_MS = 120
+
+/**
+ * How often the buffer is handed out for a live preview, at most. Typesetting a
+ * document is far more expensive than painting a gutter, so this is a throttle
+ * rather than a keystroke-by-keystroke send: a burst of typing still produces a
+ * preview a few times a second, and the trailing send always carries the latest
+ * text.
+ */
+const PREVIEW_INTERVAL_MS = 180
+
+/** The pending hand-out to a live preview, and when the last one went. */
+let previewTimer: number | null = null
+let previewSentAt = 0
+
+/** Hand the current buffer to a live preview, if there is one listening. */
+function sendPreview(): void {
+  previewSentAt = performance.now()
+  if (model !== null) emit('change', model.getValue())
+}
+
+/**
+ * Ask for a hand-out no sooner than `PREVIEW_INTERVAL_MS` after the last one.
+ * A timer already pending is enough: it will read whatever the buffer holds when
+ * it fires, so a burst of keystrokes costs one send per interval, with the final
+ * text in it.
+ */
+function schedulePreview(): void {
+  if (previewTimer !== null) return
+  const wait = Math.max(0, PREVIEW_INTERVAL_MS - (performance.now() - previewSentAt))
+  if (wait === 0) {
+    sendPreview()
+    return
+  }
+  previewTimer = window.setTimeout(() => {
+    previewTimer = null
+    sendPreview()
+  }, wait)
+}
 
 /**
  * The most removed lines one view zone will draw. A whole-file rewrite would
@@ -358,6 +405,10 @@ onMounted(async () => {
 
   changeSubscription = model.onDidChangeContent(() => {
     dirty.value = true
+    // A live preview is told about the buffer on a throttle, never per keystroke
+    // — typesetting a document for every character typed would lag behind the
+    // typing it is meant to follow.
+    if (editable.value) schedulePreview()
   })
 
   // The changed-line view, when App.vue read a HEAD version to compare against.
@@ -431,6 +482,13 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   disposed = true
+  if (previewTimer !== null) {
+    window.clearTimeout(previewTimer)
+    previewTimer = null
+    // The last keystrokes may still be waiting on the throttle: hand them over
+    // before the buffer goes, so a live preview ends on the text that was typed.
+    if (editable.value && model !== null) sendPreview()
+  }
   if (savedTimer !== null) window.clearTimeout(savedTimer)
   savedTimer = null
   if (diffTimer !== null) window.clearTimeout(diffTimer)
@@ -464,12 +522,13 @@ function focusEditor(): void {
   editor?.focus()
 }
 
-defineExpose({ isDirty, focusEditor })
+defineExpose({ isDirty, focusEditor, save })
 </script>
 
 <template>
   <section
     class="absolute inset-0 z-20 flex flex-col overflow-hidden border border-border bg-bg"
+    @mousedown.stop
   >
     <div class="flex h-8 shrink-0 items-center gap-2 border-b border-border bg-surface px-3">
       <svg
@@ -528,7 +587,7 @@ defineExpose({ isDirty, focusEditor })
       <button
         type="button"
         class="shrink-0 rounded p-0.5 text-fg-dim transition-colors hover:bg-hover hover:text-fg"
-        title="Close the viewer (Esc)"
+        title="Close (Esc)"
         @click="emit('close')"
       >
         <svg

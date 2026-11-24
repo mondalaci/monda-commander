@@ -244,6 +244,14 @@ export interface OsdFlash {
 export interface StageRequest {
   target: PreviewTarget
   /**
+   * The document's text when the display is showing a *live* document — the
+   * buffer of an edit session in the asking pane — rather than a file on disk.
+   * A doc display typesets this instead of reading `target`, and a changed
+   * `text` on the same target re-typesets the document in place, which is what
+   * makes the other pane a preview that follows the editor as it is typed.
+   */
+  text?: string
+  /**
    * Where the clip had got to in the pane that asked for the display, or null
    * when it was not playing there — a display carries on from there rather than
    * starting the clip over, so that enlarging it is the same clip changing place.

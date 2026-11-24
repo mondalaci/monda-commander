@@ -298,6 +298,18 @@ export interface PdfPageText {
   lines: { y: number; height: number }[]
 }
 
+/**
+ * A document an app pane is editing in place. The file is read once, before the
+ * pane turns into an editor, and the text it holds is what the other pane
+ * previews until the first keystroke arrives; `base` is what HEAD holds, for the
+ * editor's changed-line view (null when there is nothing to compare against).
+ */
+export interface PaneEditor {
+  path: string
+  content: FileContent
+  base: string | null
+}
+
 export type Result<T> = { ok: true; data: T } | { ok: false; error: FsError }
 
 export interface DeleteFailure {

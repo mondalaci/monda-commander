@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
+import { FAILSAFE_SCHEMA, load as loadYaml } from 'js-yaml'
 import { injectTargetApi } from '@renderer/lib/targetContext'
-import { resolveDocRef, type DocFormat } from '@shared/doc'
+import { archiveDisplay } from '@shared/archive'
+import { resolveDocRef, splitFrontMatter, type DocFormat, type FrontMatter } from '@shared/doc'
 
 /**
  * A markdown document or a mermaid diagram, drawn natively in the display. The
@@ -40,6 +42,52 @@ const bodyEl = ref<HTMLElement | null>(null)
  * and mermaid is slower.
  */
 let renderToken = 0
+
+/** Whether the display has been told the document is up; only the first render says it. */
+let announced = false
+
+/** The pending re-typeset of a live document, so a burst of changes is one render. */
+let liveTimer: number | null = null
+
+/**
+ * How long after the buffer's last change the document is re-typeset. The editor
+ * already hands its text over on its own debounce; this is the gentle ceiling
+ * that keeps a burst of late-arriving updates from rendering twice in a row.
+ */
+const LIVE_DEBOUNCE_MS = 100
+
+/**
+ * The images this document's references resolved to, by resolved path — a data
+ * URL, or null for one that would not read. Re-typesetting a live document must
+ * not re-read every screenshot beside it on every keystroke.
+ */
+const imageCache = new Map<string, string | null>()
+
+/**
+ * The markup mermaid produced for a source. A live document re-renders whole,
+ * but a diagram whose fence was not touched is the same drawing and is mounted
+ * from here rather than measured again.
+ */
+const diagramCache = new Map<string, string>()
+
+/**
+ * The zoom a diagram was left at, by its place in the document, so re-typesetting
+ * a live document does not throw the reader's zoom and scroll position away.
+ */
+const diagramScales = new Map<string, number>()
+
+/** How many entries each of those caches may keep. */
+const IMAGE_CACHE_MAX = 64
+const DIAGRAM_CACHE_MAX = 24
+
+/** Store a cached value, dropping the oldest when the cache is full. */
+function remember<K, V>(cache: Map<K, V>, key: K, value: V, max: number): void {
+  if (cache.size >= max && !cache.has(key)) {
+    const oldest = cache.keys().next().value
+    if (oldest !== undefined) cache.delete(oldest)
+  }
+  cache.set(key, value)
+}
 
 /**
  * Mermaid, loaded once for the whole window. Initialising it repeatedly is
@@ -153,7 +201,12 @@ function diagramButton(label: string, title: string): HTMLButtonElement {
  * pointer, and a drag pans when the drawing is bigger than its box. A zoomed
  * drawing scrolls inside its own viewport, never growing the page under it.
  */
-function mountDiagram(host: HTMLElement, markup: string, single: boolean): void {
+function mountDiagram(
+  host: HTMLElement,
+  markup: string,
+  single: boolean,
+  scaleKey: string
+): void {
   const viewport = document.createElement('div')
   viewport.className = 'md-diagram-viewport'
 
@@ -221,6 +274,7 @@ function mountDiagram(host: HTMLElement, markup: string, single: boolean): void 
   const fit = (): void => {
     fitScale = measureFit()
     fitted = true
+    diagramScales.delete(scaleKey)
     apply(fitScale)
   }
 
@@ -244,6 +298,7 @@ function mountDiagram(host: HTMLElement, markup: string, single: boolean): void 
     const originY = after.top - viewportRect.top + viewport.scrollTop
     viewport.scrollLeft = originX + fractionX * after.width - (point.x - viewportRect.left)
     viewport.scrollTop = originY + fractionY * after.height - (point.y - viewportRect.top)
+    diagramScales.set(scaleKey, scale)
   }
 
   zoomOut.addEventListener('click', () => zoomTo(zoomStep(scale, -1)))
@@ -317,8 +372,13 @@ function mountDiagram(host: HTMLElement, markup: string, single: boolean): void 
   // A standalone `.mmd` opens at the drawing's own size — the diagram *is* the
   // document, and its labels are meant to be read. A diagram inside prose is
   // fitted to the column instead, so it does not knock the page out of shape;
-  // either one can be fitted or zoomed from the bar.
-  if (single) {
+  // either one can be fitted or zoomed from the bar. A live re-render keeps the
+  // zoom a diagram was last left at, so typing elsewhere does not reset it.
+  const remembered = diagramScales.get(scaleKey)
+  if (remembered !== undefined) {
+    fitted = false
+    apply(remembered)
+  } else if (single) {
     fitted = false
     apply(1)
   } else {
@@ -335,22 +395,34 @@ async function drawDiagram(
   host: HTMLElement,
   source: string,
   key: string,
-  single: boolean
+  single: boolean,
+  scaleKey: string,
+  token: number
 ): Promise<void> {
   const trimmed = source.trim()
   if (trimmed === '') {
     host.remove()
     return
   }
+  const cached = diagramCache.get(`${scaleKey}\u0000${trimmed}`)
+  if (cached !== undefined) {
+    if (token === renderToken) mountDiagram(host, cached, single, scaleKey)
+    return
+  }
   let id = ''
   try {
     const mermaid = await loadMermaid()
+    if (token !== renderToken) return
     // Mermaid measures the diagram in the document, so it needs an id that is
     // unique in it; the token keeps a re-render from reusing a live one.
     id = `mc-mermaid-${key}`
     const { svg } = await mermaid.render(id, trimmed)
-    mountDiagram(host, svg, single)
+    remember(diagramCache, `${scaleKey}\u0000${trimmed}`, svg, DIAGRAM_CACHE_MAX)
+    // A re-render may have taken the document over while mermaid was measuring:
+    // mounting now would leave an observer watching a tree nobody sees.
+    if (token === renderToken) mountDiagram(host, svg, single, scaleKey)
   } catch (error) {
+    if (token !== renderToken) return
     const message = error instanceof Error ? error.message : String(error)
     diagramFailure(host, trimmed, `This diagram could not be drawn: ${message.split('\n')[0]}`)
   } finally {
@@ -373,7 +445,10 @@ async function drawFences(host: HTMLElement, token: number): Promise<void> {
     const diagram = document.createElement('div')
     diagram.className = 'md-diagram'
     pre.replaceWith(diagram)
-    await drawDiagram(diagram, code.textContent ?? '', `${token}-${index}`, false)
+    await drawDiagram(diagram, code.textContent ?? '', `${token}-${index}`, false, `fence-${index}`, token)
+    // A re-render that arrived while this diagram was being drawn owns the tree
+    // now; stop before drawing into a document nobody is looking at.
+    if (token !== renderToken) return
     index += 1
   }
 }
@@ -396,9 +471,15 @@ async function resolveImages(host: HTMLElement, token: number): Promise<void> {
         image.classList.add('md-image-missing')
         return
       }
-      const result = await api.fs.readImage(resolved)
+      let dataUrl = imageCache.get(resolved)
+      if (dataUrl === undefined) {
+        const result = await api.fs.readImage(resolved)
+        if (token !== renderToken) return
+        dataUrl = result.ok ? result.data.dataUrl : null
+        remember(imageCache, resolved, dataUrl, IMAGE_CACHE_MAX)
+      }
       if (token !== renderToken) return
-      if (result.ok) image.src = result.data.dataUrl
+      if (dataUrl !== null) image.src = dataUrl
       else {
         image.removeAttribute('src')
         image.classList.add('md-image-missing')
@@ -442,6 +523,107 @@ function scrollToAnchor(id: string): void {
 }
 
 /**
+ * A path as a tooltip may show it: a place inside an archive keeps the readable
+ * `foo.zip/dir/file` shape rather than the NUL-joined location the app uses
+ * internally, which is never shown to a person.
+ */
+function readablePath(location: string): string {
+  const archive = archiveDisplay(location)
+  if (archive === null) return location
+  return archive.inner === '' ? archive.full : `${archive.full}/${archive.inner}`
+}
+
+/**
+ * Give every link the target it resolves to, for the tooltip a hover shows: the
+ * page as written, or the path a relative link actually resolves to, so a hover
+ * answers where the click will go before it is made. A title the document wrote
+ * itself is kept as the tooltip's leading line rather than replaced — the
+ * author's description and the URL are both worth having. The value rides a data
+ * attribute rather than a native `title`, because the chip is the app's own: a
+ * native title waits about a second before the platform draws it, while this one
+ * appears at once and reads in the document's colours.
+ */
+function labelLinks(host: HTMLElement): void {
+  for (const anchor of host.querySelectorAll<HTMLAnchorElement>('a[href]')) {
+    const href = anchor.getAttribute('href')
+    if (href === null || href === '') continue
+    const resolved = resolveDocRef(props.path, href)
+    const target = resolved === null ? href : readablePath(resolved)
+    const written = anchor.getAttribute('title')
+    anchor.removeAttribute('title')
+    anchor.dataset.linkTarget = written === null || written === '' ? target : `${written}\n${target}`
+  }
+}
+
+/** The chip a hovered link shows, and the link it belongs to. */
+let linkTooltip: HTMLElement | null = null
+let linkTooltipAnchor: HTMLElement | null = null
+
+/** Take the chip away, if one is up. */
+function hideLinkTooltip(): void {
+  linkTooltip?.remove()
+  linkTooltip = null
+  linkTooltipAnchor = null
+}
+
+/**
+ * Show a link's target in a chip beside the link. The chip is fixed to the
+ * window rather than placed in the document, so a scroll box cannot clip it, and
+ * it never takes the pointer, so it cannot swallow the click it describes. It
+ * sits above the link when there is room and below it otherwise, clamped to the
+ * window's edges.
+ */
+function showLinkTooltip(anchor: HTMLElement, text: string): void {
+  if (linkTooltipAnchor === anchor && linkTooltip !== null) return
+  hideLinkTooltip()
+  const tip = document.createElement('div')
+  tip.className = 'md-link-tooltip'
+  tip.textContent = text
+  document.body.append(tip)
+  linkTooltip = tip
+  linkTooltipAnchor = anchor
+
+  const rect = anchor.getBoundingClientRect()
+  const width = tip.offsetWidth
+  const height = tip.offsetHeight
+  const margin = 6
+  let top = rect.top - height - margin
+  if (top < margin) top = rect.bottom + margin
+  let left = rect.left
+  const maxLeft = window.innerWidth - width - margin
+  if (left > maxLeft) left = maxLeft
+  if (left < margin) left = margin
+  tip.style.top = `${top}px`
+  tip.style.left = `${left}px`
+}
+
+/** A hover over the document: show the chip when it lands on a link. */
+function onLinkHover(event: MouseEvent): void {
+  const target = event.target
+  const anchor = target instanceof Element ? target.closest<HTMLElement>('a[data-link-target]') : null
+  if (anchor === null) {
+    hideLinkTooltip()
+    return
+  }
+  const text = anchor.dataset.linkTarget ?? ''
+  if (text === '') {
+    hideLinkTooltip()
+    return
+  }
+  showLinkTooltip(anchor, text)
+}
+
+/** A hover leaving the document: keep the chip while the pointer stays on the link. */
+function onLinkOut(event: MouseEvent): void {
+  const target = event.target
+  const anchor = target instanceof Element ? target.closest<HTMLElement>('a[data-link-target]') : null
+  if (anchor === null) return
+  const related = event.relatedTarget
+  if (related instanceof Node && anchor.contains(related)) return
+  hideLinkTooltip()
+}
+
+/**
  * A link in the document. A fragment scrolls this document; a page goes to the
  * system's browser through main, which only allows the schemes a page can be;
  * a relative path is handed to the pane, which moves its cursor to the file so
@@ -453,6 +635,7 @@ function onClick(event: MouseEvent): void {
   const anchor = element instanceof Element ? element.closest('a') : null
   const href = anchor?.getAttribute('href') ?? null
   if (href === null || href === '') return
+  hideLinkTooltip()
   event.preventDefault()
   event.stopPropagation()
 
@@ -468,29 +651,109 @@ function onClick(event: MouseEvent): void {
   if (resolved !== null) emit('navigate', resolved)
 }
 
+/**
+ * A front-matter value as one readable line. Scalars are shown as they were
+ * written (the YAML is loaded with the failsafe schema, so a date is not turned
+ * into a locale-formatted JavaScript `Date`), a list is joined, and a nested map
+ * is flattened into `key: value` pairs rather than a brace of JSON.
+ */
+function frontMatterValue(value: unknown): string {
+  if (value === null || value === undefined) return '—'
+  if (Array.isArray(value)) {
+    return value.length === 0 ? '—' : value.map(frontMatterValue).join(', ')
+  }
+  if (typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+    if (entries.length === 0) return '—'
+    return entries.map(([key, item]) => `${key}: ${frontMatterValue(item)}`).join(' · ')
+  }
+  return String(value)
+}
+
+/**
+ * The metadata block at the top of a document, as a small card of key/value
+ * rows. It is built from parsed data with `textContent`, never from HTML, so the
+ * block is shown without being trusted. A block the app cannot parse — TOML,
+ * broken YAML, or a mapping that is not one — is shown as the source it is.
+ */
+function frontMatterCard(front: FrontMatter): HTMLElement {
+  const card = document.createElement('div')
+  card.className = 'md-frontmatter'
+
+  const label = document.createElement('div')
+  label.className = 'md-frontmatter-label'
+  label.textContent = 'Front matter'
+  card.append(label)
+
+  let parsed: unknown
+  if (front.format === 'yaml') {
+    try {
+      parsed = loadYaml(front.source, { schema: FAILSAFE_SCHEMA })
+    } catch {
+      parsed = undefined
+    }
+  }
+
+  if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    const list = document.createElement('dl')
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      const term = document.createElement('dt')
+      term.textContent = key
+      const detail = document.createElement('dd')
+      detail.textContent = frontMatterValue(value)
+      list.append(term, detail)
+    }
+    card.append(list)
+    return card
+  }
+
+  const source = document.createElement('pre')
+  source.className = 'md-frontmatter-source'
+  source.textContent = front.source.replace(/\s+$/, '')
+  card.append(source)
+  return card
+}
+
 async function render(): Promise<void> {
   const host = bodyEl.value
   if (host === null) return
+  hideLinkTooltip()
   const token = (renderToken += 1)
   releaseDiagramObservers()
+
+  // A live document re-typesets under the reader's own scroll position: typing a
+  // word at the top must not throw the preview back to the start of the file.
+  const scroller = host.closest<HTMLElement>('[data-doc-scroll]')
+  const keepTop = scroller?.scrollTop ?? 0
+  const keepLeft = scroller?.scrollLeft ?? 0
 
   try {
     if (props.format === 'mermaid') {
       const diagram = document.createElement('div')
       diagram.className = 'md-diagram'
       host.replaceChildren(diagram)
-      await drawDiagram(diagram, props.text, `${token}-0`, true)
+      await drawDiagram(diagram, props.text, `${token}-0`, true, 'single', token)
     } else {
+      // A document's front matter is metadata, not prose: splitting it off is
+      // what keeps its opening `---` from turning the block into a setext
+      // heading, and it is shown as a card above the body instead.
+      const front = splitFrontMatter(props.text)
       // Markdown is untrusted text: marked turns it into HTML, and DOMPurify is
       // what decides which of that HTML the display may put on screen.
-      const html = await marked.parse(props.text, { gfm: true, breaks: false, async: false })
+      const html = await marked.parse(front?.body ?? props.text, {
+        gfm: true,
+        breaks: false,
+        async: false
+      })
       host.innerHTML = DOMPurify.sanitize(html, {
         USE_PROFILES: { html: true },
         // A form is not part of a document's reading: its action would be a page
         // the app posts to on a click, which the pane's CSP does not cover.
         FORBID_TAGS: ['form']
       })
+      if (front !== null) host.prepend(frontMatterCard(front))
       anchorHeadings(host)
+      labelLinks(host)
       await resolveImages(host, token)
       if (token !== renderToken) return
       await drawFences(host, token)
@@ -498,7 +761,7 @@ async function render(): Promise<void> {
   } catch (error) {
     if (token !== renderToken) return
     console.error('Could not typeset the document', error)
-    emit('error')
+    if (!announced) emit('error')
     return
   }
 
@@ -512,13 +775,53 @@ async function render(): Promise<void> {
     host.append(note)
   }
 
+  await nextTick()
   if (token !== renderToken) return
-  emit('ready')
+  if (scroller !== null) {
+    scroller.scrollTop = keepTop
+    scroller.scrollLeft = keepLeft
+  }
+
+  // Only the first render is what reveals the display; a live re-typeset is a
+  // change *within* a document already on screen.
+  if (!announced) {
+    announced = true
+    emit('ready')
+  }
 }
 
-onMounted(() => void render())
+/**
+ * A live document: the buffer behind the preview changes without the document
+ * becoming a different one, so the same component re-typesets it instead of
+ * being remounted. The debounce is short — the editor has already held the text
+ * through its own — and only keeps back-to-back updates from rendering twice.
+ */
+watch(
+  () => props.text,
+  () => {
+    if (liveTimer !== null) window.clearTimeout(liveTimer)
+    liveTimer = window.setTimeout(() => {
+      liveTimer = null
+      void render()
+    }, LIVE_DEBOUNCE_MS)
+  }
+)
+
+onMounted(() => {
+  // A chip is placed against the link's place on screen, so any scroll would
+  // leave it floating over text it no longer describes. Captured, because a
+  // scroll event does not bubble out of the box it happened in.
+  document.addEventListener('scroll', hideLinkTooltip, true)
+  void render()
+})
 onBeforeUnmount(() => {
+  document.removeEventListener('scroll', hideLinkTooltip, true)
+  hideLinkTooltip()
   renderToken += 1
+  if (liveTimer !== null) {
+    window.clearTimeout(liveTimer)
+    liveTimer = null
+  }
   releaseDiagramObservers()
 })
 </script>
@@ -530,5 +833,7 @@ onBeforeUnmount(() => {
     :class="format === 'mermaid' ? 'doc-diagram-page' : 'doc-article'"
     data-doc-text
     @click="onClick"
+    @mouseover="onLinkHover"
+    @mouseout="onLinkOut"
   ></div>
 </template>

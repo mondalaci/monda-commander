@@ -78,8 +78,9 @@ src/shared/api.ts        McApi interface (the preload contract)
 src/shared/image.ts      extension -> previewable image MIME map
 src/shared/pdf.ts        the one PDF extension the panes render in-app, and its MIME
 src/shared/doc.ts        the documents the app typesets itself: markdown and mermaid
-                         by extension, and how a reference inside one resolves
-                         (relative to its own place, inside an archive too)
+                         by extension, a markdown file's front-matter fences, and
+                         how a reference inside one resolves (relative to its own
+                         place, inside an archive too)
 src/shared/model.ts      the two model families by extension: mesh formats the
                          renderer parses (stl/3mf/obj/ply/gltf) and CAD documents
                          main meshes through FreeCAD (step/iges/fcstd)
@@ -121,11 +122,13 @@ src/renderer/src/components/ModelViewer.vue    three.js canvas for a 3D model: t
 src/renderer/src/components/ModelWall.vue     the thumbnail wall's 3D tiles: one
                                                WebGL renderer painting every model
                                                through a scissor box (all turning)
-src/renderer/src/components/FileViewer.vue     Monaco overlay: read-only (F3) or edit (F4)
+src/renderer/src/components/FileViewer.vue     Monaco: the modal overlay (F3/F4) or a
+                                               pane's in-place document editor
 src/renderer/src/components/MarkdownViewer.vue a typeset document for the display:
                                                markdown through marked + DOMPurify,
-                                               mermaid fences and `.mmd` through
-                                               mermaid (both lazy-loaded)
+                                               front matter through js-yaml, mermaid
+                                               fences and `.mmd` through mermaid
+                                               (all lazy-loaded)
 src/renderer/src/components/PaneContextMenu.vue  a row's menu
 src/renderer/src/components/HoldRing.vue       the ring on a held right press
 src/renderer/src/components/TransferDialog.vue  a running transfer's progress dialog
@@ -951,14 +954,24 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   is the only place it shows: the footer keeps its compact size (see "The preview
   footer"), and its surface is an opaque `bg-bg` — a page of prose must not have
   the blurred listing behind an ordinary display showing through it.
+- **F4 edits the document where it stands.** The pane becomes the editor and the
+  other pane its live preview, following the buffer as it is typed; the session,
+  its modal keys, the discard question and the workspace rule are in "The viewer".
+  F3 still opens the raw text in the overlay.
 - **The document is read whole and typeset in the renderer.** `loadStage` reads it
   through the target's `fs:read`, and `MarkdownViewer.vue` — a
-  `defineAsyncComponent`, so marked, DOMPurify and mermaid sit in a lazy chunk —
-  draws it. Markup is parsed by marked and then **sanitized by DOMPurify**: a
-  document is untrusted input, so its raw HTML, event handlers and scripts are
-  stripped before any of it reaches the display. `ready` is emitted only after the
-  typesetting (and every diagram) is done, which is also the reveal. A file past
-  the reader's limit is shown as far as it goes, with a note at its end saying so.
+  `defineAsyncComponent`, so marked, DOMPurify, mermaid and js-yaml sit in a lazy
+  chunk — draws it. Markup is parsed by marked and then **sanitized by
+  DOMPurify**: a document is untrusted input, so its raw HTML, event handlers and
+  scripts are stripped before any of it reaches the display. `ready` is emitted
+  only after the typesetting (and every diagram) is done, which is also the
+  reveal. A file past the reader's limit is shown as far as it goes, with a note
+  at its end saying so. A leading **front matter** block is split off before the
+  prose is parsed — its opening `---` would otherwise be read as a setext
+  heading — and shown as a card of key/value rows (`splitFrontMatter` in
+  `shared/doc.ts`; YAML is parsed with js-yaml's failsafe schema so a date stays
+  the string it was written as, a list is joined, a nested map is flattened, and
+  TOML or an unparseable block is shown as its source).
 - **Mermaid is drawn in place of its source.** A `mermaid` fence in markdown
   and a whole `.mmd` file both go through one `mermaid.render` per diagram, with
   `securityLevel: 'strict'` (its labels are sanitized and click handlers ignored)
@@ -989,7 +1002,11 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   `http`/`https`/`mailto` are accepted), and a relative link is followed **in the
   app**: `doc-link` reaches `App.vue`, which moves the asking pane's cursor to the
   linked file (or into it, when the link ends in `/`), so a link between two
-  documents opens the next one in the same display.
+  documents opens the next one in the same display. Every link carries its target
+  in a tooltip: a hover shows the page as written, or the path a relative link
+  resolves to, in an app-drawn chip that appears at once (a native `title` waits
+  about a second and is drawn by the platform), reads in the document's colours,
+  and keeps the author's own title as its leading line.
 - **The display scrolls natively and its text is selectable.** `onStageWheel`
   leaves a document's wheel to the browser (as it does a PDF's), the box carries
   `data-doc-scroll` so a press keeps the keyboard there, and the typeset text is
@@ -1073,6 +1090,35 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
 
 ### The viewer
 
+- **Editing a document is not the overlay; it is the pane and its neighbour.**
+  F4 on a markdown or mermaid file (`docFormatFor` says so) does not open
+  `FileViewer` over everything: the file is read exactly as the overlay's would be
+  (baseline included), and the app opens a `DocEditSession` whose *owning pane*
+  renders the editor in place (`FilePanel`'s `editor` prop, an embedded
+  `FileViewer` at `absolute inset-0`) while the other pane shows the rendered
+  document. The session takes the display the app already has — `stageSide` is
+  the other pane, `stageTarget` is the session's document rather than the
+  cursor's, and `StageRequest.text` carries the buffer. A changed `text` on the
+  same target is the same display re-typesetting in place (`sameMedia` in
+  `FilePanel`), never a reload.
+- **The editor hands its buffer over on a throttle** (`PREVIEW_INTERVAL_MS`,
+  180ms) and once more on unmount, so the preview follows typing a few times a
+  second without typesetting every keystroke, and a session that ends between two
+  sends is not lost. The viewer re-typesets on its own shorter debounce, restores
+  the display's scroll position, caches resolved images and mermaid markup, and
+  keeps each diagram's zoom — a live re-render must not throw the reader back to
+  the top or reset a diagram they zoomed.
+- **The session is modal like the overlay.** `Escape` closes it through
+  `isDirty()` → `ConfirmDiscard`; `Ctrl+S` saves wherever the keyboard is (the
+  preview as readily as the buffer), and every other key is Monaco's — except
+  `Ctrl+U`, which exchanges the two panes' columns as it does everywhere else, so
+  the editor moves to the other side. It is the same card shuffle: a ghost is the
+  whole pane, so the editor overlay and the rendered preview travel with it (the
+  clone is inert and goes in 260ms). The
+  display's own leave gestures (a right-click on the preview, `stage-off`) route
+  through the same close. A workspace change is refused while the buffer is
+  dirty — the editor lives inside the pane, so switching tabs would unmount it —
+  and takes the session's clean buffer with it when it is allowed.
 - **The viewer is a modal overlay over the panes and terminal.** While open, the
   window handler consumes only `Escape` (the rest is Monaco's). Closing is
   delegated to `isDirty()` via a template ref, then `ConfirmDiscard`; a save

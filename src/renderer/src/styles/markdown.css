@@ -126,6 +126,28 @@
   text-decoration-color: currentColor;
 }
 
+/* The target a link resolves to, as a chip beside the link on hover: the page as
+   written, or the path a relative link really points at. It is fixed to the
+   window — the document's scroll box cannot clip it — and takes no pointer, so
+   it cannot swallow the click it describes. */
+.md-link-tooltip {
+  position: fixed;
+  z-index: 55;
+  max-width: min(30rem, calc(100vw - 2rem));
+  padding: 0.3rem 0.55rem;
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  background: var(--color-surface-2);
+  color: var(--color-fg-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.35);
+}
+
 .markdown-body strong {
   color: var(--color-fg-bright);
   font-weight: 600;
@@ -212,6 +234,57 @@
   border-bottom-width: 2px;
   border-radius: 3px;
   background: var(--color-surface-2);
+}
+
+/* A document's front matter, as a card of key/value rows rather than the
+   accidental heading the fences would otherwise make. It is metadata, so it
+   reads a step quieter than the prose below it: a small label, mono keys, and
+   values in the document's own text colour. */
+.md-frontmatter {
+  margin: 0 0 1.75rem;
+  padding: 0.7rem 0.95rem 0.8rem;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-surface) 70%, transparent);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.md-frontmatter-label {
+  margin-bottom: 0.55rem;
+  color: var(--color-fg-dim);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.md-frontmatter dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.3rem 1.1rem;
+  margin: 0;
+}
+
+.md-frontmatter dt {
+  color: var(--color-fg-dim);
+  font-family: var(--font-mono);
+  font-size: 0.95em;
+}
+
+.md-frontmatter dd {
+  margin: 0;
+  color: var(--color-fg-bright);
+  overflow-wrap: anywhere;
+}
+
+/* A block the app cannot parse is still shown as it was written — in the
+   document's own code style, without the card's key/value layout. */
+.md-frontmatter-source {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
 }
 
 /* A mermaid diagram is its own little viewport. The drawing is fitted to the

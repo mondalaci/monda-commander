@@ -32,7 +32,7 @@ import {
 import type { PaneMenuChoice, PaneMenuItem, PaneMenuRequest } from '@renderer/lib/paneMenu'
 import { commitBranchLabel, commitEntries, defaultCommitMessage, type CommitEntry } from '@renderer/lib/commit'
 import { archiveDisplay, isArchivePath, splitArchivePath } from '@shared/archive'
-import { docParentDir } from '@shared/doc'
+import { docFormatFor, docParentDir } from '@shared/doc'
 import { targetLabel, type Target } from '@shared/target'
 import { targetApiKey } from '@renderer/lib/targetContext'
 import type { McGitApi } from '@shared/api'
@@ -47,7 +47,13 @@ import { useTransfers, type TransferTask } from '@renderer/composables/useTransf
 import { withViewTransition } from '@renderer/lib/viewTransition'
 import { untrackedAbove } from '@renderer/lib/gitMark'
 import { playSwapAnimation } from '@renderer/lib/swapAnimation'
-import type { ConflictChoice, FileContent, FsError, PanelSide } from '@shared/types'
+import type {
+  ConflictChoice,
+  FileContent,
+  FsError,
+  PaneEditor,
+  PanelSide
+} from '@shared/types'
 
 /**
  * The app is a stack of workspaces — one tab each. A workspace owns its own
@@ -214,13 +220,30 @@ const viewerBase = ref<string | null>(null)
 const viewerRef = ref<InstanceType<typeof FileViewer> | null>(null)
 
 /**
- * Whether the viewer is being closed with unsaved edits. Closing a dirty buffer
- * stages this dialog instead of discarding outright, so the app confirms with
- * its own popup the way the copy and delete dialogs do rather than handing the
- * question to an OS window. The name shown is the viewer's own file.
+ * A document being edited in place, or null when none is. The session's pane is
+ * the editor (an embedded Monaco over its listing) and the *other* pane is the
+ * live preview: `text` is the buffer as the editor last handed it over, and the
+ * display typesets that instead of reading the file. A non-null value is what
+ * "the pane editor is open" means, and it is as modal as the viewer above.
+ */
+interface DocEditSession extends PaneEditor {
+  side: PanelSide
+  name: string
+  text: string
+  /** The entry's size and mtime when the session began, keeping its identity steady. */
+  size: number
+  mtimeMs: number
+}
+const docEdit = ref<DocEditSession | null>(null)
+
+/**
+ * Whether the viewer or the in-pane editor is being closed with unsaved edits.
+ * Closing a dirty buffer stages this dialog instead of discarding outright, so
+ * the app confirms with its own popup the way the copy and delete dialogs do
+ * rather than handing the question to an OS window. The name shown is the file's.
  */
 const discardOpen = ref(false)
-const viewerName = computed(() => (viewerPath.value === null ? '' : baseName(viewerPath.value)))
+const discardName = computed(() => baseName(viewerPath.value ?? docEdit.value?.path ?? ''))
 
 /**
  * F8 never deletes on its own: it stages the pane's targets here and the
@@ -366,6 +389,22 @@ const stageSource = computed<PanelSide | null>(() =>
  * for an ordinary file empties the display rather than freezing the last one.
  */
 const stageTarget = computed(() => {
+  // An edit session is the display's subject, not the cursor's: the pane that
+  // is editing has an editor over its listing, so there is no row to follow.
+  const edit = docEdit.value
+  if (edit !== null) {
+    return {
+      kind: 'doc' as const,
+      encode: false,
+      path: edit.path,
+      name: edit.name,
+      // The session keeps the entry's identity from when it opened, so the same
+      // document typed into is still the same display.
+      size: edit.size,
+      mtimeMs: edit.mtimeMs
+    }
+  }
+
   const side = stageSource.value
   if (side === null) return null
   const target = previewTargetFor((side === 'left' ? left.value : right.value).current())
@@ -433,6 +472,10 @@ const stageRequest = computed<StageRequest | null>(() => {
 
   return {
     target,
+    // A live document carries its own text: the display typesets the buffer
+    // rather than reading a file, and a changed text on the same target is what
+    // re-typesets it in place.
+    text: docEdit.value !== null ? docEdit.value.text : undefined,
     animation: stageAnimation.value,
     resumeAt: held !== null && held.key === previewKeyFor(target) ? held.time : null,
     from: () => asking.value?.previewRect() ?? null,
@@ -535,6 +578,9 @@ function stepShownPane(delta: number): void {
  * document should mean.
  */
 function followDocLink(path: string): void {
+  // The buffer is the subject of an edit session: a link inside it cannot move
+  // the hidden listing and so cannot change what is being edited.
+  if (docEdit.value !== null) return
   const side = stageSource.value
   if (side === null) return
   const pane = side === 'left' ? left.value : right.value
@@ -828,6 +874,9 @@ function restoreFocus(): void {
   // take back: refocusing the command line would fold it away.
   if (selectingText || hasTextSelected()) return
   if (viewerPath.value !== null) return
+  // An in-pane editor is a text input of its own: the command line must not take
+  // the keyboard back from it when the window is focused again.
+  if (docEdit.value !== null) return
   if (paneMenu.value !== null) return
   if (
     deleteTargets.value.length > 0 ||
@@ -1164,8 +1213,22 @@ async function submitTypedTarget(): Promise<void> {
   }
 }
 
+/**
+ * An in-pane edit session owns its tab: the editor lives inside the pane, so a
+ * workspace change would unmount the buffer with it. A clean session steps aside
+ * (and its display goes with it); a dirty one keeps the tab, and Escape is the
+ * way out — as it is for the viewer overlay, whose edits are the tab's work too.
+ */
+function editSessionBlocksWorkspaceChange(): boolean {
+  if (docEdit.value === null) return false
+  if (docEditPanel()?.editorIsDirty()) return true
+  dismissDocEdit()
+  return false
+}
+
 async function createWorkspaceFor(target: Target): Promise<void> {
   targetPickerOpen.value = false
+  if (editSessionBlocksWorkspaceChange()) return
   exitStage()
   const workspace = makeWorkspace(target)
   workspaces.value = [...workspaces.value, workspace]
@@ -1179,6 +1242,7 @@ function selectWorkspace(index: number): void {
     toggleTerminal()
     return
   }
+  if (editSessionBlocksWorkspaceChange()) return
   exitStage()
   activeIndex.value = index
   void nextTick(() => focusPanes())
@@ -1186,6 +1250,7 @@ function selectWorkspace(index: number): void {
 
 function closeWorkspace(index: number): void {
   if (workspaces.value.length <= 1) return
+  if (editSessionBlocksWorkspaceChange()) return
   exitStage()
   const workspace = workspaces.value[index]
   if (!workspace) return
@@ -1210,6 +1275,9 @@ function closeWorkspace(index: number): void {
 function closeExitedWorkspace(workspace: Workspace): void {
   const index = workspaces.value.indexOf(workspace)
   if (index === -1) return
+  // An in-pane edit session keeps its tab, dead shell or not: closing it would
+  // take the unsaved buffer with it. The session's Escape is the way out.
+  if (editSessionBlocksWorkspaceChange()) return
 
   exitStage()
   const remaining = workspaces.value.filter((_, i) => i !== index)
@@ -1233,6 +1301,7 @@ function closeExitedWorkspace(workspace: Workspace): void {
 function switchWorkspace(delta: number): void {
   const count = workspaces.value.length
   if (count <= 1) return
+  if (editSessionBlocksWorkspaceChange()) return
   exitStage()
   activeIndex.value = (activeIndex.value + delta + count) % count
   void nextTick(() => focusPanes())
@@ -1339,10 +1408,118 @@ async function openViewer(
     if (head.ok) base = head.data.text
   }
 
+  // A markdown or mermaid document is edited where it is, not in the overlay:
+  // its pane becomes an editor and the other pane its live preview. The read and
+  // the baseline above are exactly what that session needs.
+  if (mode === 'edit' && docFormatFor(baseName(target)) !== null) {
+    if (result.data.truncated) {
+      pane.state.error = 'Too large to edit safely — only the first 8 MiB was read'
+      return
+    }
+    beginDocEdit(pane, target, result.data, base)
+    return
+  }
+
   viewerContent.value = result.data
   viewerBase.value = base
   viewerMode.value = mode
   viewerPath.value = target
+}
+
+/** Which pane a controller belongs to, for the sessions keyed by side. */
+function sideOfPane(pane: PaneController): PanelSide {
+  return pane === left.value ? 'left' : 'right'
+}
+
+/** The pane an edit session belongs to, or null when no session is open. */
+function docEditPanel(): InstanceType<typeof FilePanel> | null {
+  const edit = docEdit.value
+  if (edit === null) return null
+  return edit.side === 'left' ? leftPanel.value : rightPanel.value
+}
+
+/**
+ * Start editing a document in its own pane, with the other pane showing it.
+ *
+ * The session takes over the display the app already has: the editing pane is
+ * the asking side, the other pane is the display, and `stageTarget`/`stageRequest`
+ * are overridden to the session's live text. The overlay viewer is not used at
+ * all — it would cover the very preview it is meant to sit beside.
+ */
+function beginDocEdit(
+  pane: PaneController,
+  path: string,
+  content: FileContent,
+  base: string | null
+): void {
+  const side = sideOfPane(pane)
+  setActive(side)
+  // The entry the session was opened on, so the display's identity matches the
+  // one a plain Enter-display of the same row would use: opening the editor on a
+  // document already being shown then re-typesets it instead of reloading it.
+  const entry = pane.current()
+  const opened = entry !== undefined && entry.path === path ? entry : null
+  docEdit.value = {
+    side,
+    path,
+    name: baseName(path),
+    text: content.text,
+    content,
+    base,
+    size: opened?.size ?? 0,
+    mtimeMs: opened?.mtimeMs ?? 0
+  }
+  discardOpen.value = false
+  stageFullscreen.value = false
+  stageResume.value = null
+  displayedClock.value = null
+  // The display belongs to the other pane; the animation counter is bumped so
+  // the document is revealed rather than swapped in over whatever was there.
+  stageAnimation.value += 1
+  stageSide.value = side === 'left' ? 'right' : 'left'
+}
+
+/** The edit session's buffer as the editor last saw it, for the live preview. */
+function onDocEditChange(side: PanelSide, text: string): void {
+  const edit = docEdit.value
+  if (edit === null || edit.side !== side || edit.text === text) return
+  docEdit.value = { ...edit, text }
+}
+
+/**
+ * Leaving the in-pane editor with unsaved work stages the same discard question
+ * the overlay viewer uses. A clean buffer goes straight back to the panes, and
+ * so does the display that was showing it.
+ */
+function closeDocEdit(): void {
+  if (docEditPanel()?.editorIsDirty()) {
+    discardOpen.value = true
+    return
+  }
+  dismissDocEdit()
+}
+
+/** Close the in-pane editor outright — the confirmed discard, or a clean buffer. */
+function dismissDocEdit(): void {
+  discardOpen.value = false
+  docEdit.value = null
+  exitStage()
+  focusPanes()
+}
+
+/** Save the edit session's buffer, wherever the keyboard happens to be. */
+function saveDocEdit(): void {
+  docEditPanel()?.editorSave()
+}
+
+/**
+ * The display pane's own leave gestures (Escape is handled globally, but a
+ * right-click on the preview asks the same question): an edit session leaves
+ * through its discard check, an ordinary display through `exitStage`.
+ */
+function leaveDisplay(): void {
+  if (docEdit.value !== null) closeDocEdit()
+  else exitStage()
 }
 
 /**
@@ -1371,7 +1548,14 @@ function dismissViewer(): void {
 /** Cancel the discard: the buffer is untouched, so the editor takes focus back. */
 function cancelDiscard(): void {
   discardOpen.value = false
-  viewerRef.value?.focusEditor()
+  if (docEdit.value !== null) docEditPanel()?.editorFocus()
+  else viewerRef.value?.focusEditor()
+}
+
+/** The discard was confirmed: close whichever editor asked the question. */
+function confirmDiscard(): void {
+  if (docEdit.value !== null) dismissDocEdit()
+  else dismissViewer()
 }
 
 function requestDelete(): void {
@@ -2542,6 +2726,42 @@ function onKeydown(event: KeyboardEvent): void {
     return
   }
 
+  // A document being edited in its own pane is as modal as the viewer: Monaco
+  // owns its keys, Escape leaves through the discard question, and Ctrl+S saves
+  // wherever the keyboard is — on the preview as readily as in the buffer.
+  if (docEdit.value !== null) {
+    if (event.key === 'Escape') {
+      consume(event)
+      closeDocEdit()
+      return
+    }
+    // The panes still exchange columns here, as they do elsewhere: the editor
+    // and its preview are the two panes, so Ctrl+U is what puts the editor on
+    // the other side — with the same card shuffle the gesture has everywhere.
+    if (
+      event.ctrlKey &&
+      !event.shiftKey &&
+      !event.altKey &&
+      !event.metaKey &&
+      event.key.toLowerCase() === 'u'
+    ) {
+      consume(event)
+      swapPanels()
+      return
+    }
+    if (
+      (event.ctrlKey || event.metaKey) &&
+      !event.shiftKey &&
+      !event.altKey &&
+      event.code === 'KeyS'
+    ) {
+      consume(event)
+      saveDocEdit()
+      return
+    }
+    return
+  }
+
   // The viewer owns the keyboard while it is open — Monaco handles Ctrl+F and
   // the rest itself — so nothing here consumes keys except Escape, which closes
   // it. This also covers the error state, where no editor was created to close.
@@ -3228,6 +3448,7 @@ onBeforeUnmount(() => {
           :fullscreen="stageFullscreen"
           :transferred="transferredSide === 'left'"
           :displayed-clock="transferredSide === 'left' ? displayedClock : null"
+          :editor="docEdit && docEdit.side === 'left' ? docEdit : null"
           :style="leftPaneStyle"
           @select="setActive('left')"
           @pointer-down="focusPanes"
@@ -3237,10 +3458,12 @@ onBeforeUnmount(() => {
           @step="stepShownPane"
           @stage-clock="displayedClock = $event"
           @stage-on="showStage('left')"
-          @stage-off="exitStage()"
+          @stage-off="leaveDisplay()"
           @context-menu="openPaneMenu('left', $event)"
           @commit="requestCommitFrom('left')"
           @doc-link="followDocLink"
+          @editor-close="closeDocEdit"
+          @editor-change="onDocEditChange('left', $event)"
         />
         <!-- The boundary between the panes, and the handle that moves it: the
              line stays a pixel, while an invisible band around it is what the
@@ -3295,6 +3518,7 @@ onBeforeUnmount(() => {
           :fullscreen="stageFullscreen"
           :transferred="transferredSide === 'right'"
           :displayed-clock="transferredSide === 'right' ? displayedClock : null"
+          :editor="docEdit && docEdit.side === 'right' ? docEdit : null"
           :style="rightPaneStyle"
           @select="setActive('right')"
           @pointer-down="focusPanes"
@@ -3304,10 +3528,12 @@ onBeforeUnmount(() => {
           @step="stepShownPane"
           @stage-clock="displayedClock = $event"
           @stage-on="showStage('right')"
-          @stage-off="exitStage()"
+          @stage-off="leaveDisplay()"
           @context-menu="openPaneMenu('right', $event)"
           @commit="requestCommitFrom('right')"
           @doc-link="followDocLink"
+          @editor-close="closeDocEdit"
+          @editor-change="onDocEditChange('right', $event)"
         />
         <!-- The workspace is one connection, so both panes come up together and
              their two titles would repeat the same stage. While they do, this bar
@@ -3433,8 +3659,8 @@ onBeforeUnmount(() => {
 
     <ConfirmDiscard
       v-if="discardOpen"
-      :name="viewerName"
-      @confirm="dismissViewer"
+      :name="discardName"
+      @confirm="confirmDiscard"
       @cancel="cancelDiscard"
     />
   </div>

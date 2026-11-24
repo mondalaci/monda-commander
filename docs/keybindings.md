@@ -127,7 +127,10 @@ panes change columns in one frame, since the two are reordered in the row rather
 than rebuilt, so the exchange is shown as copies of both of them travelling to
 the other column, and nothing in a pane stops for it: a display among them goes
 on playing as it changes column, and the columns keep the sizes they had, so the
-divider does not move,
+divider does not move. While a document is being edited in its pane, it swaps the
+editor and its preview the same way — the ghost carries the editor overlay and
+the rendered page, because it is a clone of the whole pane — so the editor moves
+to the other side and the rendered document to the one it left,
 
 `Alt+E` builds the active pane's columns: each column's label becomes a picker of
 the column types — Name, Size, Modified, Mode, Mode (num) — beside a grip
