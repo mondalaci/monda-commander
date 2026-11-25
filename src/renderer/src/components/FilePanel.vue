@@ -2137,6 +2137,81 @@ async function stepPdfZoom(direction: 1 | -1): Promise<void> {
   await setPdfZoom(target)
 }
 
+/**
+ * Where the wheel is pointing, in the document's own terms: which page, how far
+ * down it, and how far across its width. Keeping that ink under the pointer is
+ * what makes a zoom feel like the page is being stretched rather than the box
+ * jumping to another part of the stack. Null when the pointer is not over the
+ * scroll box at all (the transport below it), where there is nothing to hold.
+ */
+interface PdfZoomAnchor {
+  page: number
+  down: number
+  across: number
+  x: number
+  y: number
+}
+
+function pdfZoomAnchorAt(event: WheelEvent): PdfZoomAnchor | null {
+  const el = pdfScrollEl.value
+  const layout = pdfLayout.value
+  if (el === null || layout === null || layout.boxes.length === 0) return null
+
+  const rect = el.getBoundingClientRect()
+  const x = event.clientX - rect.left
+  const y = event.clientY - rect.top
+  if (x < 0 || y < 0 || x > el.clientWidth || y > el.clientHeight) return null
+
+  // The content under the pointer: the box's own scroll plus the pointer's place
+  // on it. A page column narrower than the box is centred in it, while one wider
+  // than the box starts at its left edge (an auto margin is zero then).
+  const contentX = el.scrollLeft + x
+  const contentY = el.scrollTop + y
+  const pageWidth = pdfColumnWidth.value
+  const columnLeft = Math.max(0, (el.clientWidth - pageWidth) / 2)
+
+  let index = 0
+  while (index + 1 < layout.boxes.length && layout.boxes[index + 1]!.top <= contentY) index += 1
+  const box = layout.boxes[index]!
+  return {
+    page: index,
+    down: Math.min(1, Math.max(0, (contentY - box.top) / box.height)),
+    across: Math.min(1, Math.max(0, (contentX - columnLeft) / pageWidth)),
+    x,
+    y
+  }
+}
+
+/**
+ * Zoom the document one rung, about the pointer. The percentage is the app's own
+ * state (`shared/pdf.ts`, the same one `+`/`-` step), so a wheel is simply that
+ * step; the scroll is put back by hand afterwards, because the column changes
+ * width while the box keeps its old offset, and without an anchor the reader
+ * would be looking somewhere else after every notch.
+ */
+async function zoomPdfAt(event: WheelEvent): Promise<void> {
+  const next = nextPdfZoom(pdfZoom.value, event.deltaY < 0 ? 1 : -1)
+  if (Math.abs(next - pdfZoom.value) < 1e-6) return
+
+  const el = pdfScrollEl.value
+  const anchor = pdfZoomAnchorAt(event)
+  await setPdfZoom(next)
+  await nextTick()
+
+  if (anchor === null || el === null || pdfScrollEl.value !== el) return
+  const layout = pdfLayout.value
+  const page = layout?.boxes[anchor.page]
+  if (!layout || !page) return
+
+  const pageWidth = pdfColumnWidth.value
+  const columnLeft = Math.max(0, (el.clientWidth - pageWidth) / 2)
+  el.scrollLeft = columnLeft + anchor.across * pageWidth - anchor.x
+  el.scrollTop = page.top + anchor.down * page.height - anchor.y
+  // The box's scroll event is dispatched a moment later; reading it back now keeps
+  // the rendered window of pages in step with where the box already is.
+  pdfScrollTop.value = el.scrollTop
+}
+
 /** The width the pages are rasterized at, in device pixels, on a stable step. */
 const pdfRenderWidth = computed(() => {
   const dpr = window.devicePixelRatio || 1
@@ -4236,10 +4311,25 @@ function overStageMedia(event: WheelEvent): boolean {
 function onStageWheel(event: WheelEvent): void {
   // A displayed PDF is a document: the wheel scrolls the page stack natively, so
   // it is left to the browser rather than turned into a folder step or a page
-  // flip. The press is still noted, so a scroll with a button held does not read
-  // as a click that leaves the mode. A typeset document is the same, one box of
-  // prose instead of a stack of pages.
-  if (shownStage.value?.target.kind === 'pdf' || shownStage.value?.target.kind === 'doc') {
+  // flip. Ctrl turns it into a magnification of the page under the pointer, and
+  // so does the right button held while the wheel turns (the gesture a clip uses
+  // for its ten-minute step) — a reader asking to see the page larger rather
+  // than to move through it. The press is still noted, so a scroll with a button
+  // held does not read as a click that leaves the mode. A typeset document is
+  // the same, one box of prose instead of a stack of pages.
+  if (shownStage.value?.target.kind === 'pdf') {
+    if (event.deltaY !== 0 && (event.ctrlKey || rightPress || (event.buttons & 2) !== 0)) {
+      event.preventDefault()
+      event.stopPropagation()
+      noteWheelPress(event)
+      void zoomPdfAt(event)
+      return
+    }
+    noteWheelPress(event)
+    return
+  }
+
+  if (shownStage.value?.target.kind === 'doc') {
     noteWheelPress(event)
     return
   }

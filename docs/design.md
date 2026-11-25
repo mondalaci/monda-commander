@@ -1644,10 +1644,15 @@ one: a page is rasterized at the size it will sit in.
 A display is where a PDF is *read*, so it is a scroll box rather than a fitted
 picture: the wheel scrolls the stack natively, the pages flow into one another as a
 document's do, and the transport and the arrows turn a page by scrolling to it
-rather than swapping a raster. The page in view — the last page whose top has
-reached the top of the box — is what the footer's counter and the transport's thumb
-read. That answer is shared state (`lib/pdf.ts`), not something a pane hands to a
-display, and it is the one place a PDF is deliberately unlike a clip. A clip is
+rather than swapping a raster. The one exception is a wheel that asks to magnify
+rather than to move — `Ctrl` held, or the right button held while the wheel turns,
+the gesture a clip uses for its coarser step — which steps the same ladder as
+`Alt+=`/`Alt+-` and holds the page's ink under the pointer while it does, so a line
+can be chased without hunting for it again after every notch. The page in view —
+the last page whose top has reached the top of the box — is what the footer's
+counter and the transport's thumb read. That answer is shared state
+(`lib/pdf.ts`), not something a pane hands to a display, and it is the one place a
+PDF is deliberately unlike a clip. A clip is
 handed across because it can only play in one element at a time — decoding it twice
 to draw the same thing is the cost the hand-off exists to avoid — and because its
 position is something the *element* knows. A page has neither property: rendering it
@@ -2274,7 +2279,10 @@ end of a clip is not quietly its beginning again. A PDF takes the same keys in a
 different medium: the arrows and the coarser Ctrl steps turn it a page, `seekStage`
 scrolling the document to that page rather than seeking an element, and the
 transport's track is its seek target. The wheel is the one gesture that does not
-turn a page — it scrolls the document itself, page boundaries and all. The wheel over a clip is a
+turn a page — it scrolls the document itself, page boundaries and all — unless it
+carries `Ctrl` or the right button is held under it, which magnifies the page under
+the pointer instead (`Ctrl+wheel` is the gesture every viewer brings, and the held
+right button is the same answer a clip's wheel already gives). The wheel over a clip is a
 scrubber too (`wheelScrub` in `FilePanel`): a plain wheel steps it ten seconds, the
 left button held a minute and the right button ten — wheel-up forward — and in a
 footer it is bound to the media box rather than the whole pane, so the wheel over

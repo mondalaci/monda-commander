@@ -883,7 +883,10 @@ The reasoning behind every rule here is in [`docs/design.md`](docs/design.md).
   its display is a scroll box of stacked pages, so the wheel is left to the
   browser to scroll it, while `seekStage` and the transport turn a page by
   scrolling to it, and the page under the top of the box is the shared page the
-  footer reads. A **middle-button drag pans** the document (`onPdfPanStart`): the
+  footer reads. **`Ctrl+wheel`, or the right button held while the wheel turns,
+  magnifies the page under the pointer instead** (`zoomPdfAt`): it steps the same
+  ladder as `Alt+=`/`Alt+-` and puts the scroll back so the ink under the pointer
+  stays there. A **middle-button drag pans** the document (`onPdfPanStart`): the
   box's own scroll follows the pointer, both ways, since a magnified page is wider
   than the box as often as it is taller — and the press's default is called off, or
   the middle button's paste (and, where a browser offers it, its autoscroll) would

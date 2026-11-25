@@ -27,15 +27,17 @@ own space — a PDF under the cursor has no playhead, so `←`/`→` and the coa
 steps turn it a page instead, `Space` not being claimed by it, and which page it is
 on is shown in the footer beside its count; in the display a PDF is a scrollable
 document, so a wheel over it scrolls it (across page boundaries) rather than turning
-a page, a middle-button drag pans it — both ways, since a magnified page is wider
-than the box as often as it is taller — and `Alt+W`/`Alt+P` fit it to the box's
-width or to a whole page (a fit is a rule rather than a size, so its percentage is
-the box's to decide — fit width being 100% by definition), and `Alt+=`/`Alt+-` step
-the magnification to the next rung above or below the percentage shown, which then
-stays that fraction of the pane however it is resized. The percentage is the page's
-width against the pane's — the `%` label says so in its tooltip — so above 100% the
-page is wider than the pane and scrolls sideways. The transport's fit buttons and its
-`-`/percentage/`+` group are the same gestures, remembered across launches),
+a page, `Ctrl+wheel` — or the wheel with the right button held — magnifies the page
+under the pointer instead, a middle-button drag pans it — both ways, since a
+magnified page is wider than the box as often as it is taller — and `Alt+W`/`Alt+P`
+fit it to the box's width or to a whole page (a fit is a rule rather than a size,
+so its percentage is the box's to decide — fit width being 100% by definition),
+and `Alt+=`/`Alt+-` step the magnification to the next rung above or below the
+percentage shown, which then stays that fraction of the pane however it is resized.
+The percentage is the page's width against the pane's — the `%` label says so in
+its tooltip — so above 100% the page is wider than the pane and scrolls sideways.
+The transport's fit buttons and its `-`/percentage/`+` group are the same gestures,
+remembered across launches),
 
 `Enter` descends, or runs a file the user can run in the workspace's own shell —
 the green name is a promise, and the shell is where it is kept, shown for as long
